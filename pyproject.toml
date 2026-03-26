@@ -1,0 +1,37 @@
+[project]
+name = "midas"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.1",
+    "pandas>=2.2",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "yfinance>=0.2",
+]
+
+[project.scripts]
+midas = "midas.cli:cli"
+
+[build-system]
+requires = ["uv_build>=0.11.1,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=6.2",
+    "ruff>=0.15.7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=midas --cov-report=term-missing"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
