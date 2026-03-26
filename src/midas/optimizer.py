@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import itertools
+import os
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 
@@ -113,6 +115,46 @@ def _run_trial(
     return total_return, bh_return, result.train_return, result.test_return
 
 
+_worker_state: dict = {}
+
+
+def _init_worker(portfolio, price_data, start, end):
+    _worker_state.update(
+        portfolio=portfolio, price_data=price_data, start=start, end=end
+    )
+
+
+def _trial_worker(args):
+    names, combo = args
+    params = dict(zip(names, combo, strict=False))
+    return (*_run_trial(params, **_worker_state), params)
+
+
+def _run_parallel(combos, names, portfolio, price_data, start, end, log):
+    """Run all combos across worker processes, return best result."""
+    max_workers = min((os.cpu_count() or 4) // 2, len(combos)) or 1
+    log(f"  {len(combos)} combinations to test ({max_workers} workers)")
+
+    best = (-float("inf"), {}, 0.0, 0.0, 0.0)
+    done = 0
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker,
+        initargs=(portfolio, price_data, start, end),
+    ) as pool:
+        chunksize = max(1, len(combos) // (max_workers * 4))
+        for *scores, params in pool.map(
+            _trial_worker, [(names, c) for c in combos], chunksize=chunksize
+        ):
+            done += 1
+            if scores[0] > best[0]:
+                best = (scores[0], params, scores[1], scores[2], scores[3])
+            if done % 500 == 0:
+                log(f"  {done}/{len(combos)} — best so far: {best[0]:.2%}")
+
+    return best
+
+
 def optimize(
     portfolio: PortfolioConfig,
     price_data: dict[str, pd.Series],
@@ -143,32 +185,14 @@ def optimize(
     }
 
     # Total combinations = product of each strategy's grid size
+    shared = (names, portfolio, price_data, start, end, log)
+
     all_combos = list(
         itertools.product(*(coarse_grids[n] for n in names))
     )
-    log(f"  {len(all_combos)} combinations to test")
-
-    best_return = -float("inf")
-    best_params: dict[str, dict[str, float]] = {}
-    best_bh = 0.0
-    best_train = 0.0
-    best_test = 0.0
-
-    for i, combo in enumerate(all_combos):
-        params = dict(zip(names, combo, strict=False))
-        total_ret, bh_ret, train_ret, test_ret = _run_trial(
-            params, portfolio, price_data, start, end
-        )
-        if total_ret > best_return:
-            best_return = total_ret
-            best_params = params
-            best_bh = bh_ret
-            best_train = train_ret
-            best_test = test_ret
-
-        if (i + 1) % 100 == 0:
-            log(f"  {i + 1}/{len(all_combos)} — best so far: {best_return:.2%}")
-
+    best_return, best_params, best_bh, best_train, best_test = _run_parallel(
+        all_combos, *shared
+    )
     log(f"  Phase 1 best: {best_return:.2%} with {best_params}")
 
     # Phase 2: fine grid around best
@@ -177,31 +201,17 @@ def optimize(
         name: _build_grid(PARAM_RANGES[name], "fine", center=best_params[name])
         for name in names
     }
-
     fine_combos = list(
         itertools.product(*(fine_grids[n] for n in names))
     )
-    log(f"  {len(fine_combos)} combinations to test")
-
-    trials_total = len(all_combos)
-
-    for i, combo in enumerate(fine_combos):
-        params = dict(zip(names, combo, strict=False))
-        total_ret, bh_ret, train_ret, test_ret = _run_trial(
-            params, portfolio, price_data, start, end
+    ret2, params2, bh2, train2, test2 = _run_parallel(fine_combos, *shared)
+    if ret2 > best_return:
+        best_return, best_params, best_bh, best_train, best_test = (
+            ret2, params2, bh2, train2, test2
         )
-        if total_ret > best_return:
-            best_return = total_ret
-            best_params = params
-            best_bh = bh_ret
-            best_train = train_ret
-            best_test = test_ret
-        trials_total += 1
-
-        if (i + 1) % 100 == 0:
-            log(f"  {i + 1}/{len(fine_combos)} — best so far: {best_return:.2%}")
-
     log(f"  Phase 2 best: {best_return:.2%}")
+
+    trials_total = len(all_combos) + len(fine_combos)
 
     return OptimizeResult(
         best_params=best_params,
