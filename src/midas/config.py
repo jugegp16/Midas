@@ -8,7 +8,13 @@ from typing import Any
 
 import yaml
 
-from midas.models import CashInfusion, Holding, PortfolioConfig, StrategyConfig
+from midas.models import (
+    CashInfusion,
+    Holding,
+    PortfolioConfig,
+    StrategyConfig,
+    TradingRestrictions,
+)
 
 
 def load_portfolio(path: Path) -> PortfolioConfig:
@@ -37,10 +43,18 @@ def load_portfolio(path: Path) -> PortfolioConfig:
             frequency=ci.get("frequency"),
         )
 
+    restrictions = None
+    if "trading_restrictions" in raw:
+        tr = raw["trading_restrictions"]
+        restrictions = TradingRestrictions(
+            round_trip_days=int(tr.get("round_trip_days", 0)),
+        )
+
     return PortfolioConfig(
         holdings=holdings,
         available_cash=float(raw["available_cash"]),
         cash_infusion=infusion,
+        trading_restrictions=restrictions,
     )
 
 

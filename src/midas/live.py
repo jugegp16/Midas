@@ -11,6 +11,7 @@ from midas.agent import Agent
 from midas.data.provider import DataProvider
 from midas.models import Direction, Order, PortfolioConfig
 from midas.output import print_alert, print_circuit_breaker_alert, print_status
+from midas.restrictions import RestrictionTracker
 from midas.sizing import SizingEngine
 
 
@@ -34,6 +35,11 @@ class LiveEngine:
         self._history_days = history_days
         self._daily_deployed = 0.0
         self._last_reset_date: date | None = None
+        self._restriction_tracker: RestrictionTracker | None = None
+        if portfolio.trading_restrictions:
+            self._restriction_tracker = RestrictionTracker(
+                portfolio.trading_restrictions,
+            )
 
     def run(self) -> None:
         tickers = [h.ticker for h in self._portfolio.holdings]
@@ -86,7 +92,15 @@ class LiveEngine:
                     today=today,
                 )
                 if order is not None:
+                    if self._restriction_tracker and self._restriction_tracker.is_blocked(
+                        order.ticker, order.direction, today,
+                    ):
+                        continue
                     orders.append(order)
+                    if self._restriction_tracker and order.shares > 0:
+                        self._restriction_tracker.record_trade(
+                            order.ticker, order.direction, today,
+                        )
                     if order.shares > 0 and order.direction == Direction.BUY:
                         self._daily_deployed += order.estimated_value
 

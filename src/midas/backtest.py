@@ -17,8 +17,10 @@ from midas.models import (
     HoldingPeriod,
     Order,
     PortfolioConfig,
+    TradingRestrictions,
     TradeRecord,
 )
+from midas.restrictions import RestrictionTracker
 from midas.sizing import SizingEngine
 
 
@@ -59,6 +61,7 @@ class _SimState:
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
+    restriction_tracker: RestrictionTracker | None = None
 
 
 class BacktestEngine:
@@ -164,6 +167,10 @@ class BacktestEngine:
         end: date,
     ) -> _SimState:
         state = _SimState(cash=portfolio.available_cash)
+        if portfolio.trading_restrictions:
+            state.restriction_tracker = RestrictionTracker(
+                portfolio.trading_restrictions,
+            )
         first_dates = self._first_data_dates(price_data, start)
 
         for h in portfolio.holdings:
@@ -317,9 +324,18 @@ class BacktestEngine:
                 if order is None or order.shares == 0:
                     continue
 
+                if state.restriction_tracker and state.restriction_tracker.is_blocked(
+                    order.ticker, order.direction, day,
+                ):
+                    continue
+
                 trade = self._execute(order, day, state)
                 if trade is not None:
                     state.trades.append(trade)
+                    if state.restriction_tracker:
+                        state.restriction_tracker.record_trade(
+                            order.ticker, order.direction, day,
+                        )
                     if order.direction == Direction.BUY:
                         state.cash -= order.estimated_value
                         state.daily_deployed += order.estimated_value
