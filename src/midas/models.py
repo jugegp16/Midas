@@ -55,6 +55,7 @@ class PortfolioConfig:
     holdings: list[Holding]
     available_cash: float
     cash_infusion: CashInfusion | None = None
+    trading_restrictions: TradingRestrictions | None = None
 
     def __post_init__(self) -> None:
         self._by_ticker = {h.ticker: h for h in self.holdings}
@@ -82,6 +83,11 @@ class TradeRecord:
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None = None
+
+
+@dataclass
+class TradingRestrictions:
+    round_trip_days: int = 0  # 0 = no restriction
 
 
 @dataclass
