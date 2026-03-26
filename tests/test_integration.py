@@ -107,8 +107,14 @@ def test_full_pipeline(tmp_path: Path) -> None:
 
 
 def test_strategy_registry_complete() -> None:
-    """All three strategies should be registered and instantiable."""
-    expected = {"MeanReversion", "Momentum", "ProfitTaking"}
+    """All strategies should be registered and instantiable."""
+    expected = {
+        "MeanReversion", "Momentum", "ProfitTaking",
+        "RSIOversold", "RSIOverbought", "BollingerBand",
+        "MACDCrossover", "DollarCostAveraging", "GapDownRecovery",
+        "TrailingStop", "StopLoss", "VWAPReversion",
+        "MovingAverageCrossover",
+    }
     assert set(STRATEGY_REGISTRY.keys()) == expected
 
     for _name, cls in STRATEGY_REGISTRY.items():

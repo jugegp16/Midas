@@ -1,0 +1,63 @@
+"""Gap down recovery strategy: buy when price gaps down then recovers."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from midas.models import AssetSuitability, Direction, Signal
+from midas.strategies.base import Strategy
+
+
+class GapDownRecovery(Strategy):
+    def __init__(self, gap_threshold: float = 0.03) -> None:
+        self._gap_threshold = gap_threshold
+
+    def evaluate(
+        self,
+        ticker: str,
+        price_history: pd.Series,
+        **kwargs: object,
+    ) -> list[Signal]:
+        if len(price_history) < 3:
+            return []
+
+        values = np.asarray(price_history)
+        prev_close = float(values[-3])
+        gap_open = float(values[-2])  # proxy: previous day's close
+        current = float(values[-1])
+
+        if prev_close == 0:
+            return []
+
+        gap_pct = (prev_close - gap_open) / prev_close
+
+        # Gap down occurred and price recovered above the gap open
+        if gap_pct >= self._gap_threshold and current > gap_open:
+            recovery_pct = (current - gap_open) / (prev_close - gap_open)
+            return [self._make_signal(
+                ticker,
+                Direction.BUY,
+                strength=min(recovery_pct, 1.0),
+                reasoning=(
+                    f"{ticker} gapped down {gap_pct:.1%} from ${prev_close:.2f} "
+                    f"to ${gap_open:.2f}, recovered to ${current:.2f}"
+                ),
+                price=current,
+            )]
+        return []
+
+    @property
+    def name(self) -> str:
+        return f"GapDownRecovery(gap_threshold={self._gap_threshold})"
+
+    @property
+    def suitability(self) -> list[AssetSuitability]:
+        return [AssetSuitability.INDIVIDUAL_EQUITY, AssetSuitability.HIGH_VOLATILITY]
+
+    @property
+    def description(self) -> str:
+        return (
+            f"Buy when price gaps down >{self._gap_threshold:.0%} "
+            f"then recovers above the gap level"
+        )
