@@ -18,6 +18,13 @@ from midas.models import PortfolioConfig
 from midas.sizing import SizingConfig, SizingEngine
 from midas.strategies import STRATEGY_REGISTRY
 
+# Parameters that should be cast to int when building strategy instances.
+_INT_PARAMS = {
+    "window", "short_window", "long_window",
+    "fast_period", "slow_period", "signal_period",
+    "frequency_days",
+}
+
 # Default parameter ranges per strategy.
 # Each entry: (min, max, coarse_step, fine_step)
 PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
@@ -30,6 +37,43 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     },
     "Momentum": {
         "window": (5, 50, 5, 2),
+    },
+    "RSIOversold": {
+        "window": (7, 28, 7, 2),
+        "oversold_threshold": (15.0, 40.0, 5.0, 2.0),
+    },
+    "RSIOverbought": {
+        "window": (7, 28, 7, 2),
+        "overbought_threshold": (60.0, 85.0, 5.0, 2.0),
+    },
+    "BollingerBand": {
+        "window": (10, 50, 10, 5),
+        "num_std": (1.5, 3.0, 0.5, 0.25),
+    },
+    "MACDCrossover": {
+        "fast_period": (8, 16, 4, 2),
+        "slow_period": (20, 32, 4, 2),
+        "signal_period": (5, 13, 4, 2),
+    },
+    "DollarCostAveraging": {
+        "frequency_days": (5, 30, 5, 2),
+    },
+    "GapDownRecovery": {
+        "gap_threshold": (0.02, 0.08, 0.02, 0.005),
+    },
+    "TrailingStop": {
+        "trail_pct": (0.05, 0.25, 0.05, 0.02),
+    },
+    "StopLoss": {
+        "loss_threshold": (0.05, 0.25, 0.05, 0.02),
+    },
+    "VWAPReversion": {
+        "window": (10, 50, 10, 5),
+        "threshold": (0.01, 0.05, 0.01, 0.005),
+    },
+    "MovingAverageCrossover": {
+        "short_window": (10, 30, 5, 2),
+        "long_window": (40, 100, 10, 5),
     },
 }
 
@@ -92,7 +136,7 @@ def _run_trial(
         # Convert window params to int
         clean_params = {}
         for k, v in params.items():
-            clean_params[k] = int(v) if k == "window" else v
+            clean_params[k] = int(v) if k in _INT_PARAMS else v
         strategy = cls(**clean_params)
         agents.append(Agent(strategy=strategy, cooldown_days=5))
 
@@ -232,7 +276,7 @@ def write_strategies_yaml(
         # Convert window to int for cleaner YAML
         clean = {}
         for k, v in p.items():
-            clean[k] = int(v) if k == "window" else round(v, 4)
+            clean[k] = int(v) if k in _INT_PARAMS else round(v, 4)
         strategies.append({"name": name, "params": clean})
 
     with open(path, "w") as f:
