@@ -97,6 +97,10 @@ class LiveEngine:
                     ):
                         continue
                     orders.append(order)
+                    if self._restriction_tracker and order.shares > 0:
+                        self._restriction_tracker.record_trade(
+                            order.ticker, order.direction, today,
+                        )
                     if order.shares > 0 and order.direction == Direction.BUY:
                         self._daily_deployed += order.estimated_value
 
