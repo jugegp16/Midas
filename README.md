@@ -30,6 +30,9 @@ portfolio:
 
 available_cash: 2000.00
 
+trading_restrictions:
+  round_trip_days: 30  # can't buy then sell (or vice versa) the same ticker within 30 days
+
 cash_infusion:
   amount: 1500.00
   next_date: 2026-04-03
