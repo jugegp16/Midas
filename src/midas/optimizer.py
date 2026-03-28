@@ -12,10 +12,10 @@ from datetime import date
 import pandas as pd
 import yaml
 
-from midas.agent import Agent
+from midas.allocator import Allocator
 from midas.backtest import BacktestEngine
-from midas.models import PortfolioConfig
-from midas.sizing import SizingConfig, SizingEngine
+from midas.models import AllocationConstraints, PortfolioConfig, StrategyTier
+from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
 
 # Parameters that should be cast to int when building strategy instances.
@@ -128,21 +128,41 @@ def _run_trial(
     start: date,
     end: date,
 ) -> tuple[float, float, float, float]:
-    """Run a single backtest trial. Returns (total_return, bh_return,
-    train_return, test_return)."""
-    agents = []
+    """Run a single backtest trial with the allocator+rebalancer system.
+
+    Returns (total_return, bh_return, train_return, test_return).
+    """
+    conviction: list[tuple] = []
+    protective: list[tuple] = []
+    mechanical = []
+
     for name, params in strategy_params.items():
         cls = STRATEGY_REGISTRY[name]
-        # Convert window params to int
-        clean_params = {}
-        for k, v in params.items():
-            clean_params[k] = int(v) if k in _INT_PARAMS else v
+        clean_params = {
+            k: int(v) if k in _INT_PARAMS else v for k, v in params.items()
+        }
         strategy = cls(**clean_params)
-        agents.append(Agent(strategy=strategy, cooldown_days=5))
 
-    sizing = SizingEngine(SizingConfig())
+        if strategy.tier == StrategyTier.PROTECTIVE:
+            protective.append((strategy, -0.5))  # default veto threshold
+        elif strategy.tier == StrategyTier.MECHANICAL:
+            mechanical.append(strategy)
+        else:
+            conviction.append((strategy, 1.0))  # uniform weight
+
+    # Count tickers in portfolio
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    constraints = AllocationConstraints()
+
+    allocator = Allocator(conviction, protective, constraints, n_tickers)
+    rebalancer = Rebalancer()
+
     engine = BacktestEngine(
-        agents=agents, sizing_engine=sizing, enable_split=True
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
+        enable_split=True,
     )
     result = engine.run(portfolio, price_data, start, end)
 
@@ -215,8 +235,12 @@ def optimize(
     log = log_fn or (lambda _: None)
 
     names = strategy_names or list(PARAM_RANGES.keys())
-    # Filter to strategies that have defined ranges
-    names = [n for n in names if n in PARAM_RANGES]
+    # Filter to strategies that have defined ranges and are not MECHANICAL
+    names = [
+        n for n in names
+        if n in PARAM_RANGES
+        and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL
+    ]
 
     if not names:
         msg = "No optimizable strategies found"
@@ -273,7 +297,6 @@ def write_strategies_yaml(
     """Write optimized parameters to a strategies YAML file."""
     strategies = []
     for name, p in params.items():
-        # Convert window to int for cleaner YAML
         clean = {}
         for k, v in p.items():
             clean[k] = int(v) if k in _INT_PARAMS else round(v, 4)

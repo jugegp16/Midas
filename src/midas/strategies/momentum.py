@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -13,14 +13,14 @@ class Momentum(Strategy):
     def __init__(self, window: int = 20) -> None:
         self._window = window
 
-    def evaluate(
+    def score(
         self,
         ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if len(price_history) < self._window + 1:
-            return []
+            return None
 
         values = np.asarray(price_history)
         current, prev = float(values[-1]), float(values[-2])
@@ -29,17 +29,8 @@ class Momentum(Strategy):
 
         if prev <= prev_ma and current > ma:
             pct_above = (current - ma) / ma
-            return [self._make_signal(
-                ticker,
-                Direction.BUY,
-                strength=pct_above / 0.05,
-                reasoning=(
-                    f"{ticker} crossed above {self._window}-day avg "
-                    f"(${ma:.2f}) at ${current:.2f}"
-                ),
-                price=current,
-            )]
-        return []
+            return self._clamp(pct_above / 0.05)
+        return 0.0
 
     @property
     def name(self) -> str:

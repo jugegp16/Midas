@@ -1,31 +1,20 @@
 """Tests for core data models."""
 
-from datetime import UTC, date, datetime
+from datetime import date
 
 from midas.models import (
+    AllocationConstraints,
     Direction,
     Holding,
     HoldingPeriod,
+    MechanicalIntent,
     Order,
+    OrderContext,
     PortfolioConfig,
-    Signal,
+    StrategyConfig,
+    StrategyTier,
     TradeRecord,
 )
-
-
-def test_signal_creation() -> None:
-    sig = Signal(
-        ticker="AAPL",
-        direction=Direction.BUY,
-        strength=0.5,
-        reasoning="test",
-        timestamp=datetime.now(tz=UTC),
-        price=150.0,
-        strategy_name="TestStrategy",
-    )
-    assert sig.ticker == "AAPL"
-    assert sig.direction == Direction.BUY
-    assert 0.0 <= sig.strength <= 1.0
 
 
 def test_portfolio_get_holding() -> None:
@@ -48,23 +37,23 @@ def test_holding_period_values() -> None:
 
 
 def test_order_frozen() -> None:
-    sig = Signal(
-        ticker="VOO",
-        direction=Direction.BUY,
-        strength=0.3,
-        reasoning="test",
-        timestamp=datetime.now(tz=UTC),
-        price=500.0,
-        strategy_name="Test",
+    ctx = OrderContext(
+        contributions={"TestStrategy": 0.5},
+        blended_score=0.5,
+        target_weight=0.10,
+        current_weight=0.05,
+        reason="test buy",
     )
     order = Order(
         ticker="VOO",
         direction=Direction.BUY,
         shares=2,
+        price=500.0,
         estimated_value=1000.0,
-        signal=sig,
+        context=ctx,
     )
-    assert order.relies_on_pending_cash is False
+    assert order.context.blended_score == 0.5
+    assert order.price == 500.0
 
 
 def test_trade_record() -> None:
@@ -78,3 +67,34 @@ def test_trade_record() -> None:
         holding_period=HoldingPeriod.LONG_TERM,
     )
     assert tr.holding_period == HoldingPeriod.LONG_TERM
+
+
+def test_strategy_tier_values() -> None:
+    assert StrategyTier.CONVICTION.value == "conviction"
+    assert StrategyTier.PROTECTIVE.value == "protective"
+    assert StrategyTier.MECHANICAL.value == "mechanical"
+
+
+def test_allocation_constraints_defaults() -> None:
+    c = AllocationConstraints()
+    assert c.max_position_pct is None
+    assert c.min_cash_pct == 0.05
+    assert c.rebalance_threshold == 0.02
+    assert c.sigmoid_steepness == 2.0
+
+
+def test_mechanical_intent() -> None:
+    intent = MechanicalIntent(
+        ticker="VOO",
+        direction=Direction.BUY,
+        target_value=500.0,
+        reason="DCA",
+    )
+    assert intent.target_value == 500.0
+
+
+def test_strategy_config_defaults() -> None:
+    cfg = StrategyConfig(name="TestStrategy")
+    assert cfg.weight == 1.0
+    assert cfg.tier == StrategyTier.CONVICTION
+    assert cfg.veto_threshold == -0.5

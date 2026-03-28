@@ -8,13 +8,18 @@ from pathlib import Path
 import click
 import pandas as pd
 
-from midas.agent import Agent
+from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
-from midas.models import PortfolioConfig, StrategyConfig
+from midas.models import (
+    AllocationConstraints,
+    PortfolioConfig,
+    StrategyConfig,
+    StrategyTier,
+)
 from midas.output import print_backtest_summary, print_status, print_strategy_table
-from midas.sizing import SizingConfig, SizingEngine
+from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
 
 
@@ -29,16 +34,36 @@ def _build_strategy(cfg: StrategyConfig) -> Strategy:
     return cls(**cfg.params)
 
 
-def _build_agents(
-    strategy_configs: list[StrategyConfig] | None = None,
-) -> list[Agent]:
+def _build_components(
+    strategy_configs: list[StrategyConfig] | None,
+    constraints: AllocationConstraints,
+    n_tickers: int,
+) -> tuple[Allocator, Rebalancer, list[Strategy]]:
+    """Build allocator, rebalancer, and mechanical strategies from config."""
     configs = strategy_configs or [
         StrategyConfig(name=name) for name in STRATEGY_REGISTRY
     ]
-    return [
-        Agent(strategy=_build_strategy(cfg), tickers=cfg.tickers)
-        for cfg in configs
-    ]
+
+    conviction: list[tuple[Strategy, float]] = []
+    protective: list[tuple[Strategy, float]] = []
+    mechanical: list[Strategy] = []
+
+    for cfg in configs:
+        strategy = _build_strategy(cfg)
+        # Use tier from config, falling back to strategy's default
+        tier = cfg.tier
+
+        if tier == StrategyTier.PROTECTIVE:
+            protective.append((strategy, cfg.veto_threshold))
+        elif tier == StrategyTier.MECHANICAL:
+            mechanical.append(strategy)
+        else:
+            conviction.append((strategy, cfg.weight))
+
+    allocator = Allocator(conviction, protective, constraints, n_tickers)
+    rebalancer = Rebalancer()
+
+    return allocator, rebalancer, mechanical
 
 
 def _to_date(dt: date | datetime) -> date:
@@ -95,16 +120,22 @@ def backtest(
     no_split: bool,
 ) -> None:
     """Run a backtest over historical data."""
-    port = load_portfolio(Path(portfolio))
+    port, constraints = load_portfolio(Path(portfolio))
     strat_configs = load_strategies(Path(strategies)) if strategies else None
-    agents = _build_agents(strat_configs)
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
 
+    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    allocator, rebalancer, mechanical = _build_components(
+        strat_configs, constraints, n_tickers,
+    )
+
     engine = BacktestEngine(
-        agents=agents,
-        sizing_engine=SizingEngine(SizingConfig()),
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
         train_pct=train_pct,
         enable_split=not no_split,
         log_fn=print_status,
@@ -139,14 +170,21 @@ def live(
     """Run live analysis with real-time price polling."""
     from midas.live import LiveEngine
 
-    port = load_portfolio(Path(portfolio))
+    port, constraints = load_portfolio(Path(portfolio))
     strat_configs = load_strategies(Path(strategies)) if strategies else None
-    agents = _build_agents(strat_configs)
     provider = CachedYFinanceProvider()
+
+    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    allocator, rebalancer, mechanical = _build_components(
+        strat_configs, constraints, n_tickers,
+    )
 
     engine = LiveEngine(
         portfolio=port,
-        agents=agents,
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
         provider=provider,
         poll_interval=interval,
         dry_run=dry_run,
@@ -180,7 +218,7 @@ def optimize(
     from midas.optimizer import optimize as run_optimize
     from midas.optimizer import write_strategies_yaml
 
-    port = load_portfolio(Path(portfolio))
+    port, _constraints = load_portfolio(Path(portfolio))
 
     strategy_names: list[str] | None = None
     if strategies:

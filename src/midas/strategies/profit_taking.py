@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -13,32 +13,25 @@ class ProfitTaking(Strategy):
     def __init__(self, gain_threshold: float = 0.20) -> None:
         self._gain_threshold = gain_threshold
 
-    def evaluate(
+    def score(
         self,
         ticker: str,
         price_history: pd.Series,
         *,
         cost_basis: float | None = None,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if cost_basis is None or cost_basis <= 0:
-            return []
+            return None
 
         current = float(np.asarray(price_history)[-1])
         gain = (current - cost_basis) / cost_basis
 
         if gain >= self._gain_threshold:
-            return [self._make_signal(
-                ticker,
-                Direction.SELL,
-                strength=(gain - self._gain_threshold) / self._gain_threshold,
-                reasoning=(
-                    f"{ticker} up {gain:.0%} from "
-                    f"cost basis ${cost_basis:.2f}"
-                ),
-                price=current,
-            )]
-        return []
+            return -self._clamp(
+                (gain - self._gain_threshold) / self._gain_threshold
+            )
+        return 0.0
 
     @property
     def name(self) -> str:
