@@ -1,14 +1,14 @@
-"""Two-phase grid search optimizer for strategy parameters."""
+"""Bayesian optimizer for strategy parameters using Optuna TPE."""
 
 from __future__ import annotations
 
-import itertools
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 
+import optuna
 import pandas as pd
 import yaml
 
@@ -31,7 +31,7 @@ _INT_PARAMS = {
 _META_PARAMS = {"_weight", "_veto_threshold"}
 
 # Default parameter ranges per strategy.
-# Each entry: (min, max, coarse_step, fine_step)
+# Each entry: (min, max, step) — step used for discretisation.
 PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "MeanReversion": {
         "window": (10, 100, 10, 5),
@@ -43,7 +43,7 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
         "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "Momentum": {
-        "window": (5, 50, 5, 2),
+        "window": (5, 49, 5, 2),
         "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "RSIOversold": {
@@ -94,6 +94,8 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     },
 }
 
+_DEFAULT_N_TRIALS = 200
+
 
 @dataclass
 class OptimizeResult:
@@ -105,37 +107,22 @@ class OptimizeResult:
     trials_run: int
 
 
-def _build_grid(
+def _suggest_params(
+    trial: optuna.Trial,
+    strategy_name: str,
     ranges: dict[str, tuple[float, float, float, float]],
-    phase: str,
-    center: dict[str, float] | None = None,
-) -> list[dict[str, float]]:
-    """Build a parameter grid for one strategy.
-
-    Phase 'coarse' uses the full range with coarse steps.
-    Phase 'fine' narrows around `center` with fine steps.
-    """
-    param_values: dict[str, list[float]] = {}
-    for param, (lo, hi, coarse_step, fine_step) in ranges.items():
-        if phase == "fine" and center is not None:
-            c = center[param]
-            step = fine_step
-            lo_f = max(lo, c - coarse_step)
-            hi_f = min(hi, c + coarse_step)
+) -> dict[str, float]:
+    """Use Optuna trial to suggest parameter values for one strategy."""
+    params: dict[str, float] = {}
+    for param, (lo, hi, _coarse_step, fine_step) in ranges.items():
+        key = f"{strategy_name}__{param}"
+        if param in _INT_PARAMS:
+            params[param] = float(
+                trial.suggest_int(key, int(lo), int(hi), step=int(fine_step))
+            )
         else:
-            lo_f, hi_f, step = lo, hi, coarse_step
-
-        values = []
-        v = lo_f
-        while v <= hi_f + step * 0.01:  # small epsilon for float rounding
-            values.append(round(v, 4))
-            v += step
-        param_values[param] = values
-
-    # Cartesian product
-    keys = list(param_values.keys())
-    combos = list(itertools.product(*(param_values[k] for k in keys)))
-    return [dict(zip(keys, combo, strict=False)) for combo in combos]
+            params[param] = trial.suggest_float(key, lo, hi, step=fine_step)
+    return params
 
 
 def _run_trial(
@@ -204,41 +191,19 @@ def _run_trial(
 _worker_state: dict = {}
 
 
-def _init_worker(portfolio, price_data, start, end):
+def _init_worker(
+    portfolio: PortfolioConfig,
+    price_data: dict[str, pd.Series],
+    start: date,
+    end: date,
+) -> None:
     _worker_state.update(
         portfolio=portfolio, price_data=price_data, start=start, end=end
     )
 
 
-def _trial_worker(args):
-    names, combo = args
-    params = dict(zip(names, combo, strict=False))
-    return (*_run_trial(params, **_worker_state), params)
-
-
-def _run_parallel(combos, names, portfolio, price_data, start, end, log):
-    """Run all combos across worker processes, return best result."""
-    max_workers = min((os.cpu_count() or 4) // 2, len(combos)) or 1
-    log(f"  {len(combos)} combinations to test ({max_workers} workers)")
-
-    best = (-float("inf"), {}, 0.0, 0.0, 0.0)
-    done = 0
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end),
-    ) as pool:
-        chunksize = max(1, len(combos) // (max_workers * 4))
-        for *scores, params in pool.map(
-            _trial_worker, [(names, c) for c in combos], chunksize=chunksize
-        ):
-            done += 1
-            if scores[0] > best[0]:
-                best = (scores[0], params, scores[1], scores[2], scores[3])
-            if done % 500 == 0:
-                log(f"  {done}/{len(combos)} — best so far: {best[0]:.2%}")
-
-    return best
+def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
+    return _run_trial(strategy_params, **_worker_state)
 
 
 def optimize(
@@ -247,12 +212,15 @@ def optimize(
     start: date,
     end: date,
     strategy_names: list[str] | None = None,
+    n_trials: int = _DEFAULT_N_TRIALS,
     log_fn: Callable[[str], None] | None = None,
 ) -> OptimizeResult:
-    """Two-phase grid search over strategy parameters.
+    """Bayesian optimization over strategy parameters using Optuna TPE.
 
-    Phase 1: coarse grid over full ranges.
-    Phase 2: fine grid around the best result from phase 1.
+    Runs *n_trials* Optuna trials (default 200).  Each trial samples a
+    parameter combination via the Tree-structured Parzen Estimator and
+    evaluates it with a full backtest.  Backtests are executed in a worker
+    pool to utilise multiple CPU cores.
     """
     log = log_fn or (lambda _: None)
 
@@ -268,48 +236,69 @@ def optimize(
         msg = "No optimizable strategies found"
         raise ValueError(msg)
 
-    # Phase 1: coarse grid
-    log(f"Phase 1: coarse search over {', '.join(names)}...")
-    coarse_grids = {
-        name: _build_grid(PARAM_RANGES[name], "coarse") for name in names
-    }
+    max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
-    # Total combinations = product of each strategy's grid size
-    shared = (names, portfolio, price_data, start, end, log)
+    log(f"Optimizing {', '.join(names)} — {n_trials} trials ({max_workers} workers)")
 
-    all_combos = list(
-        itertools.product(*(coarse_grids[n] for n in names))
+    # Suppress Optuna's default logging (we provide our own via log_fn).
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
     )
-    best_return, best_params, best_bh, best_train, best_test = _run_parallel(
-        all_combos, *shared
-    )
-    log(f"  Phase 1 best: {best_return:.2%} with {best_params}")
 
-    # Phase 2: fine grid around best
-    log("Phase 2: fine search around best parameters...")
-    fine_grids = {
-        name: _build_grid(PARAM_RANGES[name], "fine", center=best_params[name])
-        for name in names
-    }
-    fine_combos = list(
-        itertools.product(*(fine_grids[n] for n in names))
+    # -- Objective that runs in the main process but farms backtest to pool --
+    pool = ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker,
+        initargs=(portfolio, price_data, start, end),
     )
-    ret2, params2, bh2, train2, test2 = _run_parallel(fine_combos, *shared)
-    if ret2 > best_return:
-        best_return, best_params, best_bh, best_train, best_test = (
-            ret2, params2, bh2, train2, test2
-        )
-    log(f"  Phase 2 best: {best_return:.2%}")
 
-    trials_total = len(all_combos) + len(fine_combos)
+    trials_done = 0
+
+    def objective(trial: optuna.Trial) -> float:
+        nonlocal trials_done
+
+        strategy_params: dict[str, dict[str, float]] = {}
+        for name in names:
+            strategy_params[name] = _suggest_params(
+                trial, name, PARAM_RANGES[name],
+            )
+
+        total_ret, bh_ret, train_ret, test_ret = pool.submit(
+            _trial_worker, strategy_params,
+        ).result()
+
+        # Store auxiliary metrics as user attributes for later retrieval.
+        trial.set_user_attr("bh_return", bh_ret)
+        trial.set_user_attr("train_return", train_ret)
+        trial.set_user_attr("test_return", test_ret)
+        trial.set_user_attr("params", strategy_params)
+
+        trials_done += 1
+        if trials_done % 25 == 0 or trials_done == n_trials:
+            log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
+
+        return total_ret
+
+    try:
+        study.optimize(objective, n_trials=n_trials)
+    finally:
+        pool.shutdown(wait=False)
+
+    best = study.best_trial
+    best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
+
+    log(f"Best return: {best.value:.2%} in {len(study.trials)} trials")
 
     return OptimizeResult(
         best_params=best_params,
-        best_return=round(best_return, 4),
-        best_bh_return=round(best_bh, 4),
-        best_train_return=round(best_train, 4),
-        best_test_return=round(best_test, 4),
-        trials_run=trials_total,
+        best_return=round(best.value, 4),
+        best_bh_return=round(best.user_attrs["bh_return"], 4),
+        best_train_return=round(best.user_attrs["train_return"], 4),
+        best_test_return=round(best.user_attrs["test_return"], 4),
+        trials_run=len(study.trials),
     )
 
 

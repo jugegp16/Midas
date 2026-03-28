@@ -205,14 +205,19 @@ def live(
     "--output", "-o", default="optimized_strategies.yaml",
     help="Output YAML path.",
 )
+@click.option(
+    "--n-trials", "-n", default=200, show_default=True,
+    help="Number of Optuna optimisation trials.",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
     start: date,
     end: date,
     output: str,
+    n_trials: int,
 ) -> None:
-    """Find optimal strategy parameters via grid search."""
+    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import optimize as run_optimize
     from midas.optimizer import write_strategies_yaml
 
@@ -232,6 +237,7 @@ def optimize(
         start=start_d,
         end=end_d,
         strategy_names=strategy_names,
+        n_trials=n_trials,
         log_fn=print_status,
     )
 
