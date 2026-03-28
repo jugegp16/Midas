@@ -55,15 +55,14 @@ def load_portfolio(path: Path) -> tuple[PortfolioConfig, AllocationConstraints]:
             round_trip_days=int(tr.get("round_trip_days", 0)),
         )
 
-    # Parse allocation constraints
+    # Parse portfolio-level allocation constraints (position/cash limits).
+    # sigmoid_steepness and rebalance_threshold live in strategies.yaml.
     constraints = AllocationConstraints()
     if "allocation_constraints" in raw:
         ac = raw["allocation_constraints"]
         constraints = AllocationConstraints(
             max_position_pct=ac.get("max_position_pct"),
             min_cash_pct=float(ac.get("min_cash_pct", 0.05)),
-            rebalance_threshold=float(ac.get("rebalance_threshold", 0.02)),
-            sigmoid_steepness=float(ac.get("sigmoid_steepness", 2.0)),
         )
 
     portfolio = PortfolioConfig(
@@ -76,7 +75,15 @@ def load_portfolio(path: Path) -> tuple[PortfolioConfig, AllocationConstraints]:
     return portfolio, constraints
 
 
-def load_strategies(path: Path) -> list[StrategyConfig]:
+def load_strategies(
+    path: Path,
+) -> tuple[list[StrategyConfig], AllocationConstraints]:
+    """Load strategy configs and allocation-level knobs from YAML.
+
+    Returns (strategies, constraints) tuple.  sigmoid_steepness and
+    rebalance_threshold live at the top level of the strategies file
+    because they are meta-strategy knobs (how scores are blended/acted on).
+    """
     raw = _load_yaml(path)
     configs = []
     for s in raw["strategies"]:
@@ -87,7 +94,12 @@ def load_strategies(path: Path) -> list[StrategyConfig]:
             weight=float(s.get("weight", 1.0)),
             veto_threshold=float(s.get("veto_threshold", -0.5)),
         ))
-    return configs
+
+    constraints = AllocationConstraints(
+        sigmoid_steepness=float(raw.get("sigmoid_steepness", 2.0)),
+        rebalance_threshold=float(raw.get("rebalance_threshold", 0.02)),
+    )
+    return configs, constraints
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

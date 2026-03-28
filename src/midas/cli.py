@@ -23,6 +23,20 @@ from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
 
 
+def _merge_constraints(
+    portfolio: AllocationConstraints,
+    strategy: AllocationConstraints,
+) -> AllocationConstraints:
+    """Merge portfolio-level constraints (position/cash) with strategy-level
+    constraints (sigmoid/rebalance)."""
+    return AllocationConstraints(
+        max_position_pct=portfolio.max_position_pct,
+        min_cash_pct=portfolio.min_cash_pct,
+        sigmoid_steepness=strategy.sigmoid_steepness,
+        rebalance_threshold=strategy.rebalance_threshold,
+    )
+
+
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
     cls = STRATEGY_REGISTRY.get(cfg.name)
     if cls is None:
@@ -118,8 +132,12 @@ def backtest(
     no_split: bool,
 ) -> None:
     """Run a backtest over historical data."""
-    port, constraints = load_portfolio(Path(portfolio))
-    strat_configs = load_strategies(Path(strategies)) if strategies else None
+    port, port_constraints = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints = (
+        load_strategies(Path(strategies)) if strategies
+        else (None, AllocationConstraints())
+    )
+    constraints = _merge_constraints(port_constraints, strat_constraints)
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
@@ -168,8 +186,12 @@ def live(
     """Run live analysis with real-time price polling."""
     from midas.live import LiveEngine
 
-    port, constraints = load_portfolio(Path(portfolio))
-    strat_configs = load_strategies(Path(strategies)) if strategies else None
+    port, port_constraints = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints = (
+        load_strategies(Path(strategies)) if strategies
+        else (None, AllocationConstraints())
+    )
+    constraints = _merge_constraints(port_constraints, strat_constraints)
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)

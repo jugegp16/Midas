@@ -30,6 +30,9 @@ _INT_PARAMS = {
 # _veto_threshold: veto threshold for protective strategies.
 _META_PARAMS = {"_weight", "_veto_threshold"}
 
+# Synthetic key for global allocation knobs (sigmoid_steepness, rebalance_threshold).
+_GLOBAL_KEY = "_global"
+
 # Default parameter ranges per strategy.
 # Each entry: (min, max, step) — step used for discretisation.
 PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
@@ -92,6 +95,10 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
         "long_window": (40, 100, 10, 5),
         "_weight": (0.5, 3.0, 0.5, 0.25),
     },
+    _GLOBAL_KEY: {
+        "sigmoid_steepness": (1.0, 5.0, 1.0, 0.5),
+        "rebalance_threshold": (0.01, 0.05, 0.01, 0.005),
+    },
 }
 
 _DEFAULT_N_TRIALS = 200
@@ -136,11 +143,15 @@ def _run_trial(
 
     Returns (total_return, bh_return, train_return, test_return).
     """
+    # Extract global allocation knobs
+    global_params = strategy_params.get(_GLOBAL_KEY, {})
     conviction: list[tuple] = []
     protective: list[tuple] = []
     mechanical = []
 
     for name, params in strategy_params.items():
+        if name == _GLOBAL_KEY:
+            continue
         cls = STRATEGY_REGISTRY[name]
         # Separate meta-params from constructor params
         weight = params.get("_weight", 1.0)
@@ -161,7 +172,10 @@ def _run_trial(
 
     # Count tickers in portfolio
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
-    constraints = AllocationConstraints()
+    constraints = AllocationConstraints(
+        sigmoid_steepness=global_params.get("sigmoid_steepness", 2.0),
+        rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
+    )
 
     allocator = Allocator(conviction, protective, constraints, n_tickers)
     rebalancer = Rebalancer()
@@ -224,7 +238,9 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    names = strategy_names or list(PARAM_RANGES.keys())
+    names = strategy_names or [
+        k for k in PARAM_RANGES if k != _GLOBAL_KEY
+    ]
     # Filter to strategies that have defined ranges and are not MECHANICAL
     names = [
         n for n in names
@@ -235,6 +251,9 @@ def optimize(
     if not names:
         msg = "No optimizable strategies found"
         raise ValueError(msg)
+
+    # Always include global allocation knobs
+    names.append(_GLOBAL_KEY)
 
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
@@ -306,8 +325,17 @@ def write_strategies_yaml(
     params: dict[str, dict[str, float]], path: str
 ) -> None:
     """Write optimized parameters to a strategies YAML file."""
+    output: dict[str, object] = {}
+
+    # Emit global allocation knobs as top-level keys
+    if _GLOBAL_KEY in params:
+        for k, v in params[_GLOBAL_KEY].items():
+            output[k] = round(v, 4)
+
     strategies = []
     for name, p in params.items():
+        if name == _GLOBAL_KEY:
+            continue
         entry: dict[str, object] = {"name": name}
         clean_params: dict[str, object] = {}
         for k, v in p.items():
@@ -323,5 +351,7 @@ def write_strategies_yaml(
             entry["params"] = clean_params
         strategies.append(entry)
 
+    output["strategies"] = strategies
+
     with open(path, "w") as f:
-        yaml.dump({"strategies": strategies}, f, default_flow_style=False)
+        yaml.dump(output, f, default_flow_style=False)

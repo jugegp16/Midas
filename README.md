@@ -41,14 +41,15 @@ cash_infusion:
 allocation_constraints:
   # max_position_pct: 0.20  # omit to auto-compute from portfolio size
   min_cash_pct: 0.05        # always keep 5% cash
-  rebalance_threshold: 0.02 # ignore weight diffs smaller than 2%
-  sigmoid_steepness: 2.0    # higher = more aggressive response to conviction
 ```
 
 ### Strategies
 
 ```yaml
 # strategies.yaml
+sigmoid_steepness: 2.0        # how aggressively the allocator responds to conviction
+rebalance_threshold: 0.02     # ignore weight diffs smaller than 2%
+
 strategies:
   - name: MeanReversion
     weight: 1.5              # blending influence (conviction strategies only)
@@ -74,11 +75,15 @@ Each strategy has an intrinsic tier determined by its class:
 
 **Strategy knobs:**
 
-| Field | Applies to | Default | Description |
-|-------|-----------|---------|-------------|
+| Field | Scope | Default | Description |
+|-------|-------|---------|-------------|
+| `sigmoid_steepness` | Global | 2.0 | Controls how aggressively the allocator responds to conviction scores. Higher = more extreme position sizes |
+| `rebalance_threshold` | Global | 0.02 | Minimum weight diff to trigger a rebalance trade. Higher = fewer, larger trades |
 | `weight` | CONVICTION only | 1.0 | How much influence this strategy has in the blended score. Higher = more influence relative to other strategies. Ignored for PROTECTIVE and MECHANICAL strategies |
 | `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0.0. Lower (e.g. -0.8) = only veto on extreme conviction. Higher (e.g. -0.3) = veto more easily. Ignored for CONVICTION and MECHANICAL strategies |
 | `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
+
+All knobs are tunable by the optimizer.
 
 To add a strategy: implement the `Strategy` base class and register it in `strategies/__init__.py`.
 
@@ -91,6 +96,8 @@ The optimizer runs a two-phase grid search (coarse then fine) over all tunable p
 | Strategy parameters | When a strategy fires and how strong | `window`, `threshold`, `loss_threshold` |
 | Strategy weights | How much influence each conviction strategy has in the blend | `_weight: 0.5` to `3.0` |
 | Veto thresholds | When a protective strategy overrides the blend | `_veto_threshold: -0.8` to `-0.2` |
+| Sigmoid steepness | How aggressively the allocator responds to conviction | `sigmoid_steepness: 1.0` to `5.0` |
+| Rebalance threshold | Minimum weight diff to trigger a trade | `rebalance_threshold: 0.01` to `0.05` |
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a `strategies.yaml` with optimized `params`, `weight`, and `veto_threshold` per strategy.
 
