@@ -14,7 +14,6 @@ from midas.models import (
     Holding,
     PortfolioConfig,
     StrategyConfig,
-    StrategyTier,
     TradingRestrictions,
 )
 
@@ -81,14 +80,11 @@ def load_strategies(path: Path) -> list[StrategyConfig]:
     raw = _load_yaml(path)
     configs = []
     for s in raw["strategies"]:
-        tier_str = s.get("tier", "conviction")
-        tier = StrategyTier(tier_str)
         configs.append(StrategyConfig(
             name=s["name"],
             params=s.get("params", {}),
             tickers=s.get("tickers"),
             weight=float(s.get("weight", 1.0)),
-            tier=tier,
             veto_threshold=float(s.get("veto_threshold", -0.5)),
         ))
     return configs

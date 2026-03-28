@@ -25,55 +25,72 @@ _INT_PARAMS = {
     "frequency_days",
 }
 
+# Meta-params prefixed with _ are not passed to the strategy constructor.
+# _weight: blending weight for conviction strategies.
+# _veto_threshold: veto threshold for protective strategies.
+_META_PARAMS = {"_weight", "_veto_threshold"}
+
 # Default parameter ranges per strategy.
 # Each entry: (min, max, coarse_step, fine_step)
 PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "MeanReversion": {
         "window": (10, 100, 10, 5),
         "threshold": (0.03, 0.25, 0.03, 0.01),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "ProfitTaking": {
         "gain_threshold": (0.10, 0.80, 0.10, 0.03),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "Momentum": {
         "window": (5, 50, 5, 2),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "RSIOversold": {
         "window": (7, 28, 7, 2),
         "oversold_threshold": (15.0, 40.0, 5.0, 2.0),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "RSIOverbought": {
         "window": (7, 28, 7, 2),
         "overbought_threshold": (60.0, 85.0, 5.0, 2.0),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "BollingerBand": {
         "window": (10, 50, 10, 5),
         "num_std": (1.5, 3.0, 0.5, 0.25),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "MACDCrossover": {
         "fast_period": (8, 16, 4, 2),
         "slow_period": (20, 32, 4, 2),
         "signal_period": (5, 13, 4, 2),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "DollarCostAveraging": {
         "frequency_days": (5, 30, 5, 2),
     },
     "GapDownRecovery": {
         "gap_threshold": (0.02, 0.08, 0.02, 0.005),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "TrailingStop": {
         "trail_pct": (0.05, 0.25, 0.05, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.2, 0.1),
     },
     "StopLoss": {
         "loss_threshold": (0.05, 0.25, 0.05, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.2, 0.1),
     },
     "VWAPReversion": {
         "window": (10, 50, 10, 5),
         "threshold": (0.01, 0.05, 0.01, 0.005),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
     "MovingAverageCrossover": {
         "short_window": (10, 30, 5, 2),
         "long_window": (40, 100, 10, 5),
+        "_weight": (0.5, 3.0, 0.5, 0.25),
     },
 }
 
@@ -138,17 +155,22 @@ def _run_trial(
 
     for name, params in strategy_params.items():
         cls = STRATEGY_REGISTRY[name]
+        # Separate meta-params from constructor params
+        weight = params.get("_weight", 1.0)
+        veto_threshold = params.get("_veto_threshold", -0.5)
         clean_params = {
-            k: int(v) if k in _INT_PARAMS else v for k, v in params.items()
+            k: int(v) if k in _INT_PARAMS else v
+            for k, v in params.items()
+            if k not in _META_PARAMS
         }
         strategy = cls(**clean_params)
 
         if strategy.tier == StrategyTier.PROTECTIVE:
-            protective.append((strategy, -0.5))  # default veto threshold
+            protective.append((strategy, veto_threshold))
         elif strategy.tier == StrategyTier.MECHANICAL:
             mechanical.append(strategy)
         else:
-            conviction.append((strategy, 1.0))  # uniform weight
+            conviction.append((strategy, weight))
 
     # Count tickers in portfolio
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
@@ -297,10 +319,20 @@ def write_strategies_yaml(
     """Write optimized parameters to a strategies YAML file."""
     strategies = []
     for name, p in params.items():
-        clean = {}
+        entry: dict[str, object] = {"name": name}
+        clean_params: dict[str, object] = {}
         for k, v in p.items():
-            clean[k] = int(v) if k in _INT_PARAMS else round(v, 4)
-        strategies.append({"name": name, "params": clean})
+            if k == "_weight":
+                entry["weight"] = round(v, 4)
+            elif k == "_veto_threshold":
+                entry["veto_threshold"] = round(v, 4)
+            elif k in _INT_PARAMS:
+                clean_params[k] = int(v)
+            else:
+                clean_params[k] = round(v, 4)
+        if clean_params:
+            entry["params"] = clean_params
+        strategies.append(entry)
 
     with open(path, "w") as f:
         yaml.dump({"strategies": strategies}, f, default_flow_style=False)

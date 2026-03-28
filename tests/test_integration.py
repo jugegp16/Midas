@@ -63,9 +63,9 @@ def test_full_pipeline(tmp_path: Path) -> None:
     for cfg in strat_configs:
         cls = STRATEGY_REGISTRY[cfg.name]
         strategy = cls(**cfg.params)
-        if cfg.tier == StrategyTier.PROTECTIVE:
+        if strategy.tier == StrategyTier.PROTECTIVE:
             protective.append((strategy, cfg.veto_threshold))
-        elif cfg.tier == StrategyTier.MECHANICAL:
+        elif strategy.tier == StrategyTier.MECHANICAL:
             mechanical.append(strategy)
         else:
             conviction.append((strategy, cfg.weight))

@@ -50,12 +50,10 @@ def _build_components(
 
     for cfg in configs:
         strategy = _build_strategy(cfg)
-        # Use tier from config, falling back to strategy's default
-        tier = cfg.tier
 
-        if tier == StrategyTier.PROTECTIVE:
+        if strategy.tier == StrategyTier.PROTECTIVE:
             protective.append((strategy, cfg.veto_threshold))
-        elif tier == StrategyTier.MECHANICAL:
+        elif strategy.tier == StrategyTier.MECHANICAL:
             mechanical.append(strategy)
         else:
             conviction.append((strategy, cfg.weight))

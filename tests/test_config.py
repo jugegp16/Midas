@@ -7,7 +7,6 @@ import pytest
 import yaml
 
 from midas.config import load_portfolio, load_strategies
-from midas.models import StrategyTier
 
 
 @pytest.fixture
@@ -41,13 +40,11 @@ def strategy_yaml(tmp_path: Path) -> Path:
             {
                 "name": "MeanReversion",
                 "weight": 1.5,
-                "tier": "conviction",
                 "params": {"window": 20, "threshold": 0.08},
             },
             {
                 "name": "StopLoss",
                 "weight": 3.0,
-                "tier": "protective",
                 "veto_threshold": -0.4,
                 "params": {"loss_threshold": 0.10},
             },
@@ -97,14 +94,12 @@ def test_load_strategies(strategy_yaml: Path) -> None:
     assert configs[0].name == "MeanReversion"
     assert configs[0].params["window"] == 20
     assert configs[0].weight == 1.5
-    assert configs[0].tier == StrategyTier.CONVICTION
 
     assert configs[1].name == "StopLoss"
     assert configs[1].weight == 3.0
-    assert configs[1].tier == StrategyTier.PROTECTIVE
     assert configs[1].veto_threshold == -0.4
 
     assert configs[2].name == "Momentum"
     assert configs[2].params == {}
     assert configs[2].weight == 1.0  # default
-    assert configs[2].tier == StrategyTier.CONVICTION  # default
+    assert configs[2].veto_threshold == -0.5  # default

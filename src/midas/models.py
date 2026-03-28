@@ -116,5 +116,4 @@ class StrategyConfig:
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
     weight: float = 1.0
-    tier: StrategyTier = StrategyTier.CONVICTION
     veto_threshold: float = -0.5

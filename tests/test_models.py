@@ -96,5 +96,4 @@ def test_mechanical_intent() -> None:
 def test_strategy_config_defaults() -> None:
     cfg = StrategyConfig(name="TestStrategy")
     assert cfg.weight == 1.0
-    assert cfg.tier == StrategyTier.CONVICTION
     assert cfg.veto_threshold == -0.5
