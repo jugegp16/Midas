@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from midas.models import AllocationConstraints
+from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
 from midas.strategies.base import Strategy
 
 log = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class Allocator:
         # Auto-compute max_position_pct if not set
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)
         if constraints.max_position_pct is None:
-            self._max_position_pct = min(0.25, 2.5 * equal_weight)
+            self._max_position_pct = min(DEFAULT_MAX_POSITION_PCT, 2.5 * equal_weight)
         else:
             self._max_position_pct = constraints.max_position_pct
             if constraints.max_position_pct < 1.5 * equal_weight:

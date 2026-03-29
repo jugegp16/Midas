@@ -14,11 +14,14 @@ from midas.models import (
     OrderContext,
 )
 
+DEFAULT_SLIPPAGE = 0.0005  # 0.05%
+DEFAULT_CIRCUIT_BREAKER_PCT = 0.25  # max 25% of portfolio value per day
+
 
 @dataclass
 class RebalancerConfig:
-    default_slippage: float = 0.0005  # 0.05%
-    circuit_breaker_pct: float = 0.25  # max 25% of portfolio value per day
+    default_slippage: float = DEFAULT_SLIPPAGE
+    circuit_breaker_pct: float = DEFAULT_CIRCUIT_BREAKER_PCT
 
 
 class Rebalancer:

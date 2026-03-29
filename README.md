@@ -37,10 +37,6 @@ cash_infusion:
   amount: 1500.00
   next_date: 2026-04-03
   frequency: biweekly
-
-allocation_constraints:
-  # max_position_pct: 0.20  # omit to auto-compute from portfolio size
-  min_cash_pct: 0.05        # always keep 5% cash
 ```
 
 ### Strategies
@@ -49,6 +45,8 @@ allocation_constraints:
 # strategies.yaml
 sigmoid_steepness: 2.0        # how aggressively the allocator responds to conviction
 rebalance_threshold: 0.02     # ignore weight diffs smaller than 2%
+min_cash_pct: 0.05            # always keep 5% cash
+# max_position_pct: 0.20      # omit to auto-compute from portfolio size
 
 strategies:
   - name: MeanReversion
@@ -79,6 +77,8 @@ Each strategy has an intrinsic tier determined by its class:
 |-------|-------|---------|-------------|
 | `sigmoid_steepness` | Global | 2.0 | Controls how aggressively the allocator responds to conviction scores. Higher = more extreme position sizes |
 | `rebalance_threshold` | Global | 0.02 | Minimum weight diff to trigger a rebalance trade. Higher = fewer, larger trades |
+| `min_cash_pct` | Global | 0.05 | Minimum cash allocation as a fraction of portfolio value. Higher = more conservative |
+| `max_position_pct` | Global | auto | Maximum weight for any single position. Omit to auto-compute from portfolio size |
 | `weight` | CONVICTION only | 1.0 | How much influence this strategy has in the blended score. Higher = more influence relative to other strategies. Ignored for PROTECTIVE and MECHANICAL strategies |
 | `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0.0. Lower (e.g. -0.8) = only veto on extreme conviction. Higher (e.g. -0.3) = veto more easily. Ignored for CONVICTION and MECHANICAL strategies |
 | `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
@@ -98,6 +98,8 @@ The optimizer runs a two-phase grid search (coarse then fine) over all tunable p
 | Veto thresholds | When a protective strategy overrides the blend | `_veto_threshold: -0.8` to `-0.2` |
 | Sigmoid steepness | How aggressively the allocator responds to conviction | `sigmoid_steepness: 1.0` to `5.0` |
 | Rebalance threshold | Minimum weight diff to trigger a trade | `rebalance_threshold: 0.01` to `0.05` |
+| Min cash % | Minimum cash reserve as fraction of portfolio | `min_cash_pct: 0.02` to `0.15` |
+| Max position % | Maximum weight for any single position | `max_position_pct: 0.15` to `0.50` |
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a `strategies.yaml` with optimized `params`, `weight`, and `veto_threshold` per strategy.
 

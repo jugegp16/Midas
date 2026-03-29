@@ -102,12 +102,18 @@ class TradingRestrictions:
     round_trip_days: int = 0  # 0 = no restriction
 
 
+DEFAULT_MIN_CASH_PCT = 0.05
+DEFAULT_REBALANCE_THRESHOLD = 0.02
+DEFAULT_SIGMOID_STEEPNESS = 2.0
+DEFAULT_MAX_POSITION_PCT = 0.25
+
+
 @dataclass(frozen=True)
 class AllocationConstraints:
     max_position_pct: float | None = None
-    min_cash_pct: float = 0.05
-    rebalance_threshold: float = 0.02
-    sigmoid_steepness: float = 2.0
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT
+    rebalance_threshold: float = DEFAULT_REBALANCE_THRESHOLD
+    sigmoid_steepness: float = DEFAULT_SIGMOID_STEEPNESS
 
 
 @dataclass

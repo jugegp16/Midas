@@ -9,7 +9,7 @@ import click
 import pandas as pd
 
 from midas.allocator import Allocator
-from midas.backtest import BacktestEngine, write_backtest_csv
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, write_backtest_csv
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.models import (
@@ -21,20 +21,6 @@ from midas.models import (
 from midas.output import print_backtest_summary, print_status, print_strategy_table
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
-
-
-def _merge_constraints(
-    portfolio: AllocationConstraints,
-    strategy: AllocationConstraints,
-) -> AllocationConstraints:
-    """Merge portfolio-level constraints (position/cash) with strategy-level
-    constraints (sigmoid/rebalance)."""
-    return AllocationConstraints(
-        max_position_pct=portfolio.max_position_pct,
-        min_cash_pct=portfolio.min_cash_pct,
-        sigmoid_steepness=strategy.sigmoid_steepness,
-        rebalance_threshold=strategy.rebalance_threshold,
-    )
 
 
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
@@ -120,7 +106,10 @@ def cli() -> None:
     "--output", "-o", default="backtest_results.csv",
     help="Output CSV path.",
 )
-@click.option("--train-pct", default=0.70, help="Train/test split ratio (0-1).")
+@click.option(
+    "--train-pct", default=DEFAULT_TRAIN_PCT,
+    help="Train/test split ratio (0-1).",
+)
 @click.option("--no-split", is_flag=True, help="Disable train/test split.")
 def backtest(
     portfolio: str,
@@ -132,12 +121,11 @@ def backtest(
     no_split: bool,
 ) -> None:
     """Run a backtest over historical data."""
-    port, port_constraints = load_portfolio(Path(portfolio))
-    strat_configs, strat_constraints = (
+    port = load_portfolio(Path(portfolio))
+    strat_configs, constraints = (
         load_strategies(Path(strategies)) if strategies
         else (None, AllocationConstraints())
     )
-    constraints = _merge_constraints(port_constraints, strat_constraints)
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
@@ -186,12 +174,11 @@ def live(
     """Run live analysis with real-time price polling."""
     from midas.live import LiveEngine
 
-    port, port_constraints = load_portfolio(Path(portfolio))
-    strat_configs, strat_constraints = (
+    port = load_portfolio(Path(portfolio))
+    strat_configs, constraints = (
         load_strategies(Path(strategies)) if strategies
         else (None, AllocationConstraints())
     )
-    constraints = _merge_constraints(port_constraints, strat_constraints)
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
@@ -243,12 +230,14 @@ def optimize(
     from midas.optimizer import optimize as run_optimize
     from midas.optimizer import write_strategies_yaml
 
-    port, _constraints = load_portfolio(Path(portfolio))
+    port = load_portfolio(Path(portfolio))
 
     strategy_names: list[str] | None = None
+    min_cash_pct = AllocationConstraints().min_cash_pct
     if strategies:
-        strat_configs = load_strategies(Path(strategies))
+        strat_configs, strat_constraints = load_strategies(Path(strategies))
         strategy_names = [c.name for c in strat_configs]
+        min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
@@ -260,10 +249,11 @@ def optimize(
         end=end_d,
         strategy_names=strategy_names,
         n_trials=n_trials,
+        min_cash_pct=min_cash_pct,
         log_fn=print_status,
     )
 
-    write_strategies_yaml(result.best_params, output)
+    write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
     print_status(f"Optimized strategies written to {output}")
 
     from rich.table import Table

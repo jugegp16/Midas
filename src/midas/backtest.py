@@ -65,6 +65,9 @@ class _SimState:
     restriction_tracker: RestrictionTracker | None = None
 
 
+DEFAULT_TRAIN_PCT = 0.70
+
+
 class BacktestEngine:
     def __init__(
         self,
@@ -72,7 +75,7 @@ class BacktestEngine:
         rebalancer: Rebalancer,
         mechanical_strategies: list[Strategy] | None = None,
         constraints: AllocationConstraints | None = None,
-        train_pct: float = 0.70,
+        train_pct: float = DEFAULT_TRAIN_PCT,
         enable_split: bool = True,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:

@@ -9,6 +9,9 @@ from typing import Any
 import yaml
 
 from midas.models import (
+    DEFAULT_MIN_CASH_PCT,
+    DEFAULT_REBALANCE_THRESHOLD,
+    DEFAULT_SIGMOID_STEEPNESS,
     AllocationConstraints,
     CashInfusion,
     Holding,
@@ -18,7 +21,7 @@ from midas.models import (
 )
 
 
-def load_portfolio(path: Path) -> tuple[PortfolioConfig, AllocationConstraints]:
+def load_portfolio(path: Path) -> PortfolioConfig:
     """Load portfolio config and allocation constraints from YAML.
 
     Returns (portfolio, constraints) tuple.
@@ -55,16 +58,6 @@ def load_portfolio(path: Path) -> tuple[PortfolioConfig, AllocationConstraints]:
             round_trip_days=int(tr.get("round_trip_days", 0)),
         )
 
-    # Parse portfolio-level allocation constraints (position/cash limits).
-    # sigmoid_steepness and rebalance_threshold live in strategies.yaml.
-    constraints = AllocationConstraints()
-    if "allocation_constraints" in raw:
-        ac = raw["allocation_constraints"]
-        constraints = AllocationConstraints(
-            max_position_pct=ac.get("max_position_pct"),
-            min_cash_pct=float(ac.get("min_cash_pct", 0.05)),
-        )
-
     portfolio = PortfolioConfig(
         holdings=holdings,
         available_cash=float(raw["available_cash"]),
@@ -72,7 +65,7 @@ def load_portfolio(path: Path) -> tuple[PortfolioConfig, AllocationConstraints]:
         trading_restrictions=restrictions,
     )
 
-    return portfolio, constraints
+    return portfolio
 
 
 def load_strategies(
@@ -95,9 +88,16 @@ def load_strategies(
             veto_threshold=float(s.get("veto_threshold", -0.5)),
         ))
 
+    max_pos = raw.get("max_position_pct")
     constraints = AllocationConstraints(
-        sigmoid_steepness=float(raw.get("sigmoid_steepness", 2.0)),
-        rebalance_threshold=float(raw.get("rebalance_threshold", 0.02)),
+        max_position_pct=float(max_pos) if max_pos is not None else None,
+        min_cash_pct=float(raw.get("min_cash_pct", DEFAULT_MIN_CASH_PCT)),
+        sigmoid_steepness=float(
+            raw.get("sigmoid_steepness", DEFAULT_SIGMOID_STEEPNESS),
+        ),
+        rebalance_threshold=float(
+            raw.get("rebalance_threshold", DEFAULT_REBALANCE_THRESHOLD),
+        ),
     )
     return configs, constraints
 

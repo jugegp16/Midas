@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -14,7 +15,12 @@ import yaml
 
 from midas.allocator import Allocator
 from midas.backtest import BacktestEngine
-from midas.models import AllocationConstraints, PortfolioConfig, StrategyTier
+from midas.models import (
+    DEFAULT_MIN_CASH_PCT,
+    AllocationConstraints,
+    PortfolioConfig,
+    StrategyTier,
+)
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
 
@@ -34,74 +40,76 @@ _META_PARAMS = {"_weight", "_veto_threshold"}
 _GLOBAL_KEY = "_global"
 
 # Default parameter ranges per strategy.
-# Each entry: (min, max, step) — step used for discretisation.
-PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
+# Each entry: (min, max, step) — step used for Optuna discretisation.
+PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "MeanReversion": {
-        "window": (10, 100, 10, 5),
-        "threshold": (0.03, 0.25, 0.03, 0.01),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (10, 100, 5),
+        "threshold": (0.03, 0.25, 0.01),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "ProfitTaking": {
-        "gain_threshold": (0.10, 0.80, 0.10, 0.03),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "gain_threshold": (0.10, 0.80, 0.03),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "Momentum": {
-        "window": (5, 49, 5, 2),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (5, 50, 2),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "RSIOversold": {
-        "window": (7, 28, 7, 2),
-        "oversold_threshold": (15.0, 40.0, 5.0, 2.0),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (7, 28, 2),
+        "oversold_threshold": (15.0, 40.0, 2.0),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "RSIOverbought": {
-        "window": (7, 28, 7, 2),
-        "overbought_threshold": (60.0, 85.0, 5.0, 2.0),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (7, 28, 2),
+        "overbought_threshold": (60.0, 85.0, 2.0),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "BollingerBand": {
-        "window": (10, 50, 10, 5),
-        "num_std": (1.5, 3.0, 0.5, 0.25),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (10, 50, 5),
+        "num_std": (1.5, 3.0, 0.25),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "MACDCrossover": {
-        "fast_period": (8, 16, 4, 2),
-        "slow_period": (20, 32, 4, 2),
-        "signal_period": (5, 13, 4, 2),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "fast_period": (8, 16, 2),
+        "slow_period": (20, 40, 2),
+        "signal_period": (5, 13, 2),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "DollarCostAveraging": {
-        "frequency_days": (5, 30, 5, 2),
+        "frequency_days": (5, 30, 2),
     },
     "GapDownRecovery": {
-        "gap_threshold": (0.02, 0.08, 0.02, 0.005),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "gap_threshold": (0.02, 0.08, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "TrailingStop": {
-        "trail_pct": (0.05, 0.25, 0.05, 0.02),
-        "_veto_threshold": (-0.8, -0.2, 0.2, 0.1),
+        "trail_pct": (0.05, 0.25, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.1),
     },
     "StopLoss": {
-        "loss_threshold": (0.05, 0.25, 0.05, 0.02),
-        "_veto_threshold": (-0.8, -0.2, 0.2, 0.1),
+        "loss_threshold": (0.05, 0.25, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.1),
     },
     "VWAPReversion": {
-        "window": (10, 50, 10, 5),
-        "threshold": (0.01, 0.05, 0.01, 0.005),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "window": (10, 50, 5),
+        "threshold": (0.01, 0.05, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "MovingAverageCrossover": {
-        "short_window": (10, 30, 5, 2),
-        "long_window": (40, 100, 10, 5),
-        "_weight": (0.5, 3.0, 0.5, 0.25),
+        "short_window": (10, 30, 2),
+        "long_window": (40, 100, 5),
+        "_weight": (0.5, 3.0, 0.25),
     },
     _GLOBAL_KEY: {
-        "sigmoid_steepness": (1.0, 5.0, 1.0, 0.5),
-        "rebalance_threshold": (0.01, 0.05, 0.01, 0.005),
+        "sigmoid_steepness": (1.0, 5.0, 0.5),
+        "rebalance_threshold": (0.01, 0.05, 0.005),
+        # min_cash_pct is a user risk preference, not optimized
+        # max_position_pct is computed dynamically in optimize() from n_tickers
     },
 }
 
-_DEFAULT_N_TRIALS = 200
+DEFAULT_N_TRIALS = 200
 
 
 @dataclass
@@ -117,18 +125,18 @@ class OptimizeResult:
 def _suggest_params(
     trial: optuna.Trial,
     strategy_name: str,
-    ranges: dict[str, tuple[float, float, float, float]],
+    ranges: dict[str, tuple[float, float, float]],
 ) -> dict[str, float]:
     """Use Optuna trial to suggest parameter values for one strategy."""
     params: dict[str, float] = {}
-    for param, (lo, hi, _coarse_step, fine_step) in ranges.items():
+    for param, (lo, hi, step) in ranges.items():
         key = f"{strategy_name}__{param}"
         if param in _INT_PARAMS:
             params[param] = float(
-                trial.suggest_int(key, int(lo), int(hi), step=int(fine_step))
+                trial.suggest_int(key, int(lo), int(hi), step=int(step))
             )
         else:
-            params[param] = trial.suggest_float(key, lo, hi, step=fine_step)
+            params[param] = trial.suggest_float(key, lo, hi, step=step)
     return params
 
 
@@ -138,11 +146,16 @@ def _run_trial(
     price_data: dict[str, pd.Series],
     start: date,
     end: date,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
 ) -> tuple[float, float, float, float]:
     """Run a single backtest trial with the allocator+rebalancer system.
 
     Returns (total_return, bh_return, train_return, test_return).
     """
+    # Suppress allocator warnings during optimization — the optimizer explores
+    # boundary values that trigger heuristic warnings but are fine to evaluate.
+    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
+
     # Extract global allocation knobs
     global_params = strategy_params.get(_GLOBAL_KEY, {})
     conviction: list[tuple] = []
@@ -173,6 +186,8 @@ def _run_trial(
     # Count tickers in portfolio
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
     constraints = AllocationConstraints(
+        max_position_pct=global_params.get("max_position_pct"),
+        min_cash_pct=min_cash_pct,
         sigmoid_steepness=global_params.get("sigmoid_steepness", 2.0),
         rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
     )
@@ -210,9 +225,11 @@ def _init_worker(
     price_data: dict[str, pd.Series],
     start: date,
     end: date,
+    min_cash_pct: float,
 ) -> None:
     _worker_state.update(
-        portfolio=portfolio, price_data=price_data, start=start, end=end
+        portfolio=portfolio, price_data=price_data, start=start, end=end,
+        min_cash_pct=min_cash_pct,
     )
 
 
@@ -226,7 +243,8 @@ def optimize(
     start: date,
     end: date,
     strategy_names: list[str] | None = None,
-    n_trials: int = _DEFAULT_N_TRIALS,
+    n_trials: int = DEFAULT_N_TRIALS,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     log_fn: Callable[[str], None] | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
@@ -255,9 +273,29 @@ def optimize(
     # Always include global allocation knobs
     names.append(_GLOBAL_KEY)
 
+    # Compute max_position_pct range from portfolio size.
+    # Use midpoint of min_cash_pct range as estimate since it's co-optimized.
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    mid_cash = 0.085  # midpoint of min_cash_pct range (0.02-0.15)
+    equal_weight = (1.0 - mid_cash) / max(n_tickers, 1)
+    # Bounds match the allocator's warning thresholds: 1.5x-5x equal weight,
+    # clamped to [0.10, 0.80].
+    lo = max(round(1.5 * equal_weight, 2), 0.10)
+    hi = min(round(5.0 * equal_weight, 2), 0.80)
+    if lo >= hi:
+        lo, hi = 0.10, 0.80
+    step = round((hi - lo) / 8, 2) or 0.01
+    ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
+    ranges.setdefault(_GLOBAL_KEY, {})
+    ranges[_GLOBAL_KEY]["max_position_pct"] = (lo, hi, step)
+
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
     log(f"Optimizing {', '.join(names)} — {n_trials} trials ({max_workers} workers)")
+    log(
+        f"  max_position_pct range: {lo:.2f}-{hi:.2f}"
+        f" (equal weight: {equal_weight:.2f})"
+    )
 
     # Suppress Optuna's default logging (we provide our own via log_fn).
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -271,7 +309,7 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end),
+        initargs=(portfolio, price_data, start, end, min_cash_pct),
     )
 
     trials_done = 0
@@ -282,7 +320,7 @@ def optimize(
         strategy_params: dict[str, dict[str, float]] = {}
         for name in names:
             strategy_params[name] = _suggest_params(
-                trial, name, PARAM_RANGES[name],
+                trial, name, ranges[name],
             )
 
         total_ret, bh_ret, train_ret, test_ret = pool.submit(
@@ -322,7 +360,9 @@ def optimize(
 
 
 def write_strategies_yaml(
-    params: dict[str, dict[str, float]], path: str
+    params: dict[str, dict[str, float]],
+    path: str,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
 ) -> None:
     """Write optimized parameters to a strategies YAML file."""
     output: dict[str, object] = {}
@@ -331,6 +371,9 @@ def write_strategies_yaml(
     if _GLOBAL_KEY in params:
         for k, v in params[_GLOBAL_KEY].items():
             output[k] = round(v, 4)
+
+    # min_cash_pct is not optimized — preserve the user's configured value
+    output["min_cash_pct"] = round(min_cash_pct, 4)
 
     strategies = []
     for name, p in params.items():
