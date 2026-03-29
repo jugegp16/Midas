@@ -197,6 +197,7 @@ class Rebalancer:
                         target_weight=0.0,
                         current_weight=0.0,
                         reason=intent.reason,
+                        source=intent.source,
                     ),
                 ))
             else:
@@ -217,6 +218,7 @@ class Rebalancer:
                         target_weight=0.0,
                         current_weight=0.0,
                         reason=intent.reason,
+                        source=intent.source,
                     ),
                 ))
 
@@ -237,10 +239,16 @@ class Rebalancer:
             f"{action} {ticker}: target {target_weight:.1%} vs "
             f"current {current_weight:.1%} (blended score {blended:+.3f})"
         )
+        # Primary strategy = highest absolute contribution
+        source = (
+            max(contribs, key=lambda k: abs(contribs[k]))
+            if contribs else "Rebalancer"
+        )
         return OrderContext(
             contributions=contribs,
             blended_score=blended,
             target_weight=target_weight,
             current_weight=current_weight,
             reason=reason,
+            source=source,
         )

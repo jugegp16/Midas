@@ -4,6 +4,7 @@ from datetime import date
 
 import pandas as pd
 import pytest
+from conftest import make_price_series
 
 from midas.models import Holding, PortfolioConfig
 from midas.optimizer import (
@@ -12,7 +13,6 @@ from midas.optimizer import (
     optimize,
     write_strategies_yaml,
 )
-from conftest import make_price_series
 
 
 def _make_optimizer_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date, date]:

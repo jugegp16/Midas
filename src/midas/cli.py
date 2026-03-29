@@ -190,9 +190,9 @@ def live(
         portfolio=port,
         allocator=allocator,
         rebalancer=rebalancer,
+        provider=provider,
         mechanical_strategies=mechanical,
         constraints=constraints,
-        provider=provider,
         poll_interval=interval,
         dry_run=dry_run,
     )

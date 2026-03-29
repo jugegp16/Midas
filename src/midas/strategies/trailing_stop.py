@@ -19,7 +19,6 @@ class TrailingStop(Strategy):
 
     def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         *,
         cost_basis: float | None = None,

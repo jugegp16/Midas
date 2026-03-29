@@ -15,7 +15,6 @@ class Momentum(Strategy):
 
     def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
     ) -> float | None:

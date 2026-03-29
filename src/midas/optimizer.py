@@ -23,6 +23,7 @@ from midas.models import (
 )
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
+from midas.strategies.base import Strategy
 
 # Parameters that should be cast to int when building strategy instances.
 _INT_PARAMS = {
@@ -158,9 +159,9 @@ def _run_trial(
 
     # Extract global allocation knobs
     global_params = strategy_params.get(_GLOBAL_KEY, {})
-    conviction: list[tuple] = []
-    protective: list[tuple] = []
-    mechanical = []
+    conviction: list[tuple[Strategy, float]] = []
+    protective: list[tuple[Strategy, float]] = []
+    mechanical: list[Strategy] = []
 
     for name, params in strategy_params.items():
         if name == _GLOBAL_KEY:

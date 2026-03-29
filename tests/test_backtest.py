@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+from conftest import make_price_series
 
 from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
@@ -11,7 +12,6 @@ from midas.models import AllocationConstraints, Direction, Holding, PortfolioCon
 from midas.rebalancer import Rebalancer
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
-from conftest import make_price_series
 
 
 def _build_engine(

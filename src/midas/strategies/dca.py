@@ -26,7 +26,6 @@ class DollarCostAveraging(Strategy):
 
     def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
     ) -> float | None:
@@ -52,6 +51,7 @@ class DollarCostAveraging(Strategy):
                     f"{ticker} DCA trigger: {self._frequency_days}-day "
                     f"interval reached at ${current:.2f}"
                 ),
+                source=self.name,
             )]
         return []
 

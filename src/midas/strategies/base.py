@@ -19,11 +19,10 @@ class Strategy(ABC):
     @abstractmethod
     def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
     ) -> float | None:
-        """Return conviction score for *ticker*.
+        """Return conviction score.
 
         Positive = bullish, negative = bearish, 0 = neutral, None = abstain.
         Typically in [-1, +1].

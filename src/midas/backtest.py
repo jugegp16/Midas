@@ -420,13 +420,7 @@ class BacktestEngine:
         state: _SimState,
     ) -> TradeRecord | None:
         ticker = order.ticker
-        # Determine strategy name from context contributions
-        contribs = order.context.contributions
-        if contribs:
-            strategy_name = max(contribs, key=lambda k: abs(contribs[k]))
-        else:
-            reason = order.context.reason
-            strategy_name = reason.split()[0] if reason else "Unknown"
+        strategy_name = order.context.source
 
         if order.direction == Direction.BUY:
             state.positions[ticker] = state.positions.get(ticker, 0) + order.shares

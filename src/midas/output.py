@@ -28,13 +28,8 @@ def print_alert(
     color = "green" if order.direction == Direction.BUY else "red"
     prefix = "[DRY RUN] " if dry_run else ""
 
-    # Derive strategy attribution from context
     ctx = order.context
-    contribs = ctx.contributions
-    if contribs:
-        dominant = max(contribs, key=lambda k: abs(contribs[k]))
-    else:
-        dominant = "Rebalancer"
+    dominant = ctx.source
 
     lines = [
         f"[bold]{order.ticker}[/bold] — ${order.price:,.2f}",

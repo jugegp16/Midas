@@ -28,9 +28,9 @@ class LiveEngine:
         portfolio: PortfolioConfig,
         allocator: Allocator,
         rebalancer: Rebalancer,
+        provider: DataProvider,
         mechanical_strategies: list[Strategy] | None = None,
         constraints: AllocationConstraints | None = None,
-        provider: DataProvider | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
         history_days: int = 60,
@@ -71,8 +71,6 @@ class LiveEngine:
         end = today
         start = end - timedelta(days=self._history_days)
         price_data: dict[str, pd.Series] = {}
-        if self._provider is None:
-            return
         for ticker in tickers:
             try:
                 price_data[ticker] = self._provider.get_history(ticker, start, end)

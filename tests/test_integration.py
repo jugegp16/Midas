@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import yaml
+from conftest import make_price_series
 
 from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
@@ -11,7 +12,6 @@ from midas.config import load_portfolio, load_strategies
 from midas.models import Direction, StrategyTier
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
-from conftest import make_price_series
 
 
 def test_full_pipeline(tmp_path: Path) -> None:

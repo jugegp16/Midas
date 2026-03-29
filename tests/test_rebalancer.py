@@ -154,6 +154,7 @@ class TestSizeMechanical:
             direction=Direction.BUY,
             target_value=500.0,
             reason="DCA trigger",
+            source="DollarCostAveraging",
         )
         orders = r.size_mechanical([intent], cash=1000.0, prices={"VOO": 100.0})
         assert len(orders) == 1
@@ -169,6 +170,7 @@ class TestSizeMechanical:
             direction=Direction.BUY,
             target_value=5000.0,
             reason="DCA trigger",
+            source="DollarCostAveraging",
         )
         orders = r.size_mechanical([intent], cash=200.0, prices={"VOO": 100.0})
         assert len(orders) == 1

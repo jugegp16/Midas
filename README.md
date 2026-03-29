@@ -61,6 +61,7 @@ strategies:
   - name: DollarCostAveraging
     params:
       frequency_days: 14
+      amount: 500.00        # dollar amount per DCA buy
 ```
 
 Each strategy has an intrinsic tier determined by its class:
@@ -89,7 +90,7 @@ To add a strategy: implement the `Strategy` base class and register it in `strat
 
 ## Optimizer
 
-The optimizer runs a two-phase grid search (coarse then fine) over all tunable parameters. It tunes three layers jointly:
+The optimizer uses Bayesian optimisation (Optuna TPE) to search over all tunable parameters. It tunes the following layers jointly:
 
 | Layer | What it controls | Examples |
 |-------|-----------------|----------|

@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
-
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_REBALANCE_THRESHOLD = 0.02
 DEFAULT_SIGMOID_STEEPNESS = 2.0
@@ -72,6 +71,7 @@ class OrderContext:
     target_weight: float
     current_weight: float
     reason: str
+    source: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,7 @@ class MechanicalIntent:
     direction: Direction
     target_value: float
     reason: str
+    source: str
 
 
 @dataclass(frozen=True)

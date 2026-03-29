@@ -43,6 +43,7 @@ def test_order_frozen() -> None:
         target_weight=0.10,
         current_weight=0.05,
         reason="test buy",
+        source="TestStrategy",
     )
     order = Order(
         ticker="VOO",
@@ -89,6 +90,7 @@ def test_mechanical_intent() -> None:
         direction=Direction.BUY,
         target_value=500.0,
         reason="DCA",
+        source="DollarCostAveraging",
     )
     assert intent.target_value == 500.0
 

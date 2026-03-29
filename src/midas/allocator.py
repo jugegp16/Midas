@@ -130,7 +130,7 @@ class Allocator:
             weight_total = 0.0
 
             for entry in self._conviction:
-                s = entry.strategy.score(ticker, prices, **ticker_ctx)
+                s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None:
                     ticker_contributions[entry.strategy.name] = s
                     weighted_sum += entry.weight * s
@@ -155,7 +155,7 @@ class Allocator:
                 if prices is None or len(prices) == 0:
                     continue
                 ticker_ctx = ctx.get(ticker, {})
-                s = entry.strategy.score(ticker, prices, **ticker_ctx)
+                s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None and s <= entry.veto_threshold:
                     targets[ticker] = 0.0
                     # Record protective strategy in contributions
