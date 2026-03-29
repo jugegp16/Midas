@@ -275,10 +275,8 @@ def optimize(
     names.append(_GLOBAL_KEY)
 
     # Compute max_position_pct range from portfolio size.
-    # Use midpoint of min_cash_pct range as estimate since it's co-optimized.
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
-    mid_cash = 0.085  # midpoint of min_cash_pct range (0.02-0.15)
-    equal_weight = (1.0 - mid_cash) / max(n_tickers, 1)
+    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
     # Bounds match the allocator's warning thresholds: 1.5x-5x equal weight,
     # clamped to [0.10, 0.80].
     lo = max(round(1.5 * equal_weight, 2), 0.10)

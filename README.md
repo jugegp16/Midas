@@ -84,7 +84,7 @@ Each strategy has an intrinsic tier determined by its class:
 | `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0.0. Lower (e.g. -0.8) = only veto on extreme conviction. Higher (e.g. -0.3) = veto more easily. Ignored for CONVICTION and MECHANICAL strategies |
 | `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
 
-All knobs are tunable by the optimizer.
+All knobs except `min_cash_pct` are tunable by the optimizer. `min_cash_pct` is a user risk preference.
 
 To add a strategy: implement the `Strategy` base class and register it in `strategies/__init__.py`.
 
@@ -99,7 +99,6 @@ The optimizer uses Bayesian optimisation (Optuna TPE) to search over all tunable
 | Veto thresholds | When a protective strategy overrides the blend | `_veto_threshold: -0.8` to `-0.2` |
 | Sigmoid steepness | How aggressively the allocator responds to conviction | `sigmoid_steepness: 1.0` to `5.0` |
 | Rebalance threshold | Minimum weight diff to trigger a trade | `rebalance_threshold: 0.01` to `0.05` |
-| Min cash % | Minimum cash reserve as fraction of portfolio | `min_cash_pct: 0.02` to `0.15` |
 | Max position % | Maximum weight for any single position | `max_position_pct: 0.15` to `0.50` |
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a `strategies.yaml` with optimized `params`, `weight`, and `veto_threshold` per strategy.
