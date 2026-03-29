@@ -36,10 +36,6 @@ class MeanReversion(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"MeanReversion(window={self._window}, threshold={self._threshold})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.BROAD_MARKET_ETF, AssetSuitability.LARGE_CAP]
 

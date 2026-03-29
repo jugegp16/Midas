@@ -37,8 +37,7 @@ class TestMeanReversion:
 
     def test_name_and_description(self) -> None:
         s = MeanReversion(window=20, threshold=0.08)
-        assert "20" in s.name
-        assert "0.08" in s.name
+        assert s.name == "MeanReversion"
         assert len(s.suitability) > 0
         assert s.tier == StrategyTier.CONVICTION
 
@@ -105,8 +104,7 @@ class TestRSIOversold:
 
     def test_name_and_description(self) -> None:
         s = RSIOversold(window=10, oversold_threshold=25.0)
-        assert "10" in s.name
-        assert "25" in s.name
+        assert s.name == "RSIOversold"
         assert len(s.suitability) > 0
         assert s.description
 
@@ -148,8 +146,7 @@ class TestBollingerBand:
 
     def test_name_and_description(self) -> None:
         s = BollingerBand(window=20, num_std=2.5)
-        assert "20" in s.name
-        assert "2.5" in s.name
+        assert s.name == "BollingerBand"
 
 
 class TestMACDCrossover:
@@ -195,7 +192,7 @@ class TestDollarCostAveraging:
 
     def test_name_and_description(self) -> None:
         s = DollarCostAveraging(frequency_days=7)
-        assert "7" in s.name
+        assert s.name == "DollarCostAveraging"
         assert s.description
 
 
@@ -248,7 +245,7 @@ class TestTrailingStop:
 
     def test_name_and_description(self) -> None:
         s = TrailingStop(trail_pct=0.15)
-        assert "0.15" in s.name
+        assert s.name == "TrailingStop"
         assert s.description
 
 
@@ -274,7 +271,7 @@ class TestStopLoss:
 
     def test_name_and_description(self) -> None:
         s = StopLoss(loss_threshold=0.05)
-        assert "0.05" in s.name
+        assert s.name == "StopLoss"
         assert s.description
 
 
@@ -327,5 +324,4 @@ class TestMovingAverageCrossover:
 
     def test_name_and_description(self) -> None:
         s = MovingAverageCrossover(short_window=15, long_window=45)
-        assert "15" in s.name
-        assert "45" in s.name
+        assert s.name == "MovingAverageCrossover"

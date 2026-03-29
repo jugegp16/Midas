@@ -38,10 +38,6 @@ class GapDownRecovery(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"GapDownRecovery(gap_threshold={self._gap_threshold})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.INDIVIDUAL_EQUITY, AssetSuitability.HIGH_VOLATILITY]
 

@@ -351,14 +351,13 @@ class BacktestEngine:
         # Phase 5: Mechanical strategies generate intents
         mechanical_intents: list[MechanicalIntent] = []
         for strat in self._mechanical:
-            if hasattr(strat, "generate_intents"):
-                for ticker in active_tickers:
-                    if ticker in price_series:
-                        ticker_ctx = context.get(ticker, {})
-                        intents = strat.generate_intents(
-                            ticker, price_series[ticker], **ticker_ctx,
-                        )
-                        mechanical_intents.extend(intents)
+            for ticker in active_tickers:
+                if ticker in price_series:
+                    ticker_ctx = context.get(ticker, {})
+                    intents = strat.generate_intents(
+                        ticker, price_series[ticker], **ticker_ctx,
+                    )
+                    mechanical_intents.extend(intents)
 
         # Estimate post-rebalance cash for mechanical sizing
         sell_proceeds = sum(

@@ -7,6 +7,12 @@ from datetime import date
 from enum import Enum
 
 
+DEFAULT_MIN_CASH_PCT = 0.05
+DEFAULT_REBALANCE_THRESHOLD = 0.02
+DEFAULT_SIGMOID_STEEPNESS = 2.0
+DEFAULT_MAX_POSITION_PCT = 0.25
+
+
 class Direction(Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -72,7 +78,7 @@ class OrderContext:
 class Order:
     ticker: str
     direction: Direction
-    shares: int
+    shares: float
     price: float
     estimated_value: float
     context: OrderContext
@@ -91,7 +97,7 @@ class TradeRecord:
     date: date
     ticker: str
     direction: Direction
-    shares: int
+    shares: float
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None = None
@@ -100,12 +106,6 @@ class TradeRecord:
 @dataclass
 class TradingRestrictions:
     round_trip_days: int = 0  # 0 = no restriction
-
-
-DEFAULT_MIN_CASH_PCT = 0.05
-DEFAULT_REBALANCE_THRESHOLD = 0.02
-DEFAULT_SIGMOID_STEEPNESS = 2.0
-DEFAULT_MAX_POSITION_PCT = 0.25
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ from midas.config import load_portfolio, load_strategies
 from midas.models import Direction, StrategyTier
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
-from tests.conftest import make_price_series
+from conftest import make_price_series
 
 
 def test_full_pipeline(tmp_path: Path) -> None:

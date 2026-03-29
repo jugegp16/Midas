@@ -47,10 +47,6 @@ class TrailingStop(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"TrailingStop(trail_pct={self._trail_pct})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 

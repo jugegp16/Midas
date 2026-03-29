@@ -34,10 +34,6 @@ class ProfitTaking(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"ProfitTaking(gain_threshold={self._gain_threshold})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 

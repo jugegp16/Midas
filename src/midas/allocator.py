@@ -13,6 +13,14 @@ from midas.strategies.base import Strategy
 
 log = logging.getLogger(__name__)
 
+# Auto-scaling multipliers for max_position_pct relative to equal weight.
+# 2.5x allows meaningful overweighting without extreme concentration.
+MAX_POSITION_MULTIPLIER = 2.5
+# Warning bounds: below 1.5x, scoring barely moves weights; above 5x, no
+# concentration protection.
+LOW_POSITION_MULTIPLIER = 1.5
+HIGH_POSITION_MULTIPLIER = 5.0
+
 
 @dataclass
 class _ScoredStrategy:
@@ -58,17 +66,19 @@ class Allocator:
         # Auto-compute max_position_pct if not set
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)
         if constraints.max_position_pct is None:
-            self._max_position_pct = min(DEFAULT_MAX_POSITION_PCT, 2.5 * equal_weight)
+            self._max_position_pct = min(
+                DEFAULT_MAX_POSITION_PCT, MAX_POSITION_MULTIPLIER * equal_weight,
+            )
         else:
             self._max_position_pct = constraints.max_position_pct
-            if constraints.max_position_pct < 1.5 * equal_weight:
+            if constraints.max_position_pct < LOW_POSITION_MULTIPLIER * equal_weight:
                 log.warning(
                     "max_position_pct (%.2f) is below 1.5x equal weight (%.2f) "
                     "— scoring may have little effect",
                     constraints.max_position_pct,
                     equal_weight,
                 )
-            elif constraints.max_position_pct > 5.0 * equal_weight:
+            elif constraints.max_position_pct > HIGH_POSITION_MULTIPLIER * equal_weight:
                 log.warning(
                     "max_position_pct (%.2f) is above 5x equal weight (%.2f) "
                     "— provides little concentration protection",

@@ -46,10 +46,6 @@ class VWAPReversion(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"VWAPReversion(window={self._window}, threshold={self._threshold})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.LARGE_CAP, AssetSuitability.BROAD_MARKET_ETF]
 

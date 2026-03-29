@@ -44,13 +44,6 @@ class RSIOversold(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return (
-            f"RSIOversold(window={self._window}, "
-            f"oversold_threshold={self._oversold_threshold})"
-        )
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
-from midas.models import AssetSuitability, StrategyTier
+from midas.models import AssetSuitability, MechanicalIntent, StrategyTier
 
 
 class Strategy(ABC):
@@ -39,10 +39,19 @@ class Strategy(ABC):
         """Clamp *value* into [lo, hi]."""
         return max(lo, min(hi, value))
 
+    def generate_intents(
+        self,
+        ticker: str,
+        price_history: pd.Series,
+        **kwargs: object,
+    ) -> list[MechanicalIntent]:
+        """Return mechanical order intents. Override for MECHANICAL strategies."""
+        return []
+
     @property
-    @abstractmethod
     def name(self) -> str:
-        """Human-readable strategy name with parameters."""
+        """Human-readable strategy name."""
+        return type(self).__name__
 
     @property
     @abstractmethod

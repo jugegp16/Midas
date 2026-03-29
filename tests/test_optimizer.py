@@ -12,7 +12,7 @@ from midas.optimizer import (
     optimize,
     write_strategies_yaml,
 )
-from tests.conftest import make_price_series
+from conftest import make_price_series
 
 
 def _make_optimizer_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date, date]:

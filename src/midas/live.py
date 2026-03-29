@@ -113,14 +113,13 @@ class LiveEngine:
         # Phase 5: Mechanical
         mechanical_intents: list[MechanicalIntent] = []
         for strat in self._mechanical:
-            if hasattr(strat, "generate_intents"):
-                for ticker in active_tickers:
-                    if ticker in price_data:
-                        ticker_ctx = context.get(ticker, {})
-                        intents = strat.generate_intents(
-                            ticker, price_data[ticker], **ticker_ctx,
-                        )
-                        mechanical_intents.extend(intents)
+            for ticker in active_tickers:
+                if ticker in price_data:
+                    ticker_ctx = context.get(ticker, {})
+                    intents = strat.generate_intents(
+                        ticker, price_data[ticker], **ticker_ctx,
+                    )
+                    mechanical_intents.extend(intents)
 
         sell_proceeds = sum(
             o.estimated_value for o in rebalance_orders

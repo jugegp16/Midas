@@ -56,10 +56,6 @@ class DollarCostAveraging(Strategy):
         return []
 
     @property
-    def name(self) -> str:
-        return f"DollarCostAveraging(frequency_days={self._frequency_days})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.BROAD_MARKET_ETF, AssetSuitability.LARGE_CAP]
 

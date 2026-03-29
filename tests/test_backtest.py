@@ -11,7 +11,7 @@ from midas.models import AllocationConstraints, Direction, Holding, PortfolioCon
 from midas.rebalancer import Rebalancer
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
-from tests.conftest import make_price_series
+from conftest import make_price_series
 
 
 def _build_engine(

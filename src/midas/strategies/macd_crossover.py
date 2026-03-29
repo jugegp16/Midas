@@ -53,13 +53,6 @@ class MACDCrossover(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return (
-            f"MACDCrossover(fast={self._fast_period}, "
-            f"slow={self._slow_period}, signal={self._signal_period})"
-        )
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 

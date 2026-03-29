@@ -33,10 +33,6 @@ class Momentum(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return f"Momentum(window={self._window})"
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 

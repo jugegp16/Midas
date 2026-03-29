@@ -46,13 +46,6 @@ class MovingAverageCrossover(Strategy):
         return 0.0
 
     @property
-    def name(self) -> str:
-        return (
-            f"MovingAverageCrossover(short={self._short_window}, "
-            f"long={self._long_window})"
-        )
-
-    @property
     def suitability(self) -> list[AssetSuitability]:
         return [AssetSuitability.ALL]
 
