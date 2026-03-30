@@ -1,0 +1,3 @@
+# Config
+
+::: midas.config

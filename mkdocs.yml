@@ -1,0 +1,47 @@
+site_name: Midas
+site_description: Target-weight allocation engine for your portfolio.
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: amber
+    accent: amber
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - CLI Reference: cli.md
+  - API Reference:
+      - Models: api/models.md
+      - Config: api/config.md
+      - Allocator: api/allocator.md
+      - Rebalancer: api/rebalancer.md
+      - Backtest: api/backtest.md
+      - Live: api/live.md
+      - Optimizer: api/optimizer.md
+      - Strategies: api/strategies.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            show_root_heading: true
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true

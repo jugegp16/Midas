@@ -1,0 +1,3 @@
+# Allocator
+
+::: midas.allocator
