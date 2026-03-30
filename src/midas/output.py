@@ -25,43 +25,30 @@ def print_alert(
     *,
     dry_run: bool = False,
 ) -> None:
-    sig = order.signal
-    color = "green" if sig.direction == Direction.BUY else "red"
+    color = "green" if order.direction == Direction.BUY else "red"
     prefix = "[DRY RUN] " if dry_run else ""
 
+    ctx = order.context
+    dominant = ctx.source
+
     lines = [
-        f"[bold]{sig.ticker}[/bold] — ${sig.price:,.2f}",
-        sig.reasoning,
-        f"Strength: {sig.strength}",
-        f"Strategy: {sig.strategy_name}",
+        f"[bold]{order.ticker}[/bold] — ${order.price:,.2f}",
+        ctx.reason,
+        f"Target weight: {ctx.target_weight:.1%} | Current: {ctx.current_weight:.1%}",
+        f"Blended score: {ctx.blended_score:+.3f}",
+        f"Primary strategy: {dominant}",
         f"Suggested order: {order.shares} share{'s' if order.shares != 1 else ''} "
-        f"@ ${sig.price:,.2f} = ${order.estimated_value:,.2f}",
+        f"@ ${order.price:,.2f} = ${order.estimated_value:,.2f}",
     ]
 
-    if sig.direction == Direction.BUY:
+    if order.direction == Direction.BUY:
         lines.append(f"Available cash after: ${remaining_cash:,.2f}")
-
-    if order.relies_on_pending_cash:
-        lines.append("[yellow]⚠ Includes pending cash infusion[/yellow]")
 
     console.print(Panel(
         "\n".join(lines),
-        title=f"{prefix}[{color}][{sig.direction.value}][/{color}]",
+        title=f"{prefix}[{color}][{order.direction.value}][/{color}]",
         border_style=color,
         subtitle=timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
-    ))
-
-
-def print_circuit_breaker_alert(order: Order, *, dry_run: bool = False) -> None:
-    sig = order.signal
-    prefix = "[DRY RUN] " if dry_run else ""
-    console.print(Panel(
-        f"[bold]{sig.ticker}[/bold] — ${sig.price:,.2f}\n"
-        f"{sig.reasoning}\n"
-        f"Suggested order: 0 shares — [yellow]circuit breaker active[/yellow] "
-        f"(daily deployment limit reached)",
-        title=f"{prefix}[yellow][{sig.direction.value}][/yellow]",
-        border_style="yellow",
     ))
 
 
@@ -72,12 +59,13 @@ def print_status(message: str) -> None:
 def print_strategy_table(strategies: list[Strategy]) -> None:
     table = Table(title="Available Strategies")
     table.add_column("Name", style="bold")
+    table.add_column("Tier", style="magenta")
     table.add_column("Description")
     table.add_column("Suitability", style="cyan")
 
     for s in strategies:
         tags = ", ".join(t.value for t in s.suitability)
-        table.add_row(s.name, s.description, tags)
+        table.add_row(s.name, s.tier.value, s.description, tags)
 
     console.print(table)
 

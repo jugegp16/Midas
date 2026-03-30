@@ -31,9 +31,21 @@ def portfolio_yaml(tmp_path: Path) -> Path:
 @pytest.fixture
 def strategy_yaml(tmp_path: Path) -> Path:
     data = {
+        "sigmoid_steepness": 3.0,
+        "rebalance_threshold": 0.03,
+        "min_cash_pct": 0.10,
         "strategies": [
-            {"name": "MeanReversion", "params": {"window": 20, "threshold": 0.08}},
-            {"name": "ProfitTaking", "params": {"gain_threshold": 0.15}},
+            {
+                "name": "MeanReversion",
+                "weight": 1.5,
+                "params": {"window": 20, "threshold": 0.08},
+            },
+            {
+                "name": "StopLoss",
+                "weight": 3.0,
+                "veto_threshold": -0.4,
+                "params": {"loss_threshold": 0.10},
+            },
             {"name": "Momentum"},
         ],
     }
@@ -55,11 +67,36 @@ def test_load_portfolio(portfolio_yaml: Path) -> None:
     assert port.cash_infusion.frequency == "biweekly"
 
 
+def test_load_portfolio_minimal(tmp_path: Path) -> None:
+    data = {
+        "portfolio": [{"ticker": "VOO", "shares": 5}],
+        "available_cash": 1000.0,
+    }
+    p = tmp_path / "portfolio.yaml"
+    p.write_text(yaml.dump(data))
+    port = load_portfolio(p)
+    assert port.available_cash == 1000.0
+
+
 def test_load_strategies(strategy_yaml: Path) -> None:
-    configs = load_strategies(strategy_yaml)
+    configs, constraints = load_strategies(strategy_yaml)
     assert len(configs) == 3
+
     assert configs[0].name == "MeanReversion"
     assert configs[0].params["window"] == 20
-    assert configs[1].name == "ProfitTaking"
+    assert configs[0].weight == 1.5
+
+    assert configs[1].name == "StopLoss"
+    assert configs[1].weight == 3.0
+    assert configs[1].veto_threshold == -0.4
+
     assert configs[2].name == "Momentum"
     assert configs[2].params == {}
+    assert configs[2].weight == 1.0  # default
+    assert configs[2].veto_threshold == -0.5  # default
+
+    # Allocation knobs
+    assert constraints.sigmoid_steepness == 3.0
+    assert constraints.rebalance_threshold == 0.03
+    assert constraints.min_cash_pct == 0.10
+    assert constraints.max_position_pct is None  # not specified -> None

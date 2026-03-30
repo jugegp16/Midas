@@ -8,13 +8,18 @@ from pathlib import Path
 import click
 import pandas as pd
 
-from midas.agent import Agent
-from midas.backtest import BacktestEngine, write_backtest_csv
+from midas.allocator import Allocator
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, write_backtest_csv
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
-from midas.models import PortfolioConfig, StrategyConfig
+from midas.models import (
+    AllocationConstraints,
+    PortfolioConfig,
+    StrategyConfig,
+    StrategyTier,
+)
 from midas.output import print_backtest_summary, print_status, print_strategy_table
-from midas.sizing import SizingConfig, SizingEngine
+from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
 
 
@@ -29,16 +34,34 @@ def _build_strategy(cfg: StrategyConfig) -> Strategy:
     return cls(**cfg.params)
 
 
-def _build_agents(
-    strategy_configs: list[StrategyConfig] | None = None,
-) -> list[Agent]:
+def _build_components(
+    strategy_configs: list[StrategyConfig] | None,
+    constraints: AllocationConstraints,
+    n_tickers: int,
+) -> tuple[Allocator, Rebalancer, list[Strategy]]:
+    """Build allocator, rebalancer, and mechanical strategies from config."""
     configs = strategy_configs or [
         StrategyConfig(name=name) for name in STRATEGY_REGISTRY
     ]
-    return [
-        Agent(strategy=_build_strategy(cfg), tickers=cfg.tickers)
-        for cfg in configs
-    ]
+
+    conviction: list[tuple[Strategy, float]] = []
+    protective: list[tuple[Strategy, float]] = []
+    mechanical: list[Strategy] = []
+
+    for cfg in configs:
+        strategy = _build_strategy(cfg)
+
+        if strategy.tier == StrategyTier.PROTECTIVE:
+            protective.append((strategy, cfg.veto_threshold))
+        elif strategy.tier == StrategyTier.MECHANICAL:
+            mechanical.append(strategy)
+        else:
+            conviction.append((strategy, cfg.weight))
+
+    allocator = Allocator(conviction, protective, constraints, n_tickers)
+    rebalancer = Rebalancer()
+
+    return allocator, rebalancer, mechanical
 
 
 def _to_date(dt: date | datetime) -> date:
@@ -83,7 +106,10 @@ def cli() -> None:
     "--output", "-o", default="backtest_results.csv",
     help="Output CSV path.",
 )
-@click.option("--train-pct", default=0.70, help="Train/test split ratio (0-1).")
+@click.option(
+    "--train-pct", default=DEFAULT_TRAIN_PCT,
+    help="Train/test split ratio (0-1).",
+)
 @click.option("--no-split", is_flag=True, help="Disable train/test split.")
 def backtest(
     portfolio: str,
@@ -96,15 +122,24 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs = load_strategies(Path(strategies)) if strategies else None
-    agents = _build_agents(strat_configs)
+    strat_configs, constraints = (
+        load_strategies(Path(strategies)) if strategies
+        else (None, AllocationConstraints())
+    )
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
 
+    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    allocator, rebalancer, mechanical = _build_components(
+        strat_configs, constraints, n_tickers,
+    )
+
     engine = BacktestEngine(
-        agents=agents,
-        sizing_engine=SizingEngine(SizingConfig()),
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
         train_pct=train_pct,
         enable_split=not no_split,
         log_fn=print_status,
@@ -140,14 +175,24 @@ def live(
     from midas.live import LiveEngine
 
     port = load_portfolio(Path(portfolio))
-    strat_configs = load_strategies(Path(strategies)) if strategies else None
-    agents = _build_agents(strat_configs)
+    strat_configs, constraints = (
+        load_strategies(Path(strategies)) if strategies
+        else (None, AllocationConstraints())
+    )
     provider = CachedYFinanceProvider()
+
+    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    allocator, rebalancer, mechanical = _build_components(
+        strat_configs, constraints, n_tickers,
+    )
 
     engine = LiveEngine(
         portfolio=port,
-        agents=agents,
+        allocator=allocator,
+        rebalancer=rebalancer,
         provider=provider,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,
     )
@@ -169,23 +214,30 @@ def live(
     "--output", "-o", default="optimized_strategies.yaml",
     help="Output YAML path.",
 )
+@click.option(
+    "--n-trials", "-n", default=200, show_default=True,
+    help="Number of Optuna optimisation trials.",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
     start: date,
     end: date,
     output: str,
+    n_trials: int,
 ) -> None:
-    """Find optimal strategy parameters via grid search."""
+    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import optimize as run_optimize
     from midas.optimizer import write_strategies_yaml
 
     port = load_portfolio(Path(portfolio))
 
     strategy_names: list[str] | None = None
+    min_cash_pct = AllocationConstraints().min_cash_pct
     if strategies:
-        strat_configs = load_strategies(Path(strategies))
+        strat_configs, strat_constraints = load_strategies(Path(strategies))
         strategy_names = [c.name for c in strat_configs]
+        min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
@@ -196,10 +248,12 @@ def optimize(
         start=start_d,
         end=end_d,
         strategy_names=strategy_names,
+        n_trials=n_trials,
+        min_cash_pct=min_cash_pct,
         log_fn=print_status,
     )
 
-    write_strategies_yaml(result.best_params, output)
+    write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
     print_status(f"Optimized strategies written to {output}")
 
     from rich.table import Table

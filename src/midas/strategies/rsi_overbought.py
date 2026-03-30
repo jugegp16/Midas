@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -14,14 +14,13 @@ class RSIOverbought(Strategy):
         self._window = window
         self._overbought_threshold = overbought_threshold
 
-    def evaluate(
+    def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if len(price_history) < self._window + 1:
-            return []
+            return None
 
         values = np.asarray(price_history)
         deltas = np.diff(values[-(self._window + 1) :])
@@ -32,35 +31,19 @@ class RSIOverbought(Strategy):
         avg_loss = float(losses.mean())
 
         if avg_gain == 0 and avg_loss == 0:
-            return []  # No price movement — RSI undefined
+            return 0.0
         elif avg_loss == 0:
-            rsi = 100.0  # All gains, no losses
+            rsi = 100.0
         else:
             rs = avg_gain / avg_loss
             rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        current = float(values[-1])
-
         if rsi >= self._overbought_threshold:
-            return [self._make_signal(
-                ticker,
-                Direction.SELL,
-                strength=(rsi - self._overbought_threshold)
-                / (100.0 - self._overbought_threshold),
-                reasoning=(
-                    f"{ticker} RSI({self._window}) at {rsi:.1f}, "
-                    f"above overbought threshold {self._overbought_threshold:.0f}"
-                ),
-                price=current,
-            )]
-        return []
-
-    @property
-    def name(self) -> str:
-        return (
-            f"RSIOverbought(window={self._window}, "
-            f"overbought_threshold={self._overbought_threshold})"
-        )
+            return -self._clamp(
+                (rsi - self._overbought_threshold)
+                / (100.0 - self._overbought_threshold)
+            )
+        return 0.0
 
     @property
     def suitability(self) -> list[AssetSuitability]:

@@ -1,22 +1,29 @@
-"""Two-phase grid search optimizer for strategy parameters."""
+"""Bayesian optimizer for strategy parameters using Optuna TPE."""
 
 from __future__ import annotations
 
-import itertools
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 
+import optuna
 import pandas as pd
 import yaml
 
-from midas.agent import Agent
+from midas.allocator import Allocator
 from midas.backtest import BacktestEngine
-from midas.models import PortfolioConfig
-from midas.sizing import SizingConfig, SizingEngine
+from midas.models import (
+    DEFAULT_MIN_CASH_PCT,
+    AllocationConstraints,
+    PortfolioConfig,
+    StrategyTier,
+)
+from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
+from midas.strategies.base import Strategy
 
 # Parameters that should be cast to int when building strategy instances.
 _INT_PARAMS = {
@@ -25,57 +32,85 @@ _INT_PARAMS = {
     "frequency_days",
 }
 
+# Meta-params prefixed with _ are not passed to the strategy constructor.
+# _weight: blending weight for conviction strategies.
+# _veto_threshold: veto threshold for protective strategies.
+_META_PARAMS = {"_weight", "_veto_threshold"}
+
+# Synthetic key for global allocation knobs (sigmoid_steepness, rebalance_threshold).
+_GLOBAL_KEY = "_global"
+
 # Default parameter ranges per strategy.
-# Each entry: (min, max, coarse_step, fine_step)
-PARAM_RANGES: dict[str, dict[str, tuple[float, float, float, float]]] = {
+# Each entry: (min, max, step) — step used for Optuna discretisation.
+PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "MeanReversion": {
-        "window": (10, 100, 10, 5),
-        "threshold": (0.03, 0.25, 0.03, 0.01),
+        "window": (10, 100, 5),
+        "threshold": (0.03, 0.25, 0.01),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "ProfitTaking": {
-        "gain_threshold": (0.10, 0.80, 0.10, 0.03),
+        "gain_threshold": (0.10, 0.80, 0.03),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "Momentum": {
-        "window": (5, 50, 5, 2),
+        "window": (5, 50, 2),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "RSIOversold": {
-        "window": (7, 28, 7, 2),
-        "oversold_threshold": (15.0, 40.0, 5.0, 2.0),
+        "window": (7, 28, 2),
+        "oversold_threshold": (15.0, 40.0, 2.0),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "RSIOverbought": {
-        "window": (7, 28, 7, 2),
-        "overbought_threshold": (60.0, 85.0, 5.0, 2.0),
+        "window": (7, 28, 2),
+        "overbought_threshold": (60.0, 85.0, 2.0),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "BollingerBand": {
-        "window": (10, 50, 10, 5),
-        "num_std": (1.5, 3.0, 0.5, 0.25),
+        "window": (10, 50, 5),
+        "num_std": (1.5, 3.0, 0.25),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "MACDCrossover": {
-        "fast_period": (8, 16, 4, 2),
-        "slow_period": (20, 32, 4, 2),
-        "signal_period": (5, 13, 4, 2),
+        "fast_period": (8, 16, 2),
+        "slow_period": (20, 40, 2),
+        "signal_period": (5, 13, 2),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "DollarCostAveraging": {
-        "frequency_days": (5, 30, 5, 2),
+        "frequency_days": (5, 30, 2),
     },
     "GapDownRecovery": {
-        "gap_threshold": (0.02, 0.08, 0.02, 0.005),
+        "gap_threshold": (0.02, 0.08, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "TrailingStop": {
-        "trail_pct": (0.05, 0.25, 0.05, 0.02),
+        "trail_pct": (0.05, 0.25, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.1),
     },
     "StopLoss": {
-        "loss_threshold": (0.05, 0.25, 0.05, 0.02),
+        "loss_threshold": (0.05, 0.25, 0.02),
+        "_veto_threshold": (-0.8, -0.2, 0.1),
     },
     "VWAPReversion": {
-        "window": (10, 50, 10, 5),
-        "threshold": (0.01, 0.05, 0.01, 0.005),
+        "window": (10, 50, 5),
+        "threshold": (0.01, 0.05, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
     },
     "MovingAverageCrossover": {
-        "short_window": (10, 30, 5, 2),
-        "long_window": (40, 100, 10, 5),
+        "short_window": (10, 30, 2),
+        "long_window": (40, 100, 5),
+        "_weight": (0.5, 3.0, 0.25),
+    },
+    _GLOBAL_KEY: {
+        "sigmoid_steepness": (1.0, 5.0, 0.5),
+        "rebalance_threshold": (0.01, 0.05, 0.005),
+        # min_cash_pct is a user risk preference, not optimized
+        # max_position_pct is computed dynamically in optimize() from n_tickers
     },
 }
+
+DEFAULT_N_TRIALS = 200
 
 
 @dataclass
@@ -88,37 +123,22 @@ class OptimizeResult:
     trials_run: int
 
 
-def _build_grid(
-    ranges: dict[str, tuple[float, float, float, float]],
-    phase: str,
-    center: dict[str, float] | None = None,
-) -> list[dict[str, float]]:
-    """Build a parameter grid for one strategy.
-
-    Phase 'coarse' uses the full range with coarse steps.
-    Phase 'fine' narrows around `center` with fine steps.
-    """
-    param_values: dict[str, list[float]] = {}
-    for param, (lo, hi, coarse_step, fine_step) in ranges.items():
-        if phase == "fine" and center is not None:
-            c = center[param]
-            step = fine_step
-            lo_f = max(lo, c - coarse_step)
-            hi_f = min(hi, c + coarse_step)
+def _suggest_params(
+    trial: optuna.Trial,
+    strategy_name: str,
+    ranges: dict[str, tuple[float, float, float]],
+) -> dict[str, float]:
+    """Use Optuna trial to suggest parameter values for one strategy."""
+    params: dict[str, float] = {}
+    for param, (lo, hi, step) in ranges.items():
+        key = f"{strategy_name}__{param}"
+        if param in _INT_PARAMS:
+            params[param] = float(
+                trial.suggest_int(key, int(lo), int(hi), step=int(step))
+            )
         else:
-            lo_f, hi_f, step = lo, hi, coarse_step
-
-        values = []
-        v = lo_f
-        while v <= hi_f + step * 0.01:  # small epsilon for float rounding
-            values.append(round(v, 4))
-            v += step
-        param_values[param] = values
-
-    # Cartesian product
-    keys = list(param_values.keys())
-    combos = list(itertools.product(*(param_values[k] for k in keys)))
-    return [dict(zip(keys, combo, strict=False)) for combo in combos]
+            params[param] = trial.suggest_float(key, lo, hi, step=step)
+    return params
 
 
 def _run_trial(
@@ -127,22 +147,61 @@ def _run_trial(
     price_data: dict[str, pd.Series],
     start: date,
     end: date,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
 ) -> tuple[float, float, float, float]:
-    """Run a single backtest trial. Returns (total_return, bh_return,
-    train_return, test_return)."""
-    agents = []
-    for name, params in strategy_params.items():
-        cls = STRATEGY_REGISTRY[name]
-        # Convert window params to int
-        clean_params = {}
-        for k, v in params.items():
-            clean_params[k] = int(v) if k in _INT_PARAMS else v
-        strategy = cls(**clean_params)
-        agents.append(Agent(strategy=strategy, cooldown_days=5))
+    """Run a single backtest trial with the allocator+rebalancer system.
 
-    sizing = SizingEngine(SizingConfig())
+    Returns (total_return, bh_return, train_return, test_return).
+    """
+    # Suppress allocator warnings during optimization — the optimizer explores
+    # boundary values that trigger heuristic warnings but are fine to evaluate.
+    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
+
+    # Extract global allocation knobs
+    global_params = strategy_params.get(_GLOBAL_KEY, {})
+    conviction: list[tuple[Strategy, float]] = []
+    protective: list[tuple[Strategy, float]] = []
+    mechanical: list[Strategy] = []
+
+    for name, params in strategy_params.items():
+        if name == _GLOBAL_KEY:
+            continue
+        cls = STRATEGY_REGISTRY[name]
+        # Separate meta-params from constructor params
+        weight = params.get("_weight", 1.0)
+        veto_threshold = params.get("_veto_threshold", -0.5)
+        clean_params = {
+            k: int(v) if k in _INT_PARAMS else v
+            for k, v in params.items()
+            if k not in _META_PARAMS
+        }
+        strategy = cls(**clean_params)
+
+        if strategy.tier == StrategyTier.PROTECTIVE:
+            protective.append((strategy, veto_threshold))
+        elif strategy.tier == StrategyTier.MECHANICAL:
+            mechanical.append(strategy)
+        else:
+            conviction.append((strategy, weight))
+
+    # Count tickers in portfolio
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    constraints = AllocationConstraints(
+        max_position_pct=global_params.get("max_position_pct"),
+        min_cash_pct=min_cash_pct,
+        sigmoid_steepness=global_params.get("sigmoid_steepness", 2.0),
+        rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
+    )
+
+    allocator = Allocator(conviction, protective, constraints, n_tickers)
+    rebalancer = Rebalancer()
+
     engine = BacktestEngine(
-        agents=agents, sizing_engine=sizing, enable_split=True
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
+        enable_split=True,
     )
     result = engine.run(portfolio, price_data, start, end)
 
@@ -162,41 +221,21 @@ def _run_trial(
 _worker_state: dict = {}
 
 
-def _init_worker(portfolio, price_data, start, end):
+def _init_worker(
+    portfolio: PortfolioConfig,
+    price_data: dict[str, pd.Series],
+    start: date,
+    end: date,
+    min_cash_pct: float,
+) -> None:
     _worker_state.update(
-        portfolio=portfolio, price_data=price_data, start=start, end=end
+        portfolio=portfolio, price_data=price_data, start=start, end=end,
+        min_cash_pct=min_cash_pct,
     )
 
 
-def _trial_worker(args):
-    names, combo = args
-    params = dict(zip(names, combo, strict=False))
-    return (*_run_trial(params, **_worker_state), params)
-
-
-def _run_parallel(combos, names, portfolio, price_data, start, end, log):
-    """Run all combos across worker processes, return best result."""
-    max_workers = min((os.cpu_count() or 4) // 2, len(combos)) or 1
-    log(f"  {len(combos)} combinations to test ({max_workers} workers)")
-
-    best = (-float("inf"), {}, 0.0, 0.0, 0.0)
-    done = 0
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end),
-    ) as pool:
-        chunksize = max(1, len(combos) // (max_workers * 4))
-        for *scores, params in pool.map(
-            _trial_worker, [(names, c) for c in combos], chunksize=chunksize
-        ):
-            done += 1
-            if scores[0] > best[0]:
-                best = (scores[0], params, scores[1], scores[2], scores[3])
-            if done % 500 == 0:
-                log(f"  {done}/{len(combos)} — best so far: {best[0]:.2%}")
-
-    return best
+def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
+    return _run_trial(strategy_params, **_worker_state)
 
 
 def optimize(
@@ -205,79 +244,156 @@ def optimize(
     start: date,
     end: date,
     strategy_names: list[str] | None = None,
+    n_trials: int = DEFAULT_N_TRIALS,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     log_fn: Callable[[str], None] | None = None,
 ) -> OptimizeResult:
-    """Two-phase grid search over strategy parameters.
+    """Bayesian optimization over strategy parameters using Optuna TPE.
 
-    Phase 1: coarse grid over full ranges.
-    Phase 2: fine grid around the best result from phase 1.
+    Runs *n_trials* Optuna trials (default 200).  Each trial samples a
+    parameter combination via the Tree-structured Parzen Estimator and
+    evaluates it with a full backtest.  Backtests are executed in a worker
+    pool to utilise multiple CPU cores.
     """
     log = log_fn or (lambda _: None)
 
-    names = strategy_names or list(PARAM_RANGES.keys())
-    # Filter to strategies that have defined ranges
-    names = [n for n in names if n in PARAM_RANGES]
+    names = strategy_names or [
+        k for k in PARAM_RANGES if k != _GLOBAL_KEY
+    ]
+    # Filter to strategies that have defined ranges and are not MECHANICAL
+    names = [
+        n for n in names
+        if n in PARAM_RANGES
+        and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL
+    ]
 
     if not names:
         msg = "No optimizable strategies found"
         raise ValueError(msg)
 
-    # Phase 1: coarse grid
-    log(f"Phase 1: coarse search over {', '.join(names)}...")
-    coarse_grids = {
-        name: _build_grid(PARAM_RANGES[name], "coarse") for name in names
-    }
+    # Always include global allocation knobs
+    names.append(_GLOBAL_KEY)
 
-    # Total combinations = product of each strategy's grid size
-    shared = (names, portfolio, price_data, start, end, log)
+    # Compute max_position_pct range from portfolio size.
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
+    # Bounds match the allocator's warning thresholds: 1.5x-5x equal weight,
+    # clamped to [0.10, 0.80].
+    lo = max(round(1.5 * equal_weight, 2), 0.10)
+    hi = min(round(5.0 * equal_weight, 2), 0.80)
+    if lo >= hi:
+        lo, hi = 0.10, 0.80
+    step = round((hi - lo) / 8, 2) or 0.01
+    ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
+    ranges.setdefault(_GLOBAL_KEY, {})
+    ranges[_GLOBAL_KEY]["max_position_pct"] = (lo, hi, step)
 
-    all_combos = list(
-        itertools.product(*(coarse_grids[n] for n in names))
+    max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
+
+    log(f"Optimizing {', '.join(names)} — {n_trials} trials ({max_workers} workers)")
+    log(
+        f"  max_position_pct range: {lo:.2f}-{hi:.2f}"
+        f" (equal weight: {equal_weight:.2f})"
     )
-    best_return, best_params, best_bh, best_train, best_test = _run_parallel(
-        all_combos, *shared
-    )
-    log(f"  Phase 1 best: {best_return:.2%} with {best_params}")
 
-    # Phase 2: fine grid around best
-    log("Phase 2: fine search around best parameters...")
-    fine_grids = {
-        name: _build_grid(PARAM_RANGES[name], "fine", center=best_params[name])
-        for name in names
-    }
-    fine_combos = list(
-        itertools.product(*(fine_grids[n] for n in names))
-    )
-    ret2, params2, bh2, train2, test2 = _run_parallel(fine_combos, *shared)
-    if ret2 > best_return:
-        best_return, best_params, best_bh, best_train, best_test = (
-            ret2, params2, bh2, train2, test2
-        )
-    log(f"  Phase 2 best: {best_return:.2%}")
+    # Suppress Optuna's default logging (we provide our own via log_fn).
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    trials_total = len(all_combos) + len(fine_combos)
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+
+    # -- Objective that runs in the main process but farms backtest to pool --
+    pool = ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker,
+        initargs=(portfolio, price_data, start, end, min_cash_pct),
+    )
+
+    trials_done = 0
+
+    def objective(trial: optuna.Trial) -> float:
+        nonlocal trials_done
+
+        strategy_params: dict[str, dict[str, float]] = {}
+        for name in names:
+            strategy_params[name] = _suggest_params(
+                trial, name, ranges[name],
+            )
+
+        total_ret, bh_ret, train_ret, test_ret = pool.submit(
+            _trial_worker, strategy_params,
+        ).result()
+
+        # Store auxiliary metrics as user attributes for later retrieval.
+        trial.set_user_attr("bh_return", bh_ret)
+        trial.set_user_attr("train_return", train_ret)
+        trial.set_user_attr("test_return", test_ret)
+        trial.set_user_attr("params", strategy_params)
+
+        trials_done += 1
+        if trials_done % 25 == 0 or trials_done == n_trials:
+            log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
+
+        return total_ret
+
+    try:
+        study.optimize(objective, n_trials=n_trials)
+    finally:
+        pool.shutdown(wait=False)
+
+    best = study.best_trial
+    best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
+
+    log(f"Best return: {best.value:.2%} in {len(study.trials)} trials")
 
     return OptimizeResult(
         best_params=best_params,
-        best_return=round(best_return, 4),
-        best_bh_return=round(best_bh, 4),
-        best_train_return=round(best_train, 4),
-        best_test_return=round(best_test, 4),
-        trials_run=trials_total,
+        best_return=round(best.value, 4),
+        best_bh_return=round(best.user_attrs["bh_return"], 4),
+        best_train_return=round(best.user_attrs["train_return"], 4),
+        best_test_return=round(best.user_attrs["test_return"], 4),
+        trials_run=len(study.trials),
     )
 
 
 def write_strategies_yaml(
-    params: dict[str, dict[str, float]], path: str
+    params: dict[str, dict[str, float]],
+    path: str,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
 ) -> None:
     """Write optimized parameters to a strategies YAML file."""
+    output: dict[str, object] = {}
+
+    # Emit global allocation knobs as top-level keys
+    if _GLOBAL_KEY in params:
+        for k, v in params[_GLOBAL_KEY].items():
+            output[k] = round(v, 4)
+
+    # min_cash_pct is not optimized — preserve the user's configured value
+    output["min_cash_pct"] = round(min_cash_pct, 4)
+
     strategies = []
     for name, p in params.items():
-        # Convert window to int for cleaner YAML
-        clean = {}
+        if name == _GLOBAL_KEY:
+            continue
+        entry: dict[str, object] = {"name": name}
+        clean_params: dict[str, object] = {}
         for k, v in p.items():
-            clean[k] = int(v) if k in _INT_PARAMS else round(v, 4)
-        strategies.append({"name": name, "params": clean})
+            if k == "_weight":
+                entry["weight"] = round(v, 4)
+            elif k == "_veto_threshold":
+                entry["veto_threshold"] = round(v, 4)
+            elif k in _INT_PARAMS:
+                clean_params[k] = int(v)
+            else:
+                clean_params[k] = round(v, 4)
+        if clean_params:
+            entry["params"] = clean_params
+        strategies.append(entry)
+
+    output["strategies"] = strategies
 
     with open(path, "w") as f:
-        yaml.dump({"strategies": strategies}, f, default_flow_style=False)
+        yaml.dump(output, f, default_flow_style=False)

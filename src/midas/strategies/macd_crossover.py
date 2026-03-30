@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -30,15 +30,14 @@ class MACDCrossover(Strategy):
         self._slow_period = slow_period
         self._signal_period = signal_period
 
-    def evaluate(
+    def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         min_len = self._slow_period + self._signal_period
         if len(price_history) < min_len:
-            return []
+            return None
 
         values = np.asarray(price_history, dtype=float)
         fast_ema = _ema(values, self._fast_period)
@@ -46,29 +45,11 @@ class MACDCrossover(Strategy):
         macd_line = fast_ema - slow_ema
         signal_line = _ema(macd_line, self._signal_period)
 
-        # Check for crossover: MACD was below signal, now above
         if macd_line[-2] <= signal_line[-2] and macd_line[-1] > signal_line[-1]:
             current = float(values[-1])
             diff = float(macd_line[-1] - signal_line[-1])
-            return [self._make_signal(
-                ticker,
-                Direction.BUY,
-                strength=min(abs(diff) / current * 100, 1.0),
-                reasoning=(
-                    f"{ticker} MACD({self._fast_period},{self._slow_period},"
-                    f"{self._signal_period}) crossed above signal line "
-                    f"at ${current:.2f}"
-                ),
-                price=current,
-            )]
-        return []
-
-    @property
-    def name(self) -> str:
-        return (
-            f"MACDCrossover(fast={self._fast_period}, "
-            f"slow={self._slow_period}, signal={self._signal_period})"
-        )
+            return self._clamp(min(abs(diff) / current * 100, 1.0))
+        return 0.0
 
     @property
     def suitability(self) -> list[AssetSuitability]:

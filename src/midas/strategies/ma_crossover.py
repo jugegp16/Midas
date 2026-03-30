@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -14,17 +14,15 @@ class MovingAverageCrossover(Strategy):
         self._short_window = short_window
         self._long_window = long_window
 
-    def evaluate(
+    def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if len(price_history) < self._long_window + 1:
-            return []
+            return None
 
         values = np.asarray(price_history)
-        current = float(values[-1])
 
         short_ma = float(values[-self._short_window :].mean())
         long_ma = float(values[-self._long_window :].mean())
@@ -32,46 +30,19 @@ class MovingAverageCrossover(Strategy):
         prev_long_ma = float(values[-(self._long_window + 1) : -1].mean())
 
         if long_ma == 0:
-            return []
+            return 0.0
 
-        # Golden cross: short MA crosses above long MA
+        # Golden cross -> bullish
         if prev_short_ma <= prev_long_ma and short_ma > long_ma:
             spread = (short_ma - long_ma) / long_ma
-            return [self._make_signal(
-                ticker,
-                Direction.BUY,
-                strength=spread / 0.05,
-                reasoning=(
-                    f"{ticker} golden cross: {self._short_window}-day MA "
-                    f"(${short_ma:.2f}) crossed above {self._long_window}-day "
-                    f"MA (${long_ma:.2f}) at ${current:.2f}"
-                ),
-                price=current,
-            )]
+            return self._clamp(spread / 0.05)
 
-        # Death cross: short MA crosses below long MA
+        # Death cross -> bearish
         if prev_short_ma >= prev_long_ma and short_ma < long_ma:
             spread = (long_ma - short_ma) / long_ma
-            return [self._make_signal(
-                ticker,
-                Direction.SELL,
-                strength=spread / 0.05,
-                reasoning=(
-                    f"{ticker} death cross: {self._short_window}-day MA "
-                    f"(${short_ma:.2f}) crossed below {self._long_window}-day "
-                    f"MA (${long_ma:.2f}) at ${current:.2f}"
-                ),
-                price=current,
-            )]
+            return -self._clamp(spread / 0.05)
 
-        return []
-
-    @property
-    def name(self) -> str:
-        return (
-            f"MovingAverageCrossover(short={self._short_window}, "
-            f"long={self._long_window})"
-        )
+        return 0.0
 
     @property
     def suitability(self) -> list[AssetSuitability]:

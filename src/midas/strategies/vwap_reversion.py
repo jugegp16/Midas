@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -19,51 +19,30 @@ class VWAPReversion(Strategy):
         self._window = window
         self._threshold = threshold
 
-    def evaluate(
+    def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if len(price_history) < self._window:
-            return []
+            return None
 
         values = np.asarray(price_history)
         current = float(values[-1])
         avg_price = float(values[-self._window :].mean())
 
         if avg_price == 0:
-            return []
+            return 0.0
 
         deviation = (current - avg_price) / avg_price
 
         if deviation <= -self._threshold:
-            return [self._make_signal(
-                ticker,
-                Direction.BUY,
-                strength=abs(deviation) / (self._threshold * 3),
-                reasoning=(
-                    f"{ticker} at ${current:.2f} is {abs(deviation):.1%} below "
-                    f"{self._window}-day VWAP proxy ${avg_price:.2f}"
-                ),
-                price=current,
-            )]
+            # Below VWAP -> bullish
+            return self._clamp(abs(deviation) / (self._threshold * 3))
         elif deviation >= self._threshold:
-            return [self._make_signal(
-                ticker,
-                Direction.SELL,
-                strength=deviation / (self._threshold * 3),
-                reasoning=(
-                    f"{ticker} at ${current:.2f} is {deviation:.1%} above "
-                    f"{self._window}-day VWAP proxy ${avg_price:.2f}"
-                ),
-                price=current,
-            )]
-        return []
-
-    @property
-    def name(self) -> str:
-        return f"VWAPReversion(window={self._window}, threshold={self._threshold})"
+            # Above VWAP -> bearish
+            return -self._clamp(deviation / (self._threshold * 3))
+        return 0.0
 
     @property
     def suitability(self) -> list[AssetSuitability]:

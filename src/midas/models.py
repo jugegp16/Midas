@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from enum import Enum
+
+DEFAULT_MIN_CASH_PCT = 0.05
+DEFAULT_REBALANCE_THRESHOLD = 0.02
+DEFAULT_SIGMOID_STEEPNESS = 2.0
+DEFAULT_MAX_POSITION_PCT = 0.25
 
 
 class Direction(Enum):
@@ -25,15 +30,10 @@ class AssetSuitability(Enum):
     ALL = "all"
 
 
-@dataclass(frozen=True)
-class Signal:
-    ticker: str
-    direction: Direction
-    strength: float
-    reasoning: str
-    timestamp: datetime
-    price: float
-    strategy_name: str
+class StrategyTier(Enum):
+    CONVICTION = "conviction"
+    PROTECTIVE = "protective"
+    MECHANICAL = "mechanical"
 
 
 @dataclass
@@ -65,13 +65,32 @@ class PortfolioConfig:
 
 
 @dataclass(frozen=True)
+class OrderContext:
+    contributions: dict[str, float]
+    blended_score: float
+    target_weight: float
+    current_weight: float
+    reason: str
+    source: str
+
+
+@dataclass(frozen=True)
 class Order:
     ticker: str
     direction: Direction
-    shares: int
+    shares: float
+    price: float
     estimated_value: float
-    signal: Signal
-    relies_on_pending_cash: bool = False
+    context: OrderContext
+
+
+@dataclass(frozen=True)
+class MechanicalIntent:
+    ticker: str
+    direction: Direction
+    target_value: float
+    reason: str
+    source: str
 
 
 @dataclass(frozen=True)
@@ -79,7 +98,7 @@ class TradeRecord:
     date: date
     ticker: str
     direction: Direction
-    shares: int
+    shares: float
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None = None
@@ -90,8 +109,18 @@ class TradingRestrictions:
     round_trip_days: int = 0  # 0 = no restriction
 
 
+@dataclass(frozen=True)
+class AllocationConstraints:
+    max_position_pct: float | None = None
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT
+    rebalance_threshold: float = DEFAULT_REBALANCE_THRESHOLD
+    sigmoid_steepness: float = DEFAULT_SIGMOID_STEEPNESS
+
+
 @dataclass
 class StrategyConfig:
     name: str
     params: dict[str, float | int | str] = field(default_factory=dict)
-    tickers: list[str] | None = None  # None = all tickers
+    tickers: list[str] | None = None
+    weight: float = 1.0
+    veto_threshold: float = -0.5

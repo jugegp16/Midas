@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midas.models import AssetSuitability, Direction, Signal
+from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
 
 
@@ -14,14 +14,13 @@ class BollingerBand(Strategy):
         self._window = window
         self._num_std = num_std
 
-    def evaluate(
+    def score(
         self,
-        ticker: str,
         price_history: pd.Series,
         **kwargs: object,
-    ) -> list[Signal]:
+    ) -> float | None:
         if len(price_history) < self._window:
-            return []
+            return None
 
         values = np.asarray(price_history)
         window_data = values[-self._window :]
@@ -29,29 +28,15 @@ class BollingerBand(Strategy):
         std = float(window_data.std(ddof=1))
 
         if std == 0:
-            return []
+            return 0.0
 
         lower_band = ma - self._num_std * std
         current = float(values[-1])
 
         if current <= lower_band:
             pct_below = (lower_band - current) / std
-            return [self._make_signal(
-                ticker,
-                Direction.BUY,
-                strength=pct_below / self._num_std,
-                reasoning=(
-                    f"{ticker} at ${current:.2f} touched lower Bollinger Band "
-                    f"(${lower_band:.2f}), {self._window}-day MA ${ma:.2f} "
-                    f"± {self._num_std}σ"
-                ),
-                price=current,
-            )]
-        return []
-
-    @property
-    def name(self) -> str:
-        return f"BollingerBand(window={self._window}, num_std={self._num_std})"
+            return self._clamp(pct_below / self._num_std)
+        return 0.0
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -61,5 +46,5 @@ class BollingerBand(Strategy):
     def description(self) -> str:
         return (
             f"Buy when price touches the lower Bollinger Band "
-            f"({self._window}-day MA − {self._num_std}σ)"
+            f"({self._window}-day MA - {self._num_std} std dev)"
         )

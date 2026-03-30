@@ -4,18 +4,18 @@ from datetime import date
 from pathlib import Path
 
 import yaml
+from conftest import make_price_series
 
-from midas.agent import Agent
+from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
 from midas.config import load_portfolio, load_strategies
-from midas.models import Direction
-from midas.sizing import SizingConfig, SizingEngine
+from midas.models import Direction, StrategyTier
+from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY
-from tests.conftest import make_price_series
 
 
 def test_full_pipeline(tmp_path: Path) -> None:
-    """End-to-end: YAML configs -> strategies -> agents -> backtest -> CSV."""
+    """End-to-end: YAML configs -> strategies -> allocator -> backtest -> CSV."""
 
     # 1. Write portfolio config
     portfolio_data = {
@@ -34,6 +34,9 @@ def test_full_pipeline(tmp_path: Path) -> None:
 
     # 2. Write strategy config
     strategy_data = {
+        "min_cash_pct": 0.05,
+        "rebalance_threshold": 0.01,
+        "sigmoid_steepness": 2.0,
         "strategies": [
             {"name": "MeanReversion", "params": {"window": 20, "threshold": 0.05}},
             {"name": "ProfitTaking", "params": {"gain_threshold": 0.15}},
@@ -48,24 +51,33 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert len(portfolio.holdings) == 2
     assert portfolio.available_cash == 3000.0
 
-    strat_configs = load_strategies(strategy_path)
+    strat_configs, constraints = load_strategies(strategy_path)
     assert len(strat_configs) == 3
 
-    # 4. Build strategies and agents
-    agents = []
+    # 4. Build allocator + rebalancer
+    conviction = []
+    protective = []
+    mechanical = []
     for cfg in strat_configs:
         cls = STRATEGY_REGISTRY[cfg.name]
         strategy = cls(**cfg.params)
-        agents.append(Agent(strategy=strategy, cooldown_days=5, tickers=cfg.tickers))
+        if strategy.tier == StrategyTier.PROTECTIVE:
+            protective.append((strategy, cfg.veto_threshold))
+        elif strategy.tier == StrategyTier.MECHANICAL:
+            mechanical.append(strategy)
+        else:
+            conviction.append((strategy, cfg.weight))
+
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    allocator = Allocator(conviction, protective, constraints, n_tickers)
+    rebalancer = Rebalancer()
 
     # 5. Generate synthetic price data
-    # VOO: drops then recovers (triggers mean reversion)
     voo_returns = [0.0] * 20 + [-0.006] * 20 + [0.008] * 30 + [0.0] * 30
     voo_prices = make_price_series(
         date(2024, 1, 2), 100, 100.0, voo_returns, name="VOO"
     )
 
-    # AAPL: steady rise (triggers profit taking)
     aapl_returns = [0.004] * 100
     aapl_prices = make_price_series(
         date(2024, 1, 2), 100, 100.0, aapl_returns, name="AAPL"
@@ -74,10 +86,11 @@ def test_full_pipeline(tmp_path: Path) -> None:
     price_data = {"VOO": voo_prices, "AAPL": aapl_prices}
 
     # 6. Run backtest
-    sizing = SizingEngine(SizingConfig(default_slippage=0.001, circuit_breaker_pct=0.5))
     engine = BacktestEngine(
-        agents=agents,
-        sizing_engine=sizing,
+        allocator=allocator,
+        rebalancer=rebalancer,
+        mechanical_strategies=mechanical,
+        constraints=constraints,
         train_pct=0.7,
         enable_split=True,
     )
@@ -92,7 +105,6 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert result.split_date is not None
     assert len(result.trades) > 0
 
-    # Should have both buy and sell trades across strategies
     directions = {t.direction for t in result.trades}
     assert Direction.BUY in directions
 
@@ -122,3 +134,6 @@ def test_strategy_registry_complete() -> None:
         assert instance.name
         assert instance.description
         assert len(instance.suitability) > 0
+        assert instance.tier in (
+            StrategyTier.CONVICTION, StrategyTier.PROTECTIVE, StrategyTier.MECHANICAL,
+        )

@@ -11,17 +11,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from midas.agent import Agent
+from midas.allocator import Allocator
 from midas.models import (
+    AllocationConstraints,
     Direction,
     HoldingPeriod,
+    MechanicalIntent,
     Order,
     PortfolioConfig,
-    TradingRestrictions,
     TradeRecord,
 )
+from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.sizing import SizingEngine
+from midas.strategies.base import Strategy
 
 
 @dataclass
@@ -57,24 +59,30 @@ class _SimState:
     cash: float = 0.0
     starting_value: float = 0.0
     trades: list[TradeRecord] = field(default_factory=list)
-    daily_deployed: float = 0.0
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
     restriction_tracker: RestrictionTracker | None = None
 
 
+DEFAULT_TRAIN_PCT = 0.70
+
+
 class BacktestEngine:
     def __init__(
         self,
-        agents: list[Agent],
-        sizing_engine: SizingEngine | None = None,
-        train_pct: float = 0.70,
+        allocator: Allocator,
+        rebalancer: Rebalancer,
+        mechanical_strategies: list[Strategy] | None = None,
+        constraints: AllocationConstraints | None = None,
+        train_pct: float = DEFAULT_TRAIN_PCT,
         enable_split: bool = True,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
-        self._agents = agents
-        self._sizing = sizing_engine or SizingEngine()
+        self._allocator = allocator
+        self._rebalancer = rebalancer
+        self._mechanical = mechanical_strategies or []
+        self._constraints = constraints or AllocationConstraints()
         self._train_pct = train_pct
         self._enable_split = enable_split
         self._log = log_fn or (lambda _msg: None)
@@ -91,7 +99,6 @@ class BacktestEngine:
         ticker_idx = self._build_ticker_index(price_data, start, end)
         state = self._init_positions(portfolio, price_data, trading_days, start, end)
 
-        # Deferred holdings: data starts after backtest start
         deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
 
         self._simulate(
@@ -220,7 +227,6 @@ class BacktestEngine:
             ticker_start = first_dates[h.ticker]
             if ticker_start > trading_days[0]:
                 deferred[h.ticker] = h.shares
-                # Track in state via caller — but set up bh baseline now
                 self._log(
                     f"{h.ticker}: data starts {ticker_start} "
                     f"(after backtest start {start}) — "
@@ -237,7 +243,6 @@ class BacktestEngine:
         deferred: dict[str, float],
         split_date: date | None,
     ) -> None:
-        # Set up deferred bh positions
         for ticker, shares in deferred.items():
             state.bh_positions[ticker] = shares
             state.positions[ticker] = 0.0
@@ -246,7 +251,6 @@ class BacktestEngine:
 
         for day in trading_days:
             if state.last_day != day:
-                state.daily_deployed = 0.0
                 state.last_day = day
 
             # Advance pointers and build current slices
@@ -273,7 +277,7 @@ class BacktestEngine:
                     for t in current_data
                 )
 
-            # Run agents and execute orders
+            # Phased allocator flow
             self._run_day(state, portfolio, current_data, day)
 
     def _activate_deferred(
@@ -306,52 +310,108 @@ class BacktestEngine:
         current_data: dict[str, np.ndarray],
         day: date,
     ) -> None:
-        for agent in self._agents:
-            signals = agent.run(
-                portfolio, current_data,
-                today=day,
-                cost_basis_overrides=state.cost_basis,
-            )
-            for signal in signals:
-                order = self._sizing.size_order(
-                    signal=signal,
-                    available_cash=state.cash,
-                    position_shares=state.positions.get(signal.ticker, 0),
-                    cash_infusion=portfolio.cash_infusion,
-                    daily_deployed=state.daily_deployed,
-                    today=day,
-                )
-                if order is None or order.shares == 0:
-                    continue
+        # Build price series and current prices for active tickers
+        active_tickers = [
+            t for t in state.positions
+            if state.positions.get(t, 0) > 0 or t in current_data
+        ]
+        # Only include tickers that have price data
+        active_tickers = [t for t in active_tickers if t in current_data]
 
-                if state.restriction_tracker and state.restriction_tracker.is_blocked(
-                    order.ticker, order.direction, day,
-                ):
-                    continue
+        if not active_tickers:
+            return
 
-                trade = self._execute(order, day, state)
-                if trade is not None:
-                    state.trades.append(trade)
-                    if state.restriction_tracker:
-                        state.restriction_tracker.record_trade(
-                            order.ticker, order.direction, day,
-                        )
-                    if order.direction == Direction.BUY:
-                        state.cash -= order.estimated_value
-                        state.daily_deployed += order.estimated_value
-                        self._update_cost_basis(state, order)
-                    else:
-                        state.cash += order.estimated_value
-                        if state.positions.get(order.ticker, 0) == 0:
-                            state.cost_basis.pop(order.ticker, None)
+        # Build pd.Series for allocator (from numpy arrays)
+        price_series: dict[str, pd.Series] = {}
+        current_prices: dict[str, float] = {}
+        for ticker in active_tickers:
+            arr = current_data[ticker]
+            price_series[ticker] = pd.Series(arr)
+            current_prices[ticker] = float(arr[-1])
+
+        # Build per-ticker context (cost_basis for strategies that need it)
+        context: dict[str, dict[str, object]] = {}
+        for ticker in active_tickers:
+            ctx: dict[str, object] = {}
+            if ticker in state.cost_basis:
+                ctx["cost_basis"] = state.cost_basis[ticker]
+            context[ticker] = ctx
+
+        # Phase 1-3: Allocator scores, blends, and applies vetoes
+        allocation = self._allocator.allocate(
+            active_tickers, price_series, context,
+        )
+
+        # Phase 4: Rebalancer diffs target vs current, generates orders
+        positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
+        rebalance_orders = self._rebalancer.generate_orders(
+            allocation, positions, current_prices, state.cash, self._constraints,
+        )
+
+        # Phase 5: Mechanical strategies generate intents
+        mechanical_intents: list[MechanicalIntent] = []
+        for strat in self._mechanical:
+            for ticker in active_tickers:
+                if ticker in price_series:
+                    ticker_ctx = context.get(ticker, {})
+                    intents = strat.generate_intents(
+                        ticker, price_series[ticker], **ticker_ctx,
+                    )
+                    mechanical_intents.extend(intents)
+
+        # Estimate post-rebalance cash for mechanical sizing
+        sell_proceeds = sum(
+            o.estimated_value for o in rebalance_orders
+            if o.direction == Direction.SELL
+        )
+        buy_cost = sum(
+            o.estimated_value for o in rebalance_orders
+            if o.direction == Direction.BUY
+        )
+        post_rebalance_cash = state.cash + sell_proceeds - buy_cost
+
+        mechanical_orders = self._rebalancer.size_mechanical(
+            mechanical_intents, post_rebalance_cash, current_prices,
+        )
+
+        all_orders = rebalance_orders + mechanical_orders
+
+        # Phase 6: Check trading restrictions, filter blocked
+        filtered_orders: list[Order] = []
+        for order in all_orders:
+            if state.restriction_tracker and state.restriction_tracker.is_blocked(
+                order.ticker, order.direction, day,
+            ):
+                continue
+            filtered_orders.append(order)
+
+        # Phase 7: Execute all orders
+        for order in filtered_orders:
+            if order.shares <= 0:
+                continue
+            trade = self._execute(order, day, state)
+            if trade is not None:
+                state.trades.append(trade)
+                if state.restriction_tracker:
+                    state.restriction_tracker.record_trade(
+                        order.ticker, order.direction, day,
+                    )
+                if order.direction == Direction.BUY:
+                    state.cash -= order.estimated_value
+                    self._update_cost_basis(state, order)
+                else:
+                    state.cash += order.estimated_value
+                    if state.positions.get(order.ticker, 0) == 0:
+                        state.cost_basis.pop(order.ticker, None)
 
     def _update_cost_basis(self, state: _SimState, order: Order) -> None:
         tk = order.ticker
         old_shares = state.positions[tk] - order.shares
         old_cost = state.cost_basis.get(tk, 0.0)
-        state.cost_basis[tk] = (
-            old_cost * old_shares + order.signal.price * order.shares
-        ) / state.positions[tk]
+        if state.positions[tk] > 0:
+            state.cost_basis[tk] = (
+                old_cost * old_shares + order.price * order.shares
+            ) / state.positions[tk]
 
     def _execute(
         self,
@@ -360,6 +420,7 @@ class BacktestEngine:
         state: _SimState,
     ) -> TradeRecord | None:
         ticker = order.ticker
+        strategy_name = order.context.source
 
         if order.direction == Direction.BUY:
             state.positions[ticker] = state.positions.get(ticker, 0) + order.shares
@@ -369,8 +430,8 @@ class BacktestEngine:
                 ticker=ticker,
                 direction=Direction.BUY,
                 shares=order.shares,
-                price=order.signal.price,
-                strategy_name=order.signal.strategy_name,
+                price=order.price,
+                strategy_name=strategy_name,
             )
 
         # SELL — FIFO for holding period
@@ -402,8 +463,8 @@ class BacktestEngine:
             ticker=ticker,
             direction=Direction.SELL,
             shares=order.shares,
-            price=order.signal.price,
-            strategy_name=order.signal.strategy_name,
+            price=order.price,
+            strategy_name=strategy_name,
             holding_period=holding_period,
         )
 
