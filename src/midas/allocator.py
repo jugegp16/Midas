@@ -6,7 +6,7 @@ import logging
 import math
 from dataclasses import dataclass
 
-import pandas as pd
+import numpy as np
 
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
 from midas.strategies.base import Strategy
@@ -85,7 +85,7 @@ class Allocator:
     def allocate(
         self,
         tickers: list[str],
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, np.ndarray],
         context: dict[str, dict[str, object]] | None = None,
     ) -> AllocationResult:
         """Compute target weights for all tickers.

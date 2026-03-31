@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability, StrategyTier
 from midas.strategies.base import Strategy
@@ -19,7 +18,7 @@ class StopLoss(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         *,
         cost_basis: float | None = None,
         **kwargs: object,
@@ -27,7 +26,7 @@ class StopLoss(Strategy):
         if cost_basis is None or cost_basis <= 0:
             return None
 
-        current = float(np.asarray(price_history)[-1])
+        current = float(price_history[-1])
         loss = (cost_basis - current) / cost_basis
 
         if loss >= self._loss_threshold:

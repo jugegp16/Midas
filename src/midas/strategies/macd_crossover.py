@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -32,21 +31,20 @@ class MACDCrossover(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         min_len = self._slow_period + self._signal_period
         if len(price_history) < min_len:
             return None
 
-        values = np.asarray(price_history, dtype=float)
-        fast_ema = _ema(values, self._fast_period)
-        slow_ema = _ema(values, self._slow_period)
+        fast_ema = _ema(price_history, self._fast_period)
+        slow_ema = _ema(price_history, self._slow_period)
         macd_line = fast_ema - slow_ema
         signal_line = _ema(macd_line, self._signal_period)
 
         if macd_line[-2] <= signal_line[-2] and macd_line[-1] > signal_line[-1]:
-            current = float(values[-1])
+            current = float(price_history[-1])
             diff = float(macd_line[-1] - signal_line[-1])
             return self._clamp(min(abs(diff) / current * 100, 1.0))
         return 0.0

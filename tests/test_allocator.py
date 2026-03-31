@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-import pandas as pd
+import numpy as np
 
 from midas.allocator import Allocator
 from midas.models import AllocationConstraints
@@ -13,8 +13,8 @@ from midas.strategies.momentum import Momentum
 from midas.strategies.stop_loss import StopLoss
 
 
-def _prices(values: list[float]) -> pd.Series:
-    return pd.Series(values)
+def _prices(values: list[float]) -> np.ndarray:
+    return np.array(values)
 
 
 class TestAllocator:

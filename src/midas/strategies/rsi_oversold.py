@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -16,14 +15,13 @@ class RSIOversold(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < self._window + 1:
             return None
 
-        values = np.asarray(price_history)
-        deltas = np.diff(values[-(self._window + 1) :])
+        deltas = np.diff(price_history[-(self._window + 1) :])
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
 

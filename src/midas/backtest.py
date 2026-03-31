@@ -318,21 +318,20 @@ class BacktestEngine:
         current_data: dict[str, np.ndarray],
         day: date,
     ) -> None:
-        # Build price series and current prices for active tickers
-        active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
+        # Build price arrays and current prices for active tickers
+        active_tickers = [
+            t for t in state.positions
+            if state.positions.get(t, 0) > 0 or t in current_data
+        ]
         # Only include tickers that have price data
         active_tickers = [t for t in active_tickers if t in current_data]
 
         if not active_tickers:
             return
 
-        # Build pd.Series for allocator (from numpy arrays)
-        price_series: dict[str, pd.Series] = {}
         current_prices: dict[str, float] = {}
         for ticker in active_tickers:
-            arr = current_data[ticker]
-            price_series[ticker] = pd.Series(arr)
-            current_prices[ticker] = float(arr[-1])
+            current_prices[ticker] = float(current_data[ticker][-1])
 
         # Build per-ticker context (cost_basis for strategies that need it)
         context: dict[str, dict[str, object]] = {}
@@ -344,9 +343,7 @@ class BacktestEngine:
 
         # Phase 1-3: Allocator scores, blends, and applies vetoes
         allocation = self._allocator.allocate(
-            active_tickers,
-            price_series,
-            context,
+            active_tickers, current_data, context,
         )
 
         # Phase 4: Rebalancer diffs target vs current, generates orders
@@ -363,12 +360,10 @@ class BacktestEngine:
         mechanical_intents: list[MechanicalIntent] = []
         for strat in self._mechanical:
             for ticker in active_tickers:
-                if ticker in price_series:
+                if ticker in current_data:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
-                        ticker,
-                        price_series[ticker],
-                        **ticker_ctx,
+                        ticker, current_data[ticker], **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)
 

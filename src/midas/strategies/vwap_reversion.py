@@ -8,7 +8,6 @@ extended to use true volume-weighted average price.
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -21,15 +20,14 @@ class VWAPReversion(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < self._window:
             return None
 
-        values = np.asarray(price_history)
-        current = float(values[-1])
-        avg_price = float(values[-self._window :].mean())
+        current = float(price_history[-1])
+        avg_price = float(price_history[-self._window :].mean())
 
         if avg_price == 0:
             return 0.0
