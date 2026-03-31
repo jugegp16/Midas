@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -155,13 +156,11 @@ class BacktestEngine:
     ) -> dict[str, _TickerIndex]:
         index: dict[str, _TickerIndex] = {}
         for ticker, series in price_data.items():
-            in_range = series[
-                (series.index >= start) & (series.index <= end)  # type: ignore[operator]
-            ]
+            in_range = series[(series.index >= start) & (series.index <= end)]
             if len(in_range) > 0:
                 index[ticker] = _TickerIndex(
                     dates=list(in_range.index),
-                    values=in_range.values,
+                    values=np.asarray(in_range.values),
                 )
         return index
 
@@ -172,7 +171,7 @@ class BacktestEngine:
     ) -> dict[str, date]:
         result: dict[str, date] = {}
         for ticker, series in price_data.items():
-            in_range = series[series.index >= start]  # type: ignore[operator]
+            in_range = series[series.index >= start]
             if len(in_range) > 0:
                 result[ticker] = in_range.index[0]
         return result
@@ -202,11 +201,7 @@ class BacktestEngine:
 
             ticker_start = first_dates[h.ticker]
             if ticker_start <= trading_days[0]:
-                entry_price = float(
-                    price_data[h.ticker][
-                        price_data[h.ticker].index >= start  # type: ignore[operator]
-                    ].iloc[0]
-                )
+                entry_price = float(price_data[h.ticker][price_data[h.ticker].index >= start].iloc[0])
                 state.positions[h.ticker] = h.shares
                 state.bh_positions[h.ticker] = h.shares
                 state.cost_basis[h.ticker] = entry_price
@@ -331,9 +326,9 @@ class BacktestEngine:
             current_prices[ticker] = float(current_data[ticker][-1])
 
         # Build per-ticker context (cost_basis for strategies that need it)
-        context: dict[str, dict[str, object]] = {}
+        context: dict[str, dict[str, Any]] = {}
         for ticker in active_tickers:
-            ctx: dict[str, object] = {}
+            ctx: dict[str, Any] = {}
             if ticker in state.cost_basis:
                 ctx["cost_basis"] = state.cost_basis[ticker]
             context[ticker] = ctx

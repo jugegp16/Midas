@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -54,8 +55,8 @@ class Allocator:
         constraints: AllocationConstraints,
         n_tickers: int,
     ) -> None:
-        self._conviction = [_ScoredStrategy(s, w) for s, w in conviction_strategies]
-        self._protective = [_ProtectiveEntry(s, vt) for s, vt in protective_strategies]
+        self._conviction: list[_ScoredStrategy] = [_ScoredStrategy(s, w) for s, w in conviction_strategies]
+        self._protective: list[_ProtectiveEntry] = [_ProtectiveEntry(s, vt) for s, vt in protective_strategies]
         self._constraints = constraints
         self._n_tickers = n_tickers
 
@@ -86,7 +87,7 @@ class Allocator:
         self,
         tickers: list[str],
         price_data: dict[str, np.ndarray],
-        context: dict[str, dict[str, object]] | None = None,
+        context: dict[str, dict[str, Any]] | None = None,
     ) -> AllocationResult:
         """Compute target weights for all tickers.
 
@@ -125,12 +126,12 @@ class Allocator:
             weighted_sum = 0.0
             weight_total = 0.0
 
-            for entry in self._conviction:
-                s = entry.strategy.score(prices, **ticker_ctx)
+            for scored in self._conviction:
+                s = scored.strategy.score(prices, **ticker_ctx)
                 if s is not None:
-                    ticker_contributions[entry.strategy.name] = s
-                    weighted_sum += entry.weight * s
-                    weight_total += entry.weight
+                    ticker_contributions[scored.strategy.name] = s
+                    weighted_sum += scored.weight * s
+                    weight_total += scored.weight
 
             contributions[ticker] = ticker_contributions
 

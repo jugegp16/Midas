@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
+import yfinance as yf  # type: ignore[import-untyped]
 
 from midas.data.provider import DataProvider
 
@@ -24,7 +24,7 @@ class CachedYFinanceProvider(DataProvider):
         cache_key = self._cache_path(ticker, start, end)
         if cache_key.exists():
             with open(cache_key, "rb") as f:
-                return pickle.load(f)
+                return pickle.load(f)  # type: ignore[no-any-return]
 
         # yfinance end is exclusive, so add a day
         df = yf.download(
@@ -39,7 +39,7 @@ class CachedYFinanceProvider(DataProvider):
             raise ValueError(msg)
 
         series: pd.Series = df["Close"].squeeze()
-        series.index = pd.to_datetime(series.index).date  # type: ignore[assignment]
+        series.index = pd.to_datetime(series.index).date
         series.name = ticker
 
         with open(cache_key, "wb") as f:

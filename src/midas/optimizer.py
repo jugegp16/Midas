@@ -9,6 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 import optuna
 import pandas as pd
@@ -212,7 +213,7 @@ def _run_trial(
     return total_return, bh_return, result.train_return, result.test_return
 
 
-_worker_state: dict = {}
+_worker_state: dict[str, Any] = {}
 
 
 def _init_worker(
@@ -343,7 +344,7 @@ def optimize(
 
     return OptimizeResult(
         best_params=best_params,
-        best_return=round(best.value, 4),
+        best_return=round(best.value or 0.0, 4),
         best_bh_return=round(best.user_attrs["bh_return"], 4),
         best_train_return=round(best.user_attrs["train_return"], 4),
         best_test_return=round(best.user_attrs["test_return"], 4),
