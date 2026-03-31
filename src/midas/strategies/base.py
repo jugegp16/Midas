@@ -20,6 +20,8 @@ class Strategy(ABC):
     def score(
         self,
         price_history: np.ndarray,
+        *,
+        cost_basis: float | None = None,
         **kwargs: object,
     ) -> float | None:
         """Return conviction score.
