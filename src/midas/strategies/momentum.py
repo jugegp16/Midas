@@ -21,8 +21,8 @@ class Momentum(Strategy):
             return None
 
         current, prev = float(price_history[-1]), float(price_history[-2])
-        ma = float(price_history[-self._window:].mean())
-        prev_ma = float(price_history[-(self._window + 1):-1].mean())
+        ma = float(price_history[-self._window :].mean())
+        prev_ma = float(price_history[-(self._window + 1) : -1].mean())
 
         if prev <= prev_ma and current > ma:
             pct_above = (current - ma) / ma

@@ -22,7 +22,7 @@ class MeanReversion(Strategy):
             return None
 
         current = float(price_history[-1])
-        ma = float(price_history[-self._window:].mean())
+        ma = float(price_history[-self._window :].mean())
 
         if ma == 0:
             return 0.0

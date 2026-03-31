@@ -99,9 +99,7 @@ class LiveEngine:
 
         # Convert pd.Series to numpy arrays at the boundary — strategies
         # and the allocator operate on np.ndarray for performance.
-        price_arrays: dict[str, np.ndarray] = {
-            t: np.asarray(price_data[t]) for t in active_tickers
-        }
+        price_arrays: dict[str, np.ndarray] = {t: np.asarray(price_data[t]) for t in active_tickers}
 
         # Phase 1-3: Allocate
         allocation = self._allocator.allocate(active_tickers, price_arrays, context)
@@ -127,7 +125,9 @@ class LiveEngine:
                 if ticker in price_arrays:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
-                        ticker, price_arrays[ticker], **ticker_ctx,
+                        ticker,
+                        price_arrays[ticker],
+                        **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)
 

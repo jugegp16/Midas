@@ -41,16 +41,15 @@ class DollarCostAveraging(Strategy):
 
         if len(price_history) % self._frequency_days == 0:
             current = float(price_history[-1])
-            return [MechanicalIntent(
-                ticker=ticker,
-                direction=Direction.BUY,
-                target_value=self._amount,
-                reason=(
-                    f"{ticker} DCA trigger: {self._frequency_days}-day "
-                    f"interval reached at ${current:.2f}"
-                ),
-                source=self.name,
-            )]
+            return [
+                MechanicalIntent(
+                    ticker=ticker,
+                    direction=Direction.BUY,
+                    target_value=self._amount,
+                    reason=(f"{ticker} DCA trigger: {self._frequency_days}-day interval reached at ${current:.2f}"),
+                    source=self.name,
+                )
+            ]
         return []
 
     @property

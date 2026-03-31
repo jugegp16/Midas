@@ -319,10 +319,7 @@ class BacktestEngine:
         day: date,
     ) -> None:
         # Build price arrays and current prices for active tickers
-        active_tickers = [
-            t for t in state.positions
-            if state.positions.get(t, 0) > 0 or t in current_data
-        ]
+        active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
         # Only include tickers that have price data
         active_tickers = [t for t in active_tickers if t in current_data]
 
@@ -343,7 +340,9 @@ class BacktestEngine:
 
         # Phase 1-3: Allocator scores, blends, and applies vetoes
         allocation = self._allocator.allocate(
-            active_tickers, current_data, context,
+            active_tickers,
+            current_data,
+            context,
         )
 
         # Phase 4: Rebalancer diffs target vs current, generates orders
@@ -363,7 +362,9 @@ class BacktestEngine:
                 if ticker in current_data:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
-                        ticker, current_data[ticker], **ticker_ctx,
+                        ticker,
+                        current_data[ticker],
+                        **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)
 
