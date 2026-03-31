@@ -42,7 +42,4 @@ class GapDownRecovery(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy when price gaps down >{self._gap_threshold:.0%} "
-            f"then recovers above the gap level"
-        )
+        return f"Buy when price gaps down >{self._gap_threshold:.0%} then recovers above the gap level"

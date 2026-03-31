@@ -31,9 +31,7 @@ class StopLoss(Strategy):
         loss = (cost_basis - current) / cost_basis
 
         if loss >= self._loss_threshold:
-            return -self._clamp(
-                (loss - self._loss_threshold) / self._loss_threshold
-            )
+            return -self._clamp((loss - self._loss_threshold) / self._loss_threshold)
         return 0.0
 
     @property
@@ -42,7 +40,4 @@ class StopLoss(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Sell when unrealized loss exceeds {self._loss_threshold:.0%} "
-            f"of cost basis"
-        )
+        return f"Sell when unrealized loss exceeds {self._loss_threshold:.0%} of cost basis"

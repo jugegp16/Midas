@@ -85,9 +85,7 @@ class TestMomentum:
 
 
 class TestRSIOversold:
-    def test_positive_score_on_oversold(
-        self, volatile_dropping_prices: pd.Series
-    ) -> None:
+    def test_positive_score_on_oversold(self, volatile_dropping_prices: pd.Series) -> None:
         strategy = RSIOversold(window=14, oversold_threshold=40.0)
         score = strategy.score(volatile_dropping_prices)
         assert score is not None
@@ -110,9 +108,7 @@ class TestRSIOversold:
 
 
 class TestRSIOverbought:
-    def test_negative_score_on_overbought(
-        self, volatile_rising_prices: pd.Series
-    ) -> None:
+    def test_negative_score_on_overbought(self, volatile_rising_prices: pd.Series) -> None:
         strategy = RSIOverbought(window=14, overbought_threshold=65.0)
         score = strategy.score(volatile_rising_prices)
         assert score is not None
@@ -197,15 +193,11 @@ class TestDollarCostAveraging:
 
 
 class TestGapDownRecovery:
-    def test_positive_score_on_gap_recovery(
-        self, gap_down_recovery_prices: pd.Series
-    ) -> None:
+    def test_positive_score_on_gap_recovery(self, gap_down_recovery_prices: pd.Series) -> None:
         strategy = GapDownRecovery(gap_threshold=0.03)
         found_signal = False
         for i in range(3, len(gap_down_recovery_prices)):
-            score = strategy.score(
-                gap_down_recovery_prices.iloc[: i + 1]
-            )
+            score = strategy.score(gap_down_recovery_prices.iloc[: i + 1])
             if score is not None and score > 0:
                 found_signal = True
                 break
@@ -224,15 +216,11 @@ class TestGapDownRecovery:
 class TestTrailingStop:
     def test_negative_score_on_drawdown(self, peak_then_drop_prices: pd.Series) -> None:
         strategy = TrailingStop(trail_pct=0.08)
-        score = strategy.score(
-            peak_then_drop_prices, cost_basis=100.0
-        )
+        score = strategy.score(peak_then_drop_prices, cost_basis=100.0)
         assert score is not None
         assert score < 0.0
 
-    def test_abstain_without_cost_basis(
-        self, peak_then_drop_prices: pd.Series
-    ) -> None:
+    def test_abstain_without_cost_basis(self, peak_then_drop_prices: pd.Series) -> None:
         strategy = TrailingStop(trail_pct=0.08)
         assert strategy.score(peak_then_drop_prices) is None
 
@@ -256,9 +244,7 @@ class TestStopLoss:
         assert score is not None
         assert score < 0.0
 
-    def test_abstain_without_cost_basis(
-        self, dropping_prices: pd.Series
-    ) -> None:
+    def test_abstain_without_cost_basis(self, dropping_prices: pd.Series) -> None:
         strategy = StopLoss(loss_threshold=0.10)
         assert strategy.score(dropping_prices) is None
 
@@ -299,15 +285,11 @@ class TestVWAPReversion:
 
 
 class TestMovingAverageCrossover:
-    def test_positive_score_on_golden_cross(
-        self, ma_crossover_prices: pd.Series
-    ) -> None:
+    def test_positive_score_on_golden_cross(self, ma_crossover_prices: pd.Series) -> None:
         strategy = MovingAverageCrossover(short_window=10, long_window=30)
         found_signal = False
         for i in range(31, len(ma_crossover_prices)):
-            score = strategy.score(
-                ma_crossover_prices.iloc[: i + 1]
-            )
+            score = strategy.score(ma_crossover_prices.iloc[: i + 1])
             if score is not None and score > 0:
                 found_signal = True
                 break

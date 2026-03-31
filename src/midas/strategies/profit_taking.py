@@ -27,9 +27,7 @@ class ProfitTaking(Strategy):
         gain = (current - cost_basis) / cost_basis
 
         if gain >= self._gain_threshold:
-            return -self._clamp(
-                (gain - self._gain_threshold) / self._gain_threshold
-            )
+            return -self._clamp((gain - self._gain_threshold) / self._gain_threshold)
         return 0.0
 
     @property
@@ -38,7 +36,4 @@ class ProfitTaking(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Sell when unrealized gains exceed {self._gain_threshold:.0%} "
-            f"of cost basis"
-        )
+        return f"Sell when unrealized gains exceed {self._gain_threshold:.0%} of cost basis"

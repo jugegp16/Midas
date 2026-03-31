@@ -50,10 +50,7 @@ class Rebalancer:
         Returns:
             List of orders, sells before buys.
         """
-        total_value = cash + sum(
-            positions.get(t, 0.0) * prices.get(t, 0.0)
-            for t in allocation.targets
-        )
+        total_value = cash + sum(positions.get(t, 0.0) * prices.get(t, 0.0) for t in allocation.targets)
         if total_value <= 0:
             return []
 
@@ -62,9 +59,7 @@ class Rebalancer:
         for ticker in allocation.targets:
             pos = positions.get(ticker, 0.0)
             px = prices.get(ticker, 0.0)
-            current_weights[ticker] = (
-                (pos * px) / total_value if total_value > 0 else 0.0
-            )
+            current_weights[ticker] = (pos * px) / total_value if total_value > 0 else 0.0
 
         # Compute deltas, skip below threshold
         sells: list[Order] = []
@@ -96,9 +91,7 @@ class Rebalancer:
                     shares=shares,
                     price=round(slip_price, 4),
                     estimated_value=round(shares * slip_price, 2),
-                    context=self._build_context(
-                        ticker, allocation, target_w, current_w, Direction.SELL
-                    ),
+                    context=self._build_context(ticker, allocation, target_w, current_w, Direction.SELL),
                 )
                 sells.append(order)
             else:
@@ -144,9 +137,7 @@ class Rebalancer:
                 shares=shares,
                 price=round(slip_price, 4),
                 estimated_value=round(cost, 2),
-                context=self._build_context(
-                    ticker, allocation, target_w, current_w, Direction.BUY
-                ),
+                context=self._build_context(ticker, allocation, target_w, current_w, Direction.BUY),
             )
             buy_orders.append(order)
 
@@ -185,42 +176,46 @@ class Rebalancer:
                     continue
                 cost = shares * slip_price
                 available -= cost
-                orders.append(Order(
-                    ticker=intent.ticker,
-                    direction=Direction.BUY,
-                    shares=shares,
-                    price=round(slip_price, 4),
-                    estimated_value=round(cost, 2),
-                    context=OrderContext(
-                        contributions={},
-                        blended_score=0.0,
-                        target_weight=0.0,
-                        current_weight=0.0,
-                        reason=intent.reason,
-                        source=intent.source,
-                    ),
-                ))
+                orders.append(
+                    Order(
+                        ticker=intent.ticker,
+                        direction=Direction.BUY,
+                        shares=shares,
+                        price=round(slip_price, 4),
+                        estimated_value=round(cost, 2),
+                        context=OrderContext(
+                            contributions={},
+                            blended_score=0.0,
+                            target_weight=0.0,
+                            current_weight=0.0,
+                            reason=intent.reason,
+                            source=intent.source,
+                        ),
+                    )
+                )
             else:
                 # Mechanical sells are unusual but supported
                 slip_price = px * (1 - self._config.default_slippage)
                 shares = math.floor(intent.target_value / slip_price)
                 if shares <= 0:
                     continue
-                orders.append(Order(
-                    ticker=intent.ticker,
-                    direction=Direction.SELL,
-                    shares=shares,
-                    price=round(slip_price, 4),
-                    estimated_value=round(shares * slip_price, 2),
-                    context=OrderContext(
-                        contributions={},
-                        blended_score=0.0,
-                        target_weight=0.0,
-                        current_weight=0.0,
-                        reason=intent.reason,
-                        source=intent.source,
-                    ),
-                ))
+                orders.append(
+                    Order(
+                        ticker=intent.ticker,
+                        direction=Direction.SELL,
+                        shares=shares,
+                        price=round(slip_price, 4),
+                        estimated_value=round(shares * slip_price, 2),
+                        context=OrderContext(
+                            contributions={},
+                            blended_score=0.0,
+                            target_weight=0.0,
+                            current_weight=0.0,
+                            reason=intent.reason,
+                            source=intent.source,
+                        ),
+                    )
+                )
 
         return orders
 
@@ -240,10 +235,7 @@ class Rebalancer:
             f"current {current_weight:.1%} (blended score {blended:+.3f})"
         )
         # Primary strategy = highest absolute contribution
-        source = (
-            max(contribs, key=lambda k: abs(contribs[k]))
-            if contribs else "Rebalancer"
-        )
+        source = max(contribs, key=lambda k: abs(contribs[k])) if contribs else "Rebalancer"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,

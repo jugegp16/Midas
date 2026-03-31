@@ -24,7 +24,7 @@ class MeanReversion(Strategy):
 
         values = np.asarray(price_history)
         current = float(values[-1])
-        ma = float(values[-self._window:].mean())
+        ma = float(values[-self._window :].mean())
 
         if ma == 0:
             return 0.0
@@ -40,7 +40,4 @@ class MeanReversion(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy when price is >{self._threshold:.0%} below "
-            f"the {self._window}-day moving average"
-        )
+        return f"Buy when price is >{self._threshold:.0%} below the {self._window}-day moving average"

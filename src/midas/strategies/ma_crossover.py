@@ -50,7 +50,4 @@ class MovingAverageCrossover(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy on golden cross ({self._short_window}/{self._long_window}-day MA), "
-            f"sell on death cross"
-        )
+        return f"Buy on golden cross ({self._short_window}/{self._long_window}-day MA), sell on death cross"

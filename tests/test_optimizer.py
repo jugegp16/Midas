@@ -22,12 +22,7 @@ def _make_optimizer_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date,
         available_cash=2000.0,
     )
     # Price drops then recovers — mean reversion should find something.
-    returns = (
-        [0.0] * 20
-        + [-0.008] * 20
-        + [0.01] * 30
-        + [0.0] * 30
-    )
+    returns = [0.0] * 20 + [-0.008] * 20 + [0.01] * 30 + [0.0] * 30
     prices = make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="TEST")
     start = min(prices.index)
     end = max(prices.index)

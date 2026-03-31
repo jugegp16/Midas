@@ -26,10 +26,7 @@ from midas.strategies import STRATEGY_REGISTRY, Strategy
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
     cls = STRATEGY_REGISTRY.get(cfg.name)
     if cls is None:
-        msg = (
-            f"Unknown strategy '{cfg.name}'. "
-            f"Available: {', '.join(STRATEGY_REGISTRY)}"
-        )
+        msg = f"Unknown strategy '{cfg.name}'. Available: {', '.join(STRATEGY_REGISTRY)}"
         raise click.ClickException(msg)
     return cls(**cfg.params)
 
@@ -40,9 +37,7 @@ def _build_components(
     n_tickers: int,
 ) -> tuple[Allocator, Rebalancer, list[Strategy]]:
     """Build allocator, rebalancer, and mechanical strategies from config."""
-    configs = strategy_configs or [
-        StrategyConfig(name=name) for name in STRATEGY_REGISTRY
-    ]
+    configs = strategy_configs or [StrategyConfig(name=name) for name in STRATEGY_REGISTRY]
 
     conviction: list[tuple[Strategy, float]] = []
     protective: list[tuple[Strategy, float]] = []
@@ -93,21 +88,30 @@ def cli() -> None:
 
 @cli.command()
 @click.option(
-    "--portfolio", "-p", required=True, type=click.Path(exists=True),
+    "--portfolio",
+    "-p",
+    required=True,
+    type=click.Path(exists=True),
     help="Path to portfolio YAML config.",
 )
 @click.option(
-    "--strategies", "-s", default=None, type=click.Path(exists=True),
+    "--strategies",
+    "-s",
+    default=None,
+    type=click.Path(exists=True),
     help="Path to strategies YAML config. Defaults to all strategies.",
 )
 @click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option(
-    "--output", "-o", default="backtest_results.csv",
+    "--output",
+    "-o",
+    default="backtest_results.csv",
     help="Output CSV path.",
 )
 @click.option(
-    "--train-pct", default=DEFAULT_TRAIN_PCT,
+    "--train-pct",
+    default=DEFAULT_TRAIN_PCT,
     help="Train/test split ratio (0-1).",
 )
 @click.option("--no-split", is_flag=True, help="Disable train/test split.")
@@ -122,17 +126,16 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = (
-        load_strategies(Path(strategies)) if strategies
-        else (None, AllocationConstraints())
-    )
+    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
 
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
     allocator, rebalancer, mechanical = _build_components(
-        strat_configs, constraints, n_tickers,
+        strat_configs,
+        constraints,
+        n_tickers,
     )
 
     engine = BacktestEngine(
@@ -156,11 +159,17 @@ def backtest(
 
 @cli.command()
 @click.option(
-    "--portfolio", "-p", required=True, type=click.Path(exists=True),
+    "--portfolio",
+    "-p",
+    required=True,
+    type=click.Path(exists=True),
     help="Path to portfolio YAML config.",
 )
 @click.option(
-    "--strategies", "-s", default=None, type=click.Path(exists=True),
+    "--strategies",
+    "-s",
+    default=None,
+    type=click.Path(exists=True),
     help="Path to strategies YAML config. Defaults to all strategies.",
 )
 @click.option("--interval", default=60, help="Poll interval in seconds.")
@@ -175,15 +184,14 @@ def live(
     from midas.live import LiveEngine
 
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = (
-        load_strategies(Path(strategies)) if strategies
-        else (None, AllocationConstraints())
-    )
+    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
     allocator, rebalancer, mechanical = _build_components(
-        strat_configs, constraints, n_tickers,
+        strat_configs,
+        constraints,
+        n_tickers,
     )
 
     engine = LiveEngine(
@@ -201,21 +209,32 @@ def live(
 
 @cli.command()
 @click.option(
-    "--portfolio", "-p", required=True, type=click.Path(exists=True),
+    "--portfolio",
+    "-p",
+    required=True,
+    type=click.Path(exists=True),
     help="Path to portfolio YAML config.",
 )
 @click.option(
-    "--strategies", "-s", default=None, type=click.Path(exists=True),
+    "--strategies",
+    "-s",
+    default=None,
+    type=click.Path(exists=True),
     help="Strategies to optimize. Defaults to all.",
 )
 @click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option(
-    "--output", "-o", default="optimized_strategies.yaml",
+    "--output",
+    "-o",
+    default="optimized_strategies.yaml",
     help="Output YAML path.",
 )
 @click.option(
-    "--n-trials", "-n", default=200, show_default=True,
+    "--n-trials",
+    "-n",
+    default=200,
+    show_default=True,
     help="Number of Optuna optimisation trials.",
 )
 def optimize(
@@ -272,6 +291,7 @@ def optimize(
         table.add_row(name, param_str)
 
     from midas.output import console
+
     console.print(table)
 
 

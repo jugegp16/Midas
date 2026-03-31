@@ -42,9 +42,7 @@ class TestAllocator:
     def test_bullish_score_increases_weight(self):
         """A positive blended score should produce weight > base_weight."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(
-            min_cash_pct=0.05, sigmoid_steepness=2.0, max_position_pct=0.90
-        )
+        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=2.0, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -100,9 +98,7 @@ class TestAllocator:
     def test_max_position_pct_caps_weight(self):
         """Target weights are capped at max_position_pct."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(
-            max_position_pct=0.10, min_cash_pct=0.05
-        )
+        constraints = AllocationConstraints(max_position_pct=0.10, min_cash_pct=0.05)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -118,9 +114,7 @@ class TestAllocator:
     def test_normalization_respects_min_cash(self):
         """Sum of all target weights should not exceed 1 - min_cash_pct."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(
-            min_cash_pct=0.20, sigmoid_steepness=5.0
-        )
+        constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],

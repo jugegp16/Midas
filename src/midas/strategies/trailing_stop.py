@@ -40,9 +40,7 @@ class TrailingStop(Strategy):
         drawdown = (high_water - current) / high_water
 
         if drawdown >= self._trail_pct and current > cost_basis:
-            return -self._clamp(
-                (drawdown - self._trail_pct) / self._trail_pct
-            )
+            return -self._clamp((drawdown - self._trail_pct) / self._trail_pct)
         return 0.0
 
     @property
@@ -51,7 +49,4 @@ class TrailingStop(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Sell when price falls {self._trail_pct:.0%} from its "
-            f"high-water mark (while still above cost basis)"
-        )
+        return f"Sell when price falls {self._trail_pct:.0%} from its high-water mark (while still above cost basis)"

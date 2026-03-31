@@ -76,12 +76,8 @@ class TestRebalancer:
         cash = 3000.0  # total = 10000
         constraints = AllocationConstraints(rebalance_threshold=0.02)
         orders = r.generate_orders(allocation, positions, prices, cash, constraints)
-        sell_idx = [
-            i for i, o in enumerate(orders) if o.direction == Direction.SELL
-        ]
-        buy_idx = [
-            i for i, o in enumerate(orders) if o.direction == Direction.BUY
-        ]
+        sell_idx = [i for i, o in enumerate(orders) if o.direction == Direction.SELL]
+        buy_idx = [i for i, o in enumerate(orders) if o.direction == Direction.BUY]
         if sell_idx and buy_idx:
             assert max(sell_idx) < min(buy_idx)
 
@@ -106,9 +102,7 @@ class TestRebalancer:
         cash = 10000.0  # total = 10000
         constraints = AllocationConstraints(rebalance_threshold=0.02)
         orders = r.generate_orders(allocation, positions, prices, cash, constraints)
-        total_deployed = sum(
-            o.estimated_value for o in orders if o.direction == Direction.BUY
-        )
+        total_deployed = sum(o.estimated_value for o in orders if o.direction == Direction.BUY)
         # Circuit breaker = 10% of 10000 = 1000
         assert total_deployed <= 1000.0 + 1.0  # small tolerance for rounding
 

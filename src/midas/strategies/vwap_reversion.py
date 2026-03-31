@@ -50,7 +50,4 @@ class VWAPReversion(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy below / sell above {self._window}-day average price "
-            f"(VWAP proxy) by {self._threshold:.0%}"
-        )
+        return f"Buy below / sell above {self._window}-day average price (VWAP proxy) by {self._threshold:.0%}"

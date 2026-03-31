@@ -14,9 +14,7 @@ from midas.strategies.base import Strategy
 
 
 class DollarCostAveraging(Strategy):
-    def __init__(
-        self, frequency_days: int = 14, amount: float = 500.0
-    ) -> None:
+    def __init__(self, frequency_days: int = 14, amount: float = 500.0) -> None:
         self._frequency_days = frequency_days
         self._amount = amount
 
@@ -43,16 +41,15 @@ class DollarCostAveraging(Strategy):
 
         if len(price_history) % self._frequency_days == 0:
             current = float(price_history.iloc[-1])
-            return [MechanicalIntent(
-                ticker=ticker,
-                direction=Direction.BUY,
-                target_value=self._amount,
-                reason=(
-                    f"{ticker} DCA trigger: {self._frequency_days}-day "
-                    f"interval reached at ${current:.2f}"
-                ),
-                source=self.name,
-            )]
+            return [
+                MechanicalIntent(
+                    ticker=ticker,
+                    direction=Direction.BUY,
+                    target_value=self._amount,
+                    reason=(f"{ticker} DCA trigger: {self._frequency_days}-day interval reached at ${current:.2f}"),
+                    source=self.name,
+                )
+            ]
         return []
 
     @property

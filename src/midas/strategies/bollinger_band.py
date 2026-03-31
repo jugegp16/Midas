@@ -44,7 +44,4 @@ class BollingerBand(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy when price touches the lower Bollinger Band "
-            f"({self._window}-day MA - {self._num_std} std dev)"
-        )
+        return f"Buy when price touches the lower Bollinger Band ({self._window}-day MA - {self._num_std} std dev)"
