@@ -314,7 +314,7 @@ def optimize(
                 ranges[name],
             )
 
-        total_ret, bh_ret, train_ret, test_ret = pool.submit(
+        _total_ret, bh_ret, train_ret, test_ret = pool.submit(
             _trial_worker,
             strategy_params,
         ).result()
@@ -330,7 +330,7 @@ def optimize(
             if trials_done % 25 == 0 or trials_done == n_trials:
                 log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
 
-        return total_ret
+        return train_ret
 
     try:
         study.optimize(objective, n_trials=n_trials, n_jobs=max_workers)
