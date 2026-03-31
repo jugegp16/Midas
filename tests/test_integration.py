@@ -74,14 +74,10 @@ def test_full_pipeline(tmp_path: Path) -> None:
 
     # 5. Generate synthetic price data
     voo_returns = [0.0] * 20 + [-0.006] * 20 + [0.008] * 30 + [0.0] * 30
-    voo_prices = make_price_series(
-        date(2024, 1, 2), 100, 100.0, voo_returns, name="VOO"
-    )
+    voo_prices = make_price_series(date(2024, 1, 2), 100, 100.0, voo_returns, name="VOO")
 
     aapl_returns = [0.004] * 100
-    aapl_prices = make_price_series(
-        date(2024, 1, 2), 100, 100.0, aapl_returns, name="AAPL"
-    )
+    aapl_prices = make_price_series(date(2024, 1, 2), 100, 100.0, aapl_returns, name="AAPL")
 
     price_data = {"VOO": voo_prices, "AAPL": aapl_prices}
 
@@ -121,10 +117,18 @@ def test_full_pipeline(tmp_path: Path) -> None:
 def test_strategy_registry_complete() -> None:
     """All strategies should be registered and instantiable."""
     expected = {
-        "MeanReversion", "Momentum", "ProfitTaking",
-        "RSIOversold", "RSIOverbought", "BollingerBand",
-        "MACDCrossover", "DollarCostAveraging", "GapDownRecovery",
-        "TrailingStop", "StopLoss", "VWAPReversion",
+        "MeanReversion",
+        "Momentum",
+        "ProfitTaking",
+        "RSIOversold",
+        "RSIOverbought",
+        "BollingerBand",
+        "MACDCrossover",
+        "DollarCostAveraging",
+        "GapDownRecovery",
+        "TrailingStop",
+        "StopLoss",
+        "VWAPReversion",
         "MovingAverageCrossover",
     }
     assert set(STRATEGY_REGISTRY.keys()) == expected
@@ -135,5 +139,7 @@ def test_strategy_registry_complete() -> None:
         assert instance.description
         assert len(instance.suitability) > 0
         assert instance.tier in (
-            StrategyTier.CONVICTION, StrategyTier.PROTECTIVE, StrategyTier.MECHANICAL,
+            StrategyTier.CONVICTION,
+            StrategyTier.PROTECTIVE,
+            StrategyTier.MECHANICAL,
         )

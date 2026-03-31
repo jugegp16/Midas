@@ -26,7 +26,8 @@ def _build_engine(
     conviction = conviction_strategies or []
     protective = protective_strategies or []
     constraints = constraints or AllocationConstraints(
-        rebalance_threshold=0.01, max_position_pct=0.95,
+        rebalance_threshold=0.01,
+        max_position_pct=0.95,
     )
     allocator = Allocator(conviction, protective, constraints, n_tickers)
     rebalancer = Rebalancer()
@@ -123,9 +124,7 @@ def test_backtest_cost_basis_uses_start_price() -> None:
     )
     # Flat at 100 for 50 days, then rise
     returns = [0.0] * 50 + [0.005] * 50
-    prices = make_price_series(
-        date(2024, 1, 2), 100, 100.0, returns, name="TEST"
-    )
+    prices = make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="TEST")
 
     pt = ProfitTaking(gain_threshold=0.20)
     engine = _build_engine(
@@ -152,12 +151,8 @@ def test_backtest_deferred_ticker() -> None:
         ],
         available_cash=1000.0,
     )
-    early = make_price_series(
-        date(2024, 1, 2), 100, 100.0, name="EARLY"
-    )
-    late = make_price_series(
-        date(2024, 3, 20), 50, 80.0, name="LATE"
-    )
+    early = make_price_series(date(2024, 1, 2), 100, 100.0, name="EARLY")
+    late = make_price_series(date(2024, 3, 20), 50, 80.0, name="LATE")
 
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []
@@ -191,9 +186,7 @@ def test_backtest_excluded_ticker() -> None:
         ],
         available_cash=1000.0,
     )
-    real = make_price_series(
-        date(2024, 1, 2), 100, 100.0, name="REAL"
-    )
+    real = make_price_series(date(2024, 1, 2), 100, 100.0, name="REAL")
 
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []

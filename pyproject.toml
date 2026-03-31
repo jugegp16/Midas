@@ -31,6 +31,9 @@ dev = [
 testpaths = ["tests"]
 addopts = "--cov=midas --cov-report=term-missing"
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 

@@ -39,10 +39,7 @@ class RSIOverbought(Strategy):
             rsi = 100.0 - (100.0 / (1.0 + rs))
 
         if rsi >= self._overbought_threshold:
-            return -self._clamp(
-                (rsi - self._overbought_threshold)
-                / (100.0 - self._overbought_threshold)
-            )
+            return -self._clamp((rsi - self._overbought_threshold) / (100.0 - self._overbought_threshold))
         return 0.0
 
     @property
@@ -51,7 +48,4 @@ class RSIOverbought(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Sell when {self._window}-period RSI exceeds "
-            f"{self._overbought_threshold:.0f}"
-        )
+        return f"Sell when {self._window}-period RSI exceeds {self._overbought_threshold:.0f}"

@@ -23,8 +23,8 @@ class Momentum(Strategy):
 
         values = np.asarray(price_history)
         current, prev = float(values[-1]), float(values[-2])
-        ma = float(values[-self._window:].mean())
-        prev_ma = float(values[-(self._window + 1):-1].mean())
+        ma = float(values[-self._window :].mean())
+        prev_ma = float(values[-(self._window + 1) : -1].mean())
 
         if prev <= prev_ma and current > ma:
             pct_above = (current - ma) / ma
@@ -37,7 +37,4 @@ class Momentum(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy when price crosses above the {self._window}-day "
-            f"moving average from below"
-        )
+        return f"Buy when price crosses above the {self._window}-day moving average from below"

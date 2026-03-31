@@ -44,6 +44,7 @@ class BacktestResult:
 @dataclass
 class _TickerIndex:
     """Pre-computed numpy arrays and pointer for a single ticker's price data."""
+
     dates: list[date]
     values: np.ndarray
     ptr: int = 0
@@ -52,6 +53,7 @@ class _TickerIndex:
 @dataclass
 class _SimState:
     """Mutable simulation state carried across trading days."""
+
     positions: dict[str, float] = field(default_factory=dict)
     cost_basis: dict[str, float] = field(default_factory=dict)
     bh_positions: dict[str, float] = field(default_factory=dict)
@@ -102,11 +104,20 @@ class BacktestEngine:
         deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
 
         self._simulate(
-            state, portfolio, trading_days, ticker_idx, deferred, split_date,
+            state,
+            portfolio,
+            trading_days,
+            ticker_idx,
+            deferred,
+            split_date,
         )
 
         return self._build_result(
-            state, portfolio, price_data, trading_days, split_date,
+            state,
+            portfolio,
+            price_data,
+            trading_days,
+            split_date,
         )
 
     # -- Phase helpers --------------------------------------------------------
@@ -127,7 +138,8 @@ class BacktestEngine:
         return days
 
     def _compute_split(
-        self, trading_days: list[date],
+        self,
+        trading_days: list[date],
     ) -> tuple[int, date | None]:
         if self._enable_split:
             split_idx = int(len(trading_days) * self._train_pct)
@@ -185,10 +197,7 @@ class BacktestEngine:
                 continue
 
             if h.ticker not in first_dates:
-                self._log(
-                    f"{h.ticker}: no price data in backtest range "
-                    f"({start} to {end}) — excluded"
-                )
+                self._log(f"{h.ticker}: no price data in backtest range ({start} to {end}) — excluded")
                 continue
 
             ticker_start = first_dates[h.ticker]
@@ -259,22 +268,24 @@ class BacktestEngine:
                 while idx.ptr < len(idx.dates) and idx.dates[idx.ptr] <= day:
                     idx.ptr += 1
                 if idx.ptr > 0:
-                    current_data[ticker] = idx.values[:idx.ptr]
+                    current_data[ticker] = idx.values[: idx.ptr]
 
             # Activate deferred holdings
             self._activate_deferred(
-                state, deferred, deferred_activated, current_data, day,
+                state,
+                deferred,
+                deferred_activated,
+                current_data,
+                day,
             )
 
             # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
                 state.split_value = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t][-1])
-                    for t in current_data
+                    state.positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
                 )
                 state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(t, 0) * float(current_data[t][-1])
-                    for t in current_data
+                    state.bh_positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
                 )
 
             # Phased allocator flow
@@ -298,10 +309,7 @@ class BacktestEngine:
                 state.purchase_dates[ticker] = [(shares, day)]
                 state.starting_value += shares * entry_price
                 activated.add(ticker)
-                self._log(
-                    f"{ticker}: activated on {day} at "
-                    f"${entry_price:.2f} ({shares} shares)"
-                )
+                self._log(f"{ticker}: activated on {day} at ${entry_price:.2f} ({shares} shares)")
 
     def _run_day(
         self,
@@ -311,10 +319,7 @@ class BacktestEngine:
         day: date,
     ) -> None:
         # Build price series and current prices for active tickers
-        active_tickers = [
-            t for t in state.positions
-            if state.positions.get(t, 0) > 0 or t in current_data
-        ]
+        active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
         # Only include tickers that have price data
         active_tickers = [t for t in active_tickers if t in current_data]
 
@@ -339,13 +344,19 @@ class BacktestEngine:
 
         # Phase 1-3: Allocator scores, blends, and applies vetoes
         allocation = self._allocator.allocate(
-            active_tickers, price_series, context,
+            active_tickers,
+            price_series,
+            context,
         )
 
         # Phase 4: Rebalancer diffs target vs current, generates orders
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
         rebalance_orders = self._rebalancer.generate_orders(
-            allocation, positions, current_prices, state.cash, self._constraints,
+            allocation,
+            positions,
+            current_prices,
+            state.cash,
+            self._constraints,
         )
 
         # Phase 5: Mechanical strategies generate intents
@@ -355,23 +366,21 @@ class BacktestEngine:
                 if ticker in price_series:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
-                        ticker, price_series[ticker], **ticker_ctx,
+                        ticker,
+                        price_series[ticker],
+                        **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)
 
         # Estimate post-rebalance cash for mechanical sizing
-        sell_proceeds = sum(
-            o.estimated_value for o in rebalance_orders
-            if o.direction == Direction.SELL
-        )
-        buy_cost = sum(
-            o.estimated_value for o in rebalance_orders
-            if o.direction == Direction.BUY
-        )
+        sell_proceeds = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.SELL)
+        buy_cost = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.BUY)
         post_rebalance_cash = state.cash + sell_proceeds - buy_cost
 
         mechanical_orders = self._rebalancer.size_mechanical(
-            mechanical_intents, post_rebalance_cash, current_prices,
+            mechanical_intents,
+            post_rebalance_cash,
+            current_prices,
         )
 
         all_orders = rebalance_orders + mechanical_orders
@@ -380,7 +389,9 @@ class BacktestEngine:
         filtered_orders: list[Order] = []
         for order in all_orders:
             if state.restriction_tracker and state.restriction_tracker.is_blocked(
-                order.ticker, order.direction, day,
+                order.ticker,
+                order.direction,
+                day,
             ):
                 continue
             filtered_orders.append(order)
@@ -394,7 +405,9 @@ class BacktestEngine:
                 state.trades.append(trade)
                 if state.restriction_tracker:
                     state.restriction_tracker.record_trade(
-                        order.ticker, order.direction, day,
+                        order.ticker,
+                        order.direction,
+                        day,
                     )
                 if order.direction == Direction.BUY:
                     state.cash -= order.estimated_value
@@ -409,9 +422,7 @@ class BacktestEngine:
         old_shares = state.positions[tk] - order.shares
         old_cost = state.cost_basis.get(tk, 0.0)
         if state.positions[tk] > 0:
-            state.cost_basis[tk] = (
-                old_cost * old_shares + order.price * order.shares
-            ) / state.positions[tk]
+            state.cost_basis[tk] = (old_cost * old_shares + order.price * order.shares) / state.positions[tk]
 
     def _execute(
         self,
@@ -439,11 +450,7 @@ class BacktestEngine:
         lots = state.purchase_dates.get(ticker, [])
         if lots:
             days_held = (day - lots[0][1]).days
-            holding_period = (
-                HoldingPeriod.LONG_TERM
-                if days_held >= 365
-                else HoldingPeriod.SHORT_TERM
-            )
+            holding_period = HoldingPeriod.LONG_TERM if days_held >= 365 else HoldingPeriod.SHORT_TERM
             remaining = order.shares
             while remaining > 0 and lots:
                 lot_shares, lot_date = lots[0]
@@ -455,7 +462,8 @@ class BacktestEngine:
                     remaining = 0
 
         state.positions[ticker] = max(
-            0, state.positions.get(ticker, 0) - order.shares,
+            0,
+            state.positions.get(ticker, 0) - order.shares,
         )
 
         return TradeRecord(
@@ -476,17 +484,10 @@ class BacktestEngine:
         trading_days: list[date],
         split_date: date | None,
     ) -> BacktestResult:
-        final_prices = {
-            t: float(s.iloc[-1])
-            for t, s in price_data.items()
-            if len(s) > 0
-        }
-        final_value = state.cash + sum(
-            state.positions.get(t, 0) * p for t, p in final_prices.items()
-        )
+        final_prices = {t: float(s.iloc[-1]) for t, s in price_data.items() if len(s) > 0}
+        final_value = state.cash + sum(state.positions.get(t, 0) * p for t, p in final_prices.items())
         bh_value = portfolio.available_cash + sum(
-            state.bh_positions.get(t, 0) * final_prices.get(t, 0)
-            for t in state.bh_positions
+            state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
         )
 
         sv = state.starting_value
@@ -498,15 +499,11 @@ class BacktestEngine:
 
         train_return = (spv - sv) / sv if spv is not None and sv > 0 else 0.0
         test_return = (
-            (final_value - spv) / spv
-            if spv is not None and spv > 0
-            else (final_value - sv) / sv if sv > 0 else 0.0
+            (final_value - spv) / spv if spv is not None and spv > 0 else (final_value - sv) / sv if sv > 0 else 0.0
         )
         train_bh_return = (spbh - sv) / sv if spbh is not None and sv > 0 else 0.0
         test_bh_return = (
-            (bh_value - spbh) / spbh
-            if spbh is not None and spbh > 0
-            else (bh_value - sv) / sv if sv > 0 else 0.0
+            (bh_value - spbh) / spbh if spbh is not None and spbh > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
         )
 
         return BacktestResult(
@@ -530,20 +527,29 @@ def write_backtest_csv(result: BacktestResult, path: Path) -> None:
         writer = csv.writer(f)
 
         writer.writerow(["=== TRADE LOG ==="])
-        writer.writerow([
-            "Date", "Ticker", "Direction", "Shares", "Price",
-            "Strategy", "Holding Period",
-        ])
+        writer.writerow(
+            [
+                "Date",
+                "Ticker",
+                "Direction",
+                "Shares",
+                "Price",
+                "Strategy",
+                "Holding Period",
+            ]
+        )
         for t in result.trades:
-            writer.writerow([
-                t.date.isoformat(),
-                t.ticker,
-                t.direction.value,
-                t.shares,
-                f"{t.price:.2f}",
-                t.strategy_name,
-                t.holding_period.value if t.holding_period else "",
-            ])
+            writer.writerow(
+                [
+                    t.date.isoformat(),
+                    t.ticker,
+                    t.direction.value,
+                    t.shares,
+                    f"{t.price:.2f}",
+                    t.strategy_name,
+                    t.holding_period.value if t.holding_period else "",
+                ]
+            )
 
         writer.writerow([])
         writer.writerow(["=== SUMMARY ==="])

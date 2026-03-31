@@ -10,6 +10,8 @@ DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_REBALANCE_THRESHOLD = 0.02
 DEFAULT_SIGMOID_STEEPNESS = 2.0
 DEFAULT_MAX_POSITION_PCT = 0.25
+DEFAULT_CONVICTION_WEIGHT = 1
+DEFAULT_PROTECTIVE_VETO_THRESHOLD = -0.5
 
 
 class Direction(Enum):
@@ -122,5 +124,5 @@ class StrategyConfig:
     name: str
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
-    weight: float = 1.0
-    veto_threshold: float = -0.5
+    weight: float = DEFAULT_CONVICTION_WEIGHT
+    veto_threshold: float = DEFAULT_PROTECTIVE_VETO_THRESHOLD

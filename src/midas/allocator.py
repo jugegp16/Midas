@@ -54,12 +54,8 @@ class Allocator:
         constraints: AllocationConstraints,
         n_tickers: int,
     ) -> None:
-        self._conviction = [
-            _ScoredStrategy(s, w) for s, w in conviction_strategies
-        ]
-        self._protective = [
-            _ProtectiveEntry(s, vt) for s, vt in protective_strategies
-        ]
+        self._conviction = [_ScoredStrategy(s, w) for s, w in conviction_strategies]
+        self._protective = [_ProtectiveEntry(s, vt) for s, vt in protective_strategies]
         self._constraints = constraints
         self._n_tickers = n_tickers
 
@@ -67,14 +63,14 @@ class Allocator:
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)
         if constraints.max_position_pct is None:
             self._max_position_pct = min(
-                DEFAULT_MAX_POSITION_PCT, MAX_POSITION_MULTIPLIER * equal_weight,
+                DEFAULT_MAX_POSITION_PCT,
+                MAX_POSITION_MULTIPLIER * equal_weight,
             )
         else:
             self._max_position_pct = constraints.max_position_pct
             if constraints.max_position_pct < LOW_POSITION_MULTIPLIER * equal_weight:
                 log.warning(
-                    "max_position_pct (%.2f) is below 1.5x equal weight (%.2f) "
-                    "— scoring may have little effect",
+                    "max_position_pct (%.2f) is below 1.5x equal weight (%.2f) — scoring may have little effect",
                     constraints.max_position_pct,
                     equal_weight,
                 )
@@ -138,9 +134,7 @@ class Allocator:
 
             contributions[ticker] = ticker_contributions
 
-            blended = (
-                weighted_sum / weight_total if weight_total > 0 else 0.0
-            )
+            blended = weighted_sum / weight_total if weight_total > 0 else 0.0
 
             blended_scores[ticker] = blended
 
@@ -159,9 +153,7 @@ class Allocator:
                 if s is not None and s <= entry.veto_threshold:
                     targets[ticker] = 0.0
                     # Record protective strategy in contributions
-                    contributions.setdefault(ticker, {})[
-                        entry.strategy.name
-                    ] = s
+                    contributions.setdefault(ticker, {})[entry.strategy.name] = s
 
         # Phase 4: Apply constraints
         for ticker in tickers:

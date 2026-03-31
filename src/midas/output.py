@@ -41,15 +41,16 @@ def print_alert(
         f"@ ${order.price:,.2f} = ${order.estimated_value:,.2f}",
     ]
 
-    if order.direction == Direction.BUY:
-        lines.append(f"Available cash after: ${remaining_cash:,.2f}")
+    lines.append(f"Available cash after: ${remaining_cash:,.2f}")
 
-    console.print(Panel(
-        "\n".join(lines),
-        title=f"{prefix}[{color}][{order.direction.value}][/{color}]",
-        border_style=color,
-        subtitle=timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"{prefix}[{color}][{order.direction.value}][/{color}]",
+            border_style=color,
+            subtitle=timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        )
+    )
 
 
 def print_status(message: str) -> None:

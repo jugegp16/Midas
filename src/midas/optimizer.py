@@ -27,8 +27,12 @@ from midas.strategies.base import Strategy
 
 # Parameters that should be cast to int when building strategy instances.
 _INT_PARAMS = {
-    "window", "short_window", "long_window",
-    "fast_period", "slow_period", "signal_period",
+    "window",
+    "short_window",
+    "long_window",
+    "fast_period",
+    "slow_period",
+    "signal_period",
     "frequency_days",
 }
 
@@ -133,9 +137,7 @@ def _suggest_params(
     for param, (lo, hi, step) in ranges.items():
         key = f"{strategy_name}__{param}"
         if param in _INT_PARAMS:
-            params[param] = float(
-                trial.suggest_int(key, int(lo), int(hi), step=int(step))
-            )
+            params[param] = float(trial.suggest_int(key, int(lo), int(hi), step=int(step)))
         else:
             params[param] = trial.suggest_float(key, lo, hi, step=step)
     return params
@@ -170,11 +172,7 @@ def _run_trial(
         # Separate meta-params from constructor params
         weight = params.get("_weight", 1.0)
         veto_threshold = params.get("_veto_threshold", -0.5)
-        clean_params = {
-            k: int(v) if k in _INT_PARAMS else v
-            for k, v in params.items()
-            if k not in _META_PARAMS
-        }
+        clean_params = {k: int(v) if k in _INT_PARAMS else v for k, v in params.items() if k not in _META_PARAMS}
         strategy = cls(**clean_params)
 
         if strategy.tier == StrategyTier.PROTECTIVE:
@@ -208,13 +206,8 @@ def _run_trial(
     if result.starting_value <= 0:
         return 0.0, 0.0, 0.0, 0.0
 
-    total_return = (
-        (result.final_value - result.starting_value) / result.starting_value
-    )
-    bh_return = (
-        (result.buy_and_hold_value - result.starting_value)
-        / result.starting_value
-    )
+    total_return = (result.final_value - result.starting_value) / result.starting_value
+    bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
     return total_return, bh_return, result.train_return, result.test_return
 
 
@@ -229,7 +222,10 @@ def _init_worker(
     min_cash_pct: float,
 ) -> None:
     _worker_state.update(
-        portfolio=portfolio, price_data=price_data, start=start, end=end,
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
         min_cash_pct=min_cash_pct,
     )
 
@@ -257,15 +253,9 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    names = strategy_names or [
-        k for k in PARAM_RANGES if k != _GLOBAL_KEY
-    ]
+    names = strategy_names or [k for k in PARAM_RANGES if k != _GLOBAL_KEY]
     # Filter to strategies that have defined ranges and are not MECHANICAL
-    names = [
-        n for n in names
-        if n in PARAM_RANGES
-        and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL
-    ]
+    names = [n for n in names if n in PARAM_RANGES and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL]
 
     if not names:
         msg = "No optimizable strategies found"
@@ -291,10 +281,7 @@ def optimize(
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
     log(f"Optimizing {', '.join(names)} — {n_trials} trials ({max_workers} workers)")
-    log(
-        f"  max_position_pct range: {lo:.2f}-{hi:.2f}"
-        f" (equal weight: {equal_weight:.2f})"
-    )
+    log(f"  max_position_pct range: {lo:.2f}-{hi:.2f} (equal weight: {equal_weight:.2f})")
 
     # Suppress Optuna's default logging (we provide our own via log_fn).
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -319,11 +306,14 @@ def optimize(
         strategy_params: dict[str, dict[str, float]] = {}
         for name in names:
             strategy_params[name] = _suggest_params(
-                trial, name, ranges[name],
+                trial,
+                name,
+                ranges[name],
             )
 
         total_ret, bh_ret, train_ret, test_ret = pool.submit(
-            _trial_worker, strategy_params,
+            _trial_worker,
+            strategy_params,
         ).result()
 
         # Store auxiliary metrics as user attributes for later retrieval.

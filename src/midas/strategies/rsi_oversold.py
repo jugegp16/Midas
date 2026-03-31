@@ -37,9 +37,7 @@ class RSIOversold(Strategy):
         rsi = 100.0 - (100.0 / (1.0 + rs))
 
         if rsi <= self._oversold_threshold:
-            return self._clamp(
-                (self._oversold_threshold - rsi) / self._oversold_threshold
-            )
+            return self._clamp((self._oversold_threshold - rsi) / self._oversold_threshold)
         return 0.0
 
     @property
@@ -48,7 +46,4 @@ class RSIOversold(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Buy when {self._window}-period RSI drops below "
-            f"{self._oversold_threshold:.0f}"
-        )
+        return f"Buy when {self._window}-period RSI drops below {self._oversold_threshold:.0f}"

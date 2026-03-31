@@ -44,6 +44,8 @@ class LiveEngine:
         self._poll_interval = poll_interval
         self._dry_run = dry_run
         self._history_days = history_days
+        # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
+        self._last_order_keys: set[tuple[str, Direction, float]] = set()
         self._restriction_tracker: RestrictionTracker | None = None
         if portfolio.trading_restrictions:
             self._restriction_tracker = RestrictionTracker(
@@ -104,8 +106,11 @@ class LiveEngine:
             positions[t] = holding.shares if holding else 0.0
 
         rebalance_orders = self._rebalancer.generate_orders(
-            allocation, positions, current_prices,
-            self._portfolio.available_cash, self._constraints,
+            allocation,
+            positions,
+            current_prices,
+            self._portfolio.available_cash,
+            self._constraints,
         )
 
         # Phase 5: Mechanical
@@ -115,21 +120,19 @@ class LiveEngine:
                 if ticker in price_data:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
-                        ticker, price_data[ticker], **ticker_ctx,
+                        ticker,
+                        price_data[ticker],
+                        **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)
 
-        sell_proceeds = sum(
-            o.estimated_value for o in rebalance_orders
-            if o.direction == Direction.SELL
-        )
-        buy_cost = sum(
-            o.estimated_value for o in rebalance_orders
-            if o.direction == Direction.BUY
-        )
+        sell_proceeds = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.SELL)
+        buy_cost = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.BUY)
         post_cash = self._portfolio.available_cash + sell_proceeds - buy_cost
         mechanical_orders = self._rebalancer.size_mechanical(
-            mechanical_intents, post_cash, current_prices,
+            mechanical_intents,
+            post_cash,
+            current_prices,
         )
 
         all_orders = rebalance_orders + mechanical_orders
@@ -138,17 +141,26 @@ class LiveEngine:
         filtered: list[Order] = []
         for order in all_orders:
             if self._restriction_tracker and self._restriction_tracker.is_blocked(
-                order.ticker, order.direction, today,
+                order.ticker,
+                order.direction,
+                today,
             ):
                 continue
             filtered.append(order)
 
-        # Emit alerts
+        # Emit alerts only when the order set changes
+        current_keys = {(o.ticker, o.direction, o.shares) for o in filtered if o.shares > 0}
+        if current_keys == self._last_order_keys:
+            return
+        self._last_order_keys = current_keys
+
         now = datetime.now(tz=UTC)
+        remaining_cash = self._portfolio.available_cash
         for order in filtered:
             if order.shares <= 0:
                 continue
-            remaining_cash = self._portfolio.available_cash - (
-                order.estimated_value if order.direction == Direction.BUY else 0
-            )
+            if order.direction == Direction.BUY:
+                remaining_cash -= order.estimated_value
+            else:
+                remaining_cash += order.estimated_value
             print_alert(order, remaining_cash, now, dry_run=self._dry_run)

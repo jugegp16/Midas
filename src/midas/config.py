@@ -80,13 +80,15 @@ def load_strategies(
     raw = _load_yaml(path)
     configs = []
     for s in raw["strategies"]:
-        configs.append(StrategyConfig(
-            name=s["name"],
-            params=s.get("params", {}),
-            tickers=s.get("tickers"),
-            weight=float(s.get("weight", 1.0)),
-            veto_threshold=float(s.get("veto_threshold", -0.5)),
-        ))
+        configs.append(
+            StrategyConfig(
+                name=s["name"],
+                params=s.get("params", {}),
+                tickers=s.get("tickers"),
+                weight=float(s.get("weight", 1.0)),
+                veto_threshold=float(s.get("veto_threshold", -0.5)),
+            )
+        )
 
     max_pos = raw.get("max_position_pct")
     constraints = AllocationConstraints(
