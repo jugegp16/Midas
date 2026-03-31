@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -16,14 +15,13 @@ class BollingerBand(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < self._window:
             return None
 
-        values = np.asarray(price_history)
-        window_data = values[-self._window :]
+        window_data = price_history[-self._window :]
         ma = float(window_data.mean())
         std = float(window_data.std(ddof=1))
 
@@ -31,7 +29,7 @@ class BollingerBand(Strategy):
             return 0.0
 
         lower_band = ma - self._num_std * std
-        current = float(values[-1])
+        current = float(price_history[-1])
 
         if current <= lower_band:
             pct_below = (lower_band - current) / std

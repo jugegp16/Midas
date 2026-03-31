@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -15,7 +14,7 @@ class ProfitTaking(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         *,
         cost_basis: float | None = None,
         **kwargs: object,
@@ -23,7 +22,7 @@ class ProfitTaking(Strategy):
         if cost_basis is None or cost_basis <= 0:
             return None
 
-        current = float(np.asarray(price_history)[-1])
+        current = float(price_history[-1])
         gain = (current - cost_basis) / cost_basis
 
         if gain >= self._gain_threshold:

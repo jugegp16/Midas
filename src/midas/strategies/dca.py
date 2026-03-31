@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pandas as pd
+import numpy as np
 
 from midas.models import (
     AssetSuitability,
@@ -24,7 +24,7 @@ class DollarCostAveraging(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         # MECHANICAL strategies don't participate in scoring.
@@ -33,14 +33,14 @@ class DollarCostAveraging(Strategy):
     def generate_intents(
         self,
         ticker: str,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> list[MechanicalIntent]:
         if len(price_history) < self._frequency_days:
             return []
 
         if len(price_history) % self._frequency_days == 0:
-            current = float(price_history.iloc[-1])
+            current = float(price_history[-1])
             return [
                 MechanicalIntent(
                     ticker=ticker,

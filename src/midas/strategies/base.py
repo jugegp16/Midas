@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-import pandas as pd
+import numpy as np
 
 from midas.models import AssetSuitability, MechanicalIntent, StrategyTier
 
@@ -19,7 +19,7 @@ class Strategy(ABC):
     @abstractmethod
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         """Return conviction score.
@@ -41,7 +41,7 @@ class Strategy(ABC):
     def generate_intents(
         self,
         ticker: str,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> list[MechanicalIntent]:
         """Return mechanical order intents. Override for MECHANICAL strategies."""

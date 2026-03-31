@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -15,16 +14,15 @@ class GapDownRecovery(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < 3:
             return None
 
-        values = np.asarray(price_history)
-        prev_close = float(values[-3])
-        gap_open = float(values[-2])
-        current = float(values[-1])
+        prev_close = float(price_history[-3])
+        gap_open = float(price_history[-2])
+        current = float(price_history[-1])
 
         if prev_close == 0:
             return 0.0

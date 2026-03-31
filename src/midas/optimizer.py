@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -299,6 +300,7 @@ def optimize(
     )
 
     trials_done = 0
+    progress_lock = threading.Lock()
 
     def objective(trial: optuna.Trial) -> float:
         nonlocal trials_done
@@ -322,14 +324,15 @@ def optimize(
         trial.set_user_attr("test_return", test_ret)
         trial.set_user_attr("params", strategy_params)
 
-        trials_done += 1
-        if trials_done % 25 == 0 or trials_done == n_trials:
-            log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
+        with progress_lock:
+            trials_done += 1
+            if trials_done % 25 == 0 or trials_done == n_trials:
+                log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
 
         return total_ret
 
     try:
-        study.optimize(objective, n_trials=n_trials)
+        study.optimize(objective, n_trials=n_trials, n_jobs=max_workers)
     finally:
         pool.shutdown(wait=False)
 

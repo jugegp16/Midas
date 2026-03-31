@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -16,18 +15,16 @@ class MovingAverageCrossover(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < self._long_window + 1:
             return None
 
-        values = np.asarray(price_history)
-
-        short_ma = float(values[-self._short_window :].mean())
-        long_ma = float(values[-self._long_window :].mean())
-        prev_short_ma = float(values[-(self._short_window + 1) : -1].mean())
-        prev_long_ma = float(values[-(self._long_window + 1) : -1].mean())
+        short_ma = float(price_history[-self._short_window :].mean())
+        long_ma = float(price_history[-self._long_window :].mean())
+        prev_short_ma = float(price_history[-(self._short_window + 1) : -1].mean())
+        prev_long_ma = float(price_history[-(self._long_window + 1) : -1].mean())
 
         if long_ma == 0:
             return 0.0

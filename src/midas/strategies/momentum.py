@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability
 from midas.strategies.base import Strategy
@@ -15,16 +14,15 @@ class Momentum(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
         if len(price_history) < self._window + 1:
             return None
 
-        values = np.asarray(price_history)
-        current, prev = float(values[-1]), float(values[-2])
-        ma = float(values[-self._window :].mean())
-        prev_ma = float(values[-(self._window + 1) : -1].mean())
+        current, prev = float(price_history[-1]), float(price_history[-2])
+        ma = float(price_history[-self._window :].mean())
+        prev_ma = float(price_history[-(self._window + 1) : -1].mean())
 
         if prev <= prev_ma and current > ma:
             pct_above = (current - ma) / ma

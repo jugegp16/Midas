@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 from midas.models import AssetSuitability, StrategyTier
 from midas.strategies.base import Strategy
@@ -19,7 +18,7 @@ class TrailingStop(Strategy):
 
     def score(
         self,
-        price_history: pd.Series,
+        price_history: np.ndarray,
         *,
         cost_basis: float | None = None,
         **kwargs: object,
@@ -30,9 +29,8 @@ class TrailingStop(Strategy):
         if len(price_history) < 2:
             return None
 
-        values = np.asarray(price_history)
-        current = float(values[-1])
-        high_water = float(max(values.max(), cost_basis))
+        current = float(price_history[-1])
+        high_water = float(max(price_history.max(), cost_basis))
 
         if high_water == 0:
             return 0.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, date, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from midas.allocator import Allocator
@@ -96,8 +97,12 @@ class LiveEngine:
 
         active_tickers = [t for t in tickers if t in price_data]
 
+        # Convert pd.Series to numpy arrays at the boundary — strategies
+        # and the allocator operate on np.ndarray for performance.
+        price_arrays: dict[str, np.ndarray] = {t: np.asarray(price_data[t]) for t in active_tickers}
+
         # Phase 1-3: Allocate
-        allocation = self._allocator.allocate(active_tickers, price_data, context)
+        allocation = self._allocator.allocate(active_tickers, price_arrays, context)
 
         # Phase 4: Rebalance
         positions = {}
@@ -117,11 +122,11 @@ class LiveEngine:
         mechanical_intents: list[MechanicalIntent] = []
         for strat in self._mechanical:
             for ticker in active_tickers:
-                if ticker in price_data:
+                if ticker in price_arrays:
                     ticker_ctx = context.get(ticker, {})
                     intents = strat.generate_intents(
                         ticker,
-                        price_data[ticker],
+                        price_arrays[ticker],
                         **ticker_ctx,
                     )
                     mechanical_intents.extend(intents)

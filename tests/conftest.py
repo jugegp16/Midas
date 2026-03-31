@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -32,9 +33,10 @@ def make_price_series(
     daily_returns: list[float] | None = None,
     name: str = "TEST",
 ) -> pd.Series:
-    """Generate a synthetic price series.
+    """Generate a synthetic price series with a date index.
 
-    If daily_returns is None, generates a flat price series.
+    Used by backtest/optimizer tests that need pd.Series with date indexes.
+    Strategy and allocator tests should use make_price_array() instead.
     """
     dates = []
     prices = []
@@ -53,67 +55,82 @@ def make_price_series(
     return series
 
 
+def make_price_array(
+    days: int,
+    base_price: float,
+    daily_returns: list[float] | None = None,
+) -> np.ndarray:
+    """Generate a synthetic price array for strategy/allocator tests."""
+    prices = []
+    price = base_price
+    for i in range(days):
+        if daily_returns and i < len(daily_returns):
+            price *= 1 + daily_returns[i]
+        prices.append(round(price, 2))
+    return np.array(prices)
+
+
 @pytest.fixture
-def flat_prices() -> pd.Series:
+def flat_prices() -> np.ndarray:
     """100 days of flat $100 price."""
-    return make_price_series(date(2024, 1, 2), 100, 100.0, name="FLAT")
+    return make_price_array(100, 100.0)
 
 
 @pytest.fixture
-def dropping_prices() -> pd.Series:
+def dropping_prices() -> np.ndarray:
     """Price is stable then drops sharply at the end — triggers mean reversion.
 
     The last few days are a sharp drop while the 30-day MA still includes
     the stable period, creating a gap between current price and MA.
     """
     returns = [0.0] * 90 + [-0.02] * 10
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="DROP")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def rising_prices() -> pd.Series:
+def rising_prices() -> np.ndarray:
     """Price rises steadily — triggers profit taking."""
     returns = [0.003] * 100
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="RISE")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def crossover_prices() -> pd.Series:
+def crossover_prices() -> np.ndarray:
     """Price dips below MA then crosses back above — triggers momentum."""
     returns = [0.0] * 20 + [-0.008] * 15 + [0.015] * 10 + [0.0] * 55
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="CROSS")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def volatile_dropping_prices() -> pd.Series:
+def volatile_dropping_prices() -> np.ndarray:
     """Price with sustained losses at the end — triggers RSI oversold."""
     returns = [0.001] * 80 + [-0.02] * 20
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="VDROP")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def volatile_rising_prices() -> pd.Series:
+def volatile_rising_prices() -> np.ndarray:
     """Strong sustained gains at the end — triggers RSI overbought."""
     returns = [0.001] * 80 + [0.02] * 20
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="VRISE")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def gap_down_recovery_prices() -> pd.Series:
+def gap_down_recovery_prices() -> np.ndarray:
     """Price stable then sharp drop then recovery — triggers gap down recovery."""
     returns = [0.0] * 95 + [-0.05, -0.04, 0.06] + [0.0] * 2
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="GAP")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def peak_then_drop_prices() -> pd.Series:
+def peak_then_drop_prices() -> np.ndarray:
     """Price rises then falls — triggers trailing stop."""
     returns = [0.01] * 30 + [-0.005] * 40 + [0.0] * 30
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="PEAK")
+    return make_price_array(100, 100.0, returns)
 
 
 @pytest.fixture
-def ma_crossover_prices() -> pd.Series:
+def ma_crossover_prices() -> np.ndarray:
     """Long decline followed by recovery — triggers golden cross."""
     returns = [-0.002] * 60 + [0.008] * 30 + [0.0] * 10
-    return make_price_series(date(2024, 1, 2), 100, 100.0, returns, name="MACROSS")
+    return make_price_array(100, 100.0, returns)
