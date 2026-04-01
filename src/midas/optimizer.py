@@ -118,6 +118,12 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
 
 DEFAULT_N_TRIALS = 200
 
+# Walk-forward defaults: reserve 60% for the first training window,
+# then carve the remaining 40% into test windows of ~63 trading days
+# (~3 calendar months) each.
+WF_MIN_TRAIN_PCT = 0.60
+WF_MIN_TEST_DAYS = 63
+
 
 @dataclass
 class OptimizeResult:
@@ -127,6 +133,33 @@ class OptimizeResult:
     best_train_return: float
     best_test_return: float
     trials_run: int
+
+
+@dataclass
+class FoldResult:
+    """Result of a single walk-forward fold."""
+
+    fold: int
+    train_start: date
+    train_end: date
+    test_start: date
+    test_end: date
+    best_params: dict[str, dict[str, float]]
+    train_return: float
+    test_return: float
+    trials_run: int
+
+
+@dataclass
+class WalkForwardResult:
+    """Aggregated result of walk-forward optimisation across all folds."""
+
+    folds: list[FoldResult]
+    composite_return: float  # compounded out-of-sample return across all folds
+    mean_test_return: float
+    std_test_return: float
+    best_params: dict[str, dict[str, float]]  # from last fold (most recent data)
+    total_trials: int
 
 
 def _suggest_params(
@@ -152,6 +185,7 @@ def _run_trial(
     start: date,
     end: date,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    enable_split: bool = True,
 ) -> tuple[float, float, float, float]:
     """Run a single backtest trial with the allocator+rebalancer system.
 
@@ -201,7 +235,7 @@ def _run_trial(
         rebalancer=rebalancer,
         mechanical_strategies=mechanical,
         constraints=constraints,
-        enable_split=True,
+        enable_split=enable_split,
     )
     result = engine.run(portfolio, price_data, start, end)
 
@@ -222,6 +256,7 @@ def _init_worker(
     start: date,
     end: date,
     min_cash_pct: float,
+    enable_split: bool = True,
 ) -> None:
     _worker_state.update(
         portfolio=portfolio,
@@ -229,11 +264,69 @@ def _init_worker(
         start=start,
         end=end,
         min_cash_pct=min_cash_pct,
+        enable_split=enable_split,
     )
 
 
 def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
     return _run_trial(strategy_params, **_worker_state)
+
+
+def _wf_init_worker(
+    portfolio: PortfolioConfig,
+    price_data: dict[str, pd.Series],
+    min_cash_pct: float,
+) -> None:
+    """Initialise walk-forward workers with static state only (dates vary per call)."""
+    _worker_state.update(
+        portfolio=portfolio,
+        price_data=price_data,
+        min_cash_pct=min_cash_pct,
+    )
+
+
+def _wf_trial_worker(
+    strategy_params: dict[str, dict[str, float]],
+    start: date,
+    end: date,
+) -> tuple[float, ...]:
+    return _run_trial(
+        strategy_params,
+        _worker_state["portfolio"],
+        _worker_state["price_data"],
+        start,
+        end,
+        _worker_state["min_cash_pct"],
+        enable_split=False,
+    )
+
+
+def _prepare_names_and_ranges(
+    strategy_names: list[str] | None,
+    min_cash_pct: float,
+    n_tickers: int,
+) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
+    """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
+    names = strategy_names or [k for k in PARAM_RANGES if k != _GLOBAL_KEY]
+    names = [n for n in names if n in PARAM_RANGES and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL]
+
+    if not names:
+        msg = "No optimizable strategies found"
+        raise ValueError(msg)
+
+    names.append(_GLOBAL_KEY)
+
+    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
+    lo = max(round(1.5 * equal_weight, 2), 0.10)
+    hi = min(round(5.0 * equal_weight, 2), 0.80)
+    if lo >= hi:
+        lo, hi = 0.10, 0.80
+    step = round((hi - lo) / 8, 2) or 0.01
+    ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
+    ranges.setdefault(_GLOBAL_KEY, {})
+    ranges[_GLOBAL_KEY]["max_position_pct"] = (lo, hi, step)
+
+    return names, ranges
 
 
 def optimize(
@@ -255,35 +348,14 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    names = strategy_names or [k for k in PARAM_RANGES if k != _GLOBAL_KEY]
-    # Filter to strategies that have defined ranges and are not MECHANICAL
-    names = [n for n in names if n in PARAM_RANGES and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL]
-
-    if not names:
-        msg = "No optimizable strategies found"
-        raise ValueError(msg)
-
-    # Always include global allocation knobs
-    names.append(_GLOBAL_KEY)
-
-    # Compute max_position_pct range from portfolio size.
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
-    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
-    # Bounds match the allocator's warning thresholds: 1.5x-5x equal weight,
-    # clamped to [0.10, 0.80].
-    lo = max(round(1.5 * equal_weight, 2), 0.10)
-    hi = min(round(5.0 * equal_weight, 2), 0.80)
-    if lo >= hi:
-        lo, hi = 0.10, 0.80
-    step = round((hi - lo) / 8, 2) or 0.01
-    ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
-    ranges.setdefault(_GLOBAL_KEY, {})
-    ranges[_GLOBAL_KEY]["max_position_pct"] = (lo, hi, step)
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
 
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
-    log(f"Optimizing {', '.join(names)} — {n_trials} trials ({max_workers} workers)")
-    log(f"  max_position_pct range: {lo:.2f}-{hi:.2f} (equal weight: {equal_weight:.2f})")
+    strat_names = [n for n in names if n != _GLOBAL_KEY]
+    log(f"Optimizing {len(strat_names)} strategies over {start} to {end}")
+    log(f"  {n_trials} trials across {max_workers} workers")
 
     # Suppress Optuna's default logging (we provide our own via log_fn).
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -328,7 +400,8 @@ def optimize(
         with progress_lock:
             trials_done += 1
             if trials_done % 25 == 0 or trials_done == n_trials:
-                log(f"  {trials_done}/{n_trials} — best so far: {study.best_value:.2%}")
+                pct = trials_done * 100 // n_trials
+                log(f"  [{pct:3d}%] {trials_done}/{n_trials} trials — best return: {study.best_value:.2%}")
 
         return train_ret
 
@@ -340,7 +413,7 @@ def optimize(
     best = study.best_trial
     best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
 
-    log(f"Best return: {best.value:.2%} in {len(study.trials)} trials")
+    log(f"Optimization complete — best train return: {best.value:.2%}")
 
     return OptimizeResult(
         best_params=best_params,
@@ -349,6 +422,191 @@ def optimize(
         best_train_return=round(best.user_attrs["train_return"], 4),
         best_test_return=round(best.user_attrs["test_return"], 4),
         trials_run=len(study.trials),
+    )
+
+
+def walk_forward_optimize(
+    portfolio: PortfolioConfig,
+    price_data: dict[str, pd.Series],
+    start: date,
+    end: date,
+    strategy_names: list[str] | None = None,
+    n_trials: int = DEFAULT_N_TRIALS,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    log_fn: Callable[[str], None] | None = None,
+) -> WalkForwardResult:
+    """Walk-forward optimisation with anchored training windows.
+
+    Reserves the first 60% of trading days as the minimum training window,
+    then carves the remaining 40% into ~3-month test windows.  Each fold
+    grows the training window while the test window slides forward.
+    Parameters are re-optimised per fold so every test period is genuinely
+    out-of-sample.
+    """
+    log = log_fn or (lambda _: None)
+
+    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
+
+    # Collect trading days across all tickers.
+    all_dates: set[date] = set()
+    for series in price_data.values():
+        all_dates.update(d for d in series.index if start <= d <= end)
+    trading_days = sorted(all_dates)
+
+    # Reserve 60% for the initial training window, split the rest into
+    # ~3-month test windows (at least 2 folds).
+    n_days = len(trading_days)
+    train_cutoff = int(n_days * WF_MIN_TRAIN_PCT)
+    remaining = n_days - train_cutoff
+    if remaining < WF_MIN_TEST_DAYS * 2:
+        min_needed = int(WF_MIN_TEST_DAYS * 2 / (1 - WF_MIN_TRAIN_PCT))
+        msg = f"Not enough data for walk-forward ({n_days} days, need ≥{min_needed})"
+        raise ValueError(msg)
+
+    n_folds = max(remaining // WF_MIN_TEST_DAYS, 2)
+    test_size = remaining // n_folds
+
+    # Build fold boundaries: [train_cutoff, train_cutoff + test_size, ...]
+    fold_boundaries = [train_cutoff + i * test_size for i in range(n_folds + 1)]
+    fold_boundaries[-1] = n_days  # last fold absorbs remainder
+
+    trials_per_fold = max(n_trials // n_folds, 10)
+    max_workers = min((os.cpu_count() or 4) // 2, trials_per_fold) or 1
+
+    strat_names = [n for n in names if n != _GLOBAL_KEY]
+    log(f"Walk-forward optimization — {len(strat_names)} strategies, {start} to {end}")
+    log(f"  {n_folds} folds, ~{test_size} trading days per test window, {trials_per_fold} trials/fold")
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    fold_results: list[FoldResult] = []
+    prev_best_flat: dict[str, float] | None = None
+
+    # Single pool reused across all folds — dates are passed per call.
+    pool = ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_wf_init_worker,
+        initargs=(portfolio, price_data, min_cash_pct),
+    )
+
+    try:
+        for fold_idx in range(n_folds):
+            # Anchored training: always starts at day 0, grows each fold.
+            fold_train_start = trading_days[0]
+            fold_train_end = trading_days[fold_boundaries[fold_idx] - 1]
+            fold_test_start = trading_days[fold_boundaries[fold_idx]]
+            fold_test_end = trading_days[fold_boundaries[fold_idx + 1] - 1]
+
+            log(f"Fold {fold_idx + 1}/{n_folds}")
+            log(f"  Train: {fold_train_start} → {fold_train_end}")
+            log(f"  Test:  {fold_test_start} → {fold_test_end}")
+
+            # --- Optimise on training window (no internal split) ---
+            study = optuna.create_study(
+                direction="maximize",
+                sampler=optuna.samplers.TPESampler(seed=42 + fold_idx),
+            )
+
+            # Warm-start: seed with previous fold's best params so Optuna
+            # doesn't explore blindly when adjacent folds share most data.
+            if prev_best_flat is not None:
+                study.enqueue_trial(prev_best_flat)
+
+            def _make_objective(
+                pool_ref: ProcessPoolExecutor,
+                names_ref: list[str],
+                ranges_ref: dict[str, dict[str, tuple[float, float, float]]],
+                study_ref: optuna.Study,
+                fold_trials: int,
+                train_start: date,
+                train_end: date,
+            ) -> Callable[[optuna.Trial], float]:
+                counter = [0]
+                lock = threading.Lock()
+
+                def objective(trial: optuna.Trial) -> float:
+                    strategy_params: dict[str, dict[str, float]] = {}
+                    for name in names_ref:
+                        strategy_params[name] = _suggest_params(trial, name, ranges_ref[name])
+                    total_ret, _bh, _train, _test = pool_ref.submit(
+                        _wf_trial_worker,
+                        strategy_params,
+                        train_start,
+                        train_end,
+                    ).result()
+                    trial.set_user_attr("params", strategy_params)
+                    with lock:
+                        counter[0] += 1
+                        if counter[0] % 25 == 0 or counter[0] == fold_trials:
+                            pct = counter[0] * 100 // fold_trials
+                            log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best: {study_ref.best_value:.2%}")
+                    return total_ret
+
+                return objective
+
+            study.optimize(
+                _make_objective(pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end),
+                n_trials=trials_per_fold,
+                n_jobs=max_workers,
+            )
+
+            best_params: dict[str, dict[str, float]] = study.best_trial.user_attrs["params"]
+            train_return = study.best_trial.value or 0.0
+            prev_best_flat = dict(study.best_trial.params)
+
+            # --- Evaluate best params on test window ---
+            test_ret, _bh, _train, _test = _run_trial(
+                best_params,
+                portfolio,
+                price_data,
+                fold_test_start,
+                fold_test_end,
+                min_cash_pct,
+                enable_split=False,
+            )
+
+            log(f"  Result — train: {train_return:.2%} | out-of-sample: {test_ret:.2%}")
+
+            fold_results.append(
+                FoldResult(
+                    fold=fold_idx + 1,
+                    train_start=fold_train_start,
+                    train_end=fold_train_end,
+                    test_start=fold_test_start,
+                    test_end=fold_test_end,
+                    best_params=best_params,
+                    train_return=round(train_return, 4),
+                    test_return=round(test_ret, 4),
+                    trials_run=len(study.trials),
+                )
+            )
+    finally:
+        pool.shutdown(wait=False)
+
+    test_returns = [f.test_return for f in fold_results]
+    mean_test = sum(test_returns) / len(test_returns)
+    variance = sum((r - mean_test) ** 2 for r in test_returns) / max(len(test_returns) - 1, 1)
+    std_test = variance**0.5
+
+    # Compound the per-fold test returns into a single out-of-sample return.
+    composite = 1.0
+    for r in test_returns:
+        composite *= 1.0 + r
+    composite -= 1.0
+
+    log("")
+    log("Walk-forward complete")
+    log(f"  Composite out-of-sample return: {composite:.2%}")
+    log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
+
+    return WalkForwardResult(
+        folds=fold_results,
+        composite_return=round(composite, 4),
+        mean_test_return=round(mean_test, 4),
+        std_test_return=round(std_test, 4),
+        best_params=fold_results[-1].best_params,
+        total_trials=sum(f.trials_run for f in fold_results),
     )
 
 

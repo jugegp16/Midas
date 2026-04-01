@@ -1,5 +1,6 @@
 """Tests for the Optuna-based optimizer."""
 
+import math
 from datetime import date
 
 import pandas as pd
@@ -10,7 +11,9 @@ from midas.models import Holding, PortfolioConfig
 from midas.optimizer import (
     PARAM_RANGES,
     OptimizeResult,
+    WalkForwardResult,
     optimize,
+    walk_forward_optimize,
     write_strategies_yaml,
 )
 
@@ -118,3 +121,88 @@ def test_write_strategies_yaml(tmp_path) -> None:
 
     ts = next(s for s in data["strategies"] if s["name"] == "TrailingStop")
     assert ts["veto_threshold"] == -0.5
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward tests
+# ---------------------------------------------------------------------------
+
+
+def _make_walk_forward_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date, date]:
+    """Longer price series suitable for walk-forward folds.
+
+    400 days: 60% train = 240 days, remaining 160 days → 2 folds of ~63 days.
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)],
+        available_cash=2000.0,
+    )
+    returns = [0.005] * 100 + [-0.003] * 100 + [0.004] * 100 + [0.002] * 100
+    prices = make_price_series(date(2023, 1, 2), 400, 100.0, returns, name="TEST")
+    start = min(prices.index)
+    end = max(prices.index)
+    return portfolio, {"TEST": prices}, start, end
+
+
+def test_walk_forward_returns_result() -> None:
+    """walk_forward_optimize() should return a WalkForwardResult with per-fold data."""
+    portfolio, price_data, start, end = _make_walk_forward_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+    assert isinstance(result, WalkForwardResult)
+    assert len(result.folds) >= 2
+    assert "MeanReversion" in result.best_params
+
+    # Composite return should be the compounded product of per-fold test returns.
+    expected = 1.0
+    for f in result.folds:
+        expected *= 1.0 + f.test_return
+    expected -= 1.0
+    assert math.isclose(result.composite_return, round(expected, 4), abs_tol=1e-4)
+
+
+def test_walk_forward_folds_are_sequential() -> None:
+    """Each fold's test window should follow its training window without overlap."""
+    portfolio, price_data, start, end = _make_walk_forward_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+    for f in result.folds:
+        assert f.train_start < f.train_end
+        assert f.train_end < f.test_start
+        assert f.test_start <= f.test_end
+
+    # Training windows are anchored (all start at the same date) and grow.
+    for i in range(1, len(result.folds)):
+        assert result.folds[i].train_start == result.folds[0].train_start
+        assert result.folds[i].train_end > result.folds[i - 1].train_end
+
+
+def test_walk_forward_too_few_days() -> None:
+    """walk_forward_optimize() should raise when data is too short."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)],
+        available_cash=2000.0,
+    )
+    prices = make_price_series(date(2024, 1, 2), 50, 100.0, name="TEST")
+    start, end = min(prices.index), max(prices.index)
+    with pytest.raises(ValueError, match="Not enough data"):
+        walk_forward_optimize(
+            portfolio=portfolio,
+            price_data={"TEST": prices},
+            start=start,
+            end=end,
+            strategy_names=["MeanReversion"],
+            n_trials=10,
+        )
