@@ -1,0 +1,19 @@
+strategies:
+  # -- CONVICTION --
+  - name: BollingerBand
+    weight: 1.0
+    params:
+      window: 20
+      num_std: 2.0
+
+  - name: RSIOversold
+    weight: 1.0
+    params:
+      window: 14
+      oversold_threshold: 30.0
+
+  # -- PROTECTIVE --
+  - name: StopLoss
+    veto_threshold: -0.5
+    params:
+      loss_threshold: 0.10
