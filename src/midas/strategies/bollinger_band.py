@@ -28,13 +28,13 @@ class BollingerBand(Strategy):
         if std == 0:
             return 0.0
 
-        lower_band = ma - self._num_std * std
         current = float(price_history[-1])
-
-        if current <= lower_band:
-            pct_below = (lower_band - current) / std
-            return self._clamp(pct_below / self._num_std)
-        return 0.0
+        # Z-score: how many std devs from the mean.
+        # Negative z = below MA = bullish (buy the dip).
+        # Positive z = above MA = bearish (stretched up).
+        z = (current - ma) / std
+        # Scale so that ±num_std maps to ∓1.
+        return self.clamp(-z / self._num_std, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -42,4 +42,4 @@ class BollingerBand(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy when price touches the lower Bollinger Band ({self._window}-day MA - {self._num_std} std dev)"
+        return f"Bullish below / bearish above the {self._window}-day MA, scaled by {self._num_std} std dev bands"

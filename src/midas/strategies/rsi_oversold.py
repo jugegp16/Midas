@@ -34,9 +34,17 @@ class RSIOversold(Strategy):
         rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        if rsi <= self._oversold_threshold:
-            return self._clamp((self._oversold_threshold - rsi) / self._oversold_threshold)
-        return 0.0
+        # RSIOversold is buy-only: bullish when RSI < 50, neutral when above.
+        # The bearish above-50 signal is RSIOverbought's responsibility —
+        # keeping them one-sided avoids double-counting when both are active.
+        midpoint = 50.0
+        if rsi >= midpoint:
+            return 0.0
+        distance = midpoint - rsi  # positive when RSI < 50
+        scale = midpoint - self._oversold_threshold  # e.g. 50 - 30 = 20
+        if scale == 0:
+            return 0.0
+        return self.clamp(distance / scale, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -44,4 +52,4 @@ class RSIOversold(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy when {self._window}-period RSI drops below {self._oversold_threshold:.0f}"
+        return f"Bullish when RSI is below 50 ({self._window}-period, oversold at {self._oversold_threshold:.0f})"

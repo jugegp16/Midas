@@ -34,13 +34,9 @@ class VWAPReversion(Strategy):
 
         deviation = (current - avg_price) / avg_price
 
-        if deviation <= -self._threshold:
-            # Below VWAP -> bullish
-            return self._clamp(abs(deviation) / (self._threshold * 3))
-        elif deviation >= self._threshold:
-            # Above VWAP -> bearish
-            return -self._clamp(deviation / (self._threshold * 3))
-        return 0.0
+        # Continuous: negative deviation (below avg) = bullish, positive = bearish.
+        # Scaled so that ±threshold maps to ∓1.
+        return self.clamp(-deviation / self._threshold, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

@@ -30,7 +30,7 @@ class StopLoss(Strategy):
         loss = (cost_basis - current) / cost_basis
 
         if loss >= self._loss_threshold:
-            return -self._clamp((loss - self._loss_threshold) / self._loss_threshold)
+            return -self.clamp((loss - self._loss_threshold) / self._loss_threshold, 0.0, 1.0)
         return 0.0
 
     @property

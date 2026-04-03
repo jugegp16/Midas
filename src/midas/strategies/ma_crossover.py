@@ -18,28 +18,18 @@ class MovingAverageCrossover(Strategy):
         price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._long_window + 1:
+        if len(price_history) < self._long_window:
             return None
 
         short_ma = float(price_history[-self._short_window :].mean())
         long_ma = float(price_history[-self._long_window :].mean())
-        prev_short_ma = float(price_history[-(self._short_window + 1) : -1].mean())
-        prev_long_ma = float(price_history[-(self._long_window + 1) : -1].mean())
 
         if long_ma == 0:
             return 0.0
 
-        # Golden cross -> bullish
-        if prev_short_ma <= prev_long_ma and short_ma > long_ma:
-            spread = (short_ma - long_ma) / long_ma
-            return self._clamp(spread / 0.05)
-
-        # Death cross -> bearish
-        if prev_short_ma >= prev_long_ma and short_ma < long_ma:
-            spread = (long_ma - short_ma) / long_ma
-            return -self._clamp(spread / 0.05)
-
-        return 0.0
+        # Positive when short MA > long MA (bullish), negative when below.
+        spread = (short_ma - long_ma) / long_ma
+        return self.clamp(spread / 0.05, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -47,4 +37,4 @@ class MovingAverageCrossover(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy on golden cross ({self._short_window}/{self._long_window}-day MA), sell on death cross"
+        return f"Bullish when {self._short_window}-day MA > {self._long_window}-day MA, bearish when below"

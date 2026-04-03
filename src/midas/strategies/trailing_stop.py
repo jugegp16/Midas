@@ -38,7 +38,7 @@ class TrailingStop(Strategy):
         drawdown = (high_water - current) / high_water
 
         if drawdown >= self._trail_pct and current > cost_basis:
-            return -self._clamp((drawdown - self._trail_pct) / self._trail_pct)
+            return -self.clamp((drawdown - self._trail_pct) / self._trail_pct, 0.0, 1.0)
         return 0.0
 
     @property

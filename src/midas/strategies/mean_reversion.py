@@ -27,10 +27,11 @@ class MeanReversion(Strategy):
         if ma == 0:
             return 0.0
 
+        # How far below the MA (positive = below = bullish for mean reversion).
         pct_below = (ma - current) / ma
-        if pct_below >= self._threshold:
-            return self._clamp((pct_below - self._threshold) / self._threshold)
-        return 0.0
+        # Continuous: ramps from 0 at the MA to 1 at threshold and beyond.
+        # Slightly negative when above MA (price stretched up = less attractive).
+        return self.clamp(pct_below / self._threshold, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -38,4 +39,4 @@ class MeanReversion(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy when price is >{self._threshold:.0%} below the {self._window}-day moving average"
+        return f"Bullish below / bearish above the {self._window}-day MA (scaled by {self._threshold:.0%} threshold)"

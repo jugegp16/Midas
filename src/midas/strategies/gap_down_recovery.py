@@ -31,7 +31,7 @@ class GapDownRecovery(Strategy):
 
         if gap_pct >= self._gap_threshold and current > gap_open:
             recovery_pct = (current - gap_open) / (prev_close - gap_open)
-            return self._clamp(min(recovery_pct, 1.0))
+            return self.clamp(min(recovery_pct, 1.0), 0.0, 1.0)
         return 0.0
 
     @property
