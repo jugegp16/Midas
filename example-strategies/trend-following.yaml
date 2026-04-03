@@ -1,3 +1,7 @@
+sigmoid_steepness: 2.0
+rebalance_threshold: 0.02
+min_cash_pct: 0.05
+
 strategies:
   # -- CONVICTION --
   - name: MovingAverageCrossover
