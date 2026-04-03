@@ -29,6 +29,21 @@ class MACDCrossover(Strategy):
         self._slow_period = slow_period
         self._signal_period = signal_period
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        min_len = self._slow_period + self._signal_period
+        scores = np.full(n, np.nan)
+        if n < min_len:
+            return scores
+        fast_ema = _ema(prices, self._fast_period)
+        slow_ema = _ema(prices, self._slow_period)
+        macd_line = fast_ema - slow_ema
+        signal_line = _ema(macd_line, self._signal_period)
+        diff = macd_line - signal_line
+        raw = np.where(prices != 0, diff / prices * 100, 0.0)
+        scores[min_len - 1 :] = np.clip(raw[min_len - 1 :], -1.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,

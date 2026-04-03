@@ -13,6 +13,21 @@ class MeanReversion(Strategy):
         self._window = window
         self._threshold = threshold
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w:
+            return scores
+        cs = np.empty(n + 1)
+        cs[0] = 0.0
+        np.cumsum(prices, out=cs[1:])
+        ma = (cs[w:] - cs[:-w]) / w
+        current = prices[w - 1 :]
+        pct_below = np.where(ma != 0, (ma - current) / ma, 0.0)
+        scores[w - 1 :] = np.clip(pct_below / self._threshold, -1.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,

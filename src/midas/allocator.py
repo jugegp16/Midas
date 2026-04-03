@@ -59,6 +59,7 @@ class Allocator:
         self._protective: list[_ProtectiveEntry] = [_ProtectiveEntry(s, vt) for s, vt in protective_strategies]
         self._constraints = constraints
         self._n_tickers = n_tickers
+        self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
 
         # Auto-compute max_position_pct if not set
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)
@@ -82,6 +83,31 @@ class Allocator:
                     constraints.max_position_pct,
                     equal_weight,
                 )
+
+    def precompute_signals(self, price_data: dict[str, np.ndarray]) -> None:
+        """Precompute strategy scores for all tickers over the full price arrays.
+
+        Call once before the simulation loop.  During ``allocate()``, cached
+        scores are looked up by array index instead of calling ``score()``.
+        """
+        self._signal_cache = {}
+        strategies = [s.strategy for s in self._conviction] + [e.strategy for e in self._protective]
+        for strat in strategies:
+            cache: dict[str, np.ndarray] = {}
+            for ticker, prices in price_data.items():
+                result = strat.precompute(prices)
+                if result is not None:
+                    cache[ticker] = result
+            if cache:
+                self._signal_cache[id(strat)] = cache
+
+    def _lookup_score(self, strategy: Strategy, ticker: str, prices_len: int) -> tuple[bool, float | None]:
+        """Look up a precomputed score.  Returns (hit, score)."""
+        strat_cache = self._signal_cache.get(id(strategy))
+        if strat_cache is not None and ticker in strat_cache:
+            val = strat_cache[ticker][prices_len - 1]
+            return True, (None if np.isnan(val) else float(val))
+        return False, None
 
     def allocate(
         self,
@@ -127,7 +153,9 @@ class Allocator:
             weight_total = 0.0
 
             for scored in self._conviction:
-                s = scored.strategy.score(prices, **ticker_ctx)
+                hit, s = self._lookup_score(scored.strategy, ticker, len(prices))
+                if not hit:
+                    s = scored.strategy.score(prices, **ticker_ctx)
                 if s is not None:
                     ticker_contributions[scored.strategy.name] = s
                     weighted_sum += scored.weight * s
@@ -149,8 +177,10 @@ class Allocator:
                 prices = price_data.get(ticker)
                 if prices is None or len(prices) == 0:
                     continue
-                ticker_ctx = ctx.get(ticker, {})
-                s = entry.strategy.score(prices, **ticker_ctx)
+                hit, s = self._lookup_score(entry.strategy, ticker, len(prices))
+                if not hit:
+                    ticker_ctx = ctx.get(ticker, {})
+                    s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None and s <= entry.veto_threshold:
                     targets[ticker] = 0.0
                     # Record protective strategy in contributions

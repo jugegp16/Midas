@@ -12,6 +12,22 @@ class Momentum(Strategy):
     def __init__(self, window: int = 20) -> None:
         self._window = window
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w:
+            return scores
+        cs = np.empty(n + 1)
+        cs[0] = 0.0
+        np.cumsum(prices, out=cs[1:])
+        ma = (cs[w:] - cs[:-w]) / w
+        current = prices[w - 1 :]
+        pct_from_ma = np.where(ma != 0, (current - ma) / ma, 0.0)
+        raw = np.where(pct_from_ma > 0, pct_from_ma / 0.05, 0.0)
+        scores[w - 1 :] = np.clip(raw, 0.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,

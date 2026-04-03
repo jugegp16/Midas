@@ -102,6 +102,10 @@ class BacktestEngine:
         ticker_idx = self._build_ticker_index(price_data, start, end)
         state = self._init_positions(portfolio, price_data, trading_days, start, end)
 
+        # Precompute strategy signals over full price arrays (one-time cost).
+        full_prices = {ticker: idx.values for ticker, idx in ticker_idx.items()}
+        self._allocator.precompute_signals(full_prices)
+
         deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
 
         self._simulate(

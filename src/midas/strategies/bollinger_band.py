@@ -13,6 +13,28 @@ class BollingerBand(Strategy):
         self._window = window
         self._num_std = num_std
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w:
+            return scores
+        cs = np.empty(n + 1)
+        cs[0] = 0.0
+        np.cumsum(prices, out=cs[1:])
+        sq_cs = np.empty(n + 1)
+        sq_cs[0] = 0.0
+        np.cumsum(prices**2, out=sq_cs[1:])
+        rolling_sum = cs[w:] - cs[:-w]
+        rolling_sq = sq_cs[w:] - sq_cs[:-w]
+        ma = rolling_sum / w
+        variance = (rolling_sq / w - ma**2) * w / (w - 1)
+        std = np.sqrt(np.maximum(variance, 0.0))
+        current = prices[w - 1 :]
+        z = np.where(std != 0, (current - ma) / std, 0.0)
+        scores[w - 1 :] = np.clip(-z / self._num_std, -1.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,
