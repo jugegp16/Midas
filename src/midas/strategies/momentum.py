@@ -27,9 +27,12 @@ class Momentum(Strategy):
             return 0.0
 
         pct_from_ma = (current - ma) / ma
-        # Positive when price is above MA, negative when below.
-        # Scaled so that 5% above/below maps to ±1.
-        return self._clamp(pct_from_ma / 0.05, -1.0, 1.0)
+        # Momentum is buy-only: bullish when price is above MA, neutral when
+        # below. Bearish below-MA signals are left to dedicated strategies
+        # (MeanReversion, RSIOverbought) to avoid double-counting.
+        if pct_from_ma <= 0:
+            return 0.0
+        return self._clamp(pct_from_ma / 0.05)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -37,4 +40,4 @@ class Momentum(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Bullish above / bearish below the {self._window}-day moving average"
+        return f"Bullish when price is above the {self._window}-day moving average"

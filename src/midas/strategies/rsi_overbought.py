@@ -36,14 +36,17 @@ class RSIOverbought(Strategy):
             rs = avg_gain / avg_loss
             rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        # Continuous signal: RSI 50 = neutral (0), higher = bearish, lower = bullish.
-        # Scale so that hitting the overbought threshold maps to -1.
+        # RSIOverbought is sell-only: bearish when RSI > 50, neutral when below.
+        # The bullish below-50 signal is RSIOversold's responsibility —
+        # keeping them one-sided avoids double-counting when both are active.
         midpoint = 50.0
-        distance = rsi - midpoint  # positive when RSI > 50 (bearish)
+        if rsi <= midpoint:
+            return 0.0
+        distance = rsi - midpoint  # positive when RSI > 50
         scale = self._overbought_threshold - midpoint  # e.g. 70 - 50 = 20
         if scale == 0:
             return 0.0
-        return self._clamp(-distance / scale, -1.0, 1.0)
+        return -self._clamp(distance / scale)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -51,7 +54,4 @@ class RSIOverbought(Strategy):
 
     @property
     def description(self) -> str:
-        return (
-            f"Bearish above / bullish below RSI 50"
-            f" ({self._window}-period, overbought at {self._overbought_threshold:.0f})"
-        )
+        return f"Bearish when RSI is above 50 ({self._window}-period, overbought at {self._overbought_threshold:.0f})"
