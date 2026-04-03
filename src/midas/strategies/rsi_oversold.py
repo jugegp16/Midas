@@ -44,7 +44,7 @@ class RSIOversold(Strategy):
         scale = midpoint - self._oversold_threshold  # e.g. 50 - 30 = 20
         if scale == 0:
             return 0.0
-        return self._clamp(distance / scale)
+        return self.clamp(distance / scale, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

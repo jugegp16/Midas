@@ -36,7 +36,7 @@ class Strategy(ABC):
         return StrategyTier.CONVICTION
 
     @staticmethod
-    def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    def clamp(value: float, lo: float, hi: float) -> float:
         """Clamp *value* into [lo, hi]."""
         return max(lo, min(hi, value))
 

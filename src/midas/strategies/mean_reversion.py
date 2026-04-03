@@ -31,7 +31,7 @@ class MeanReversion(Strategy):
         pct_below = (ma - current) / ma
         # Continuous: ramps from 0 at the MA to 1 at threshold and beyond.
         # Slightly negative when above MA (price stretched up = less attractive).
-        return self._clamp(pct_below / self._threshold, -1.0, 1.0)
+        return self.clamp(pct_below / self._threshold, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

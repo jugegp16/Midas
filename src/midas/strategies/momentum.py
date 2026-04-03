@@ -32,7 +32,7 @@ class Momentum(Strategy):
         # (MeanReversion, RSIOverbought) to avoid double-counting.
         if pct_from_ma <= 0:
             return 0.0
-        return self._clamp(pct_from_ma / 0.05)
+        return self.clamp(pct_from_ma / 0.05, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

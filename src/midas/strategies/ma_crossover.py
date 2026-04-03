@@ -29,7 +29,7 @@ class MovingAverageCrossover(Strategy):
 
         # Positive when short MA > long MA (bullish), negative when below.
         spread = (short_ma - long_ma) / long_ma
-        return self._clamp(spread / 0.05, -1.0, 1.0)
+        return self.clamp(spread / 0.05, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

@@ -34,7 +34,7 @@ class BollingerBand(Strategy):
         # Positive z = above MA = bearish (stretched up).
         z = (current - ma) / std
         # Scale so that ±num_std maps to ∓1.
-        return self._clamp(-z / self._num_std, -1.0, 1.0)
+        return self.clamp(-z / self._num_std, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

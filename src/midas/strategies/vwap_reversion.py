@@ -36,7 +36,7 @@ class VWAPReversion(Strategy):
 
         # Continuous: negative deviation (below avg) = bullish, positive = bearish.
         # Scaled so that ±threshold maps to ∓1.
-        return self._clamp(-deviation / self._threshold, -1.0, 1.0)
+        return self.clamp(-deviation / self._threshold, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

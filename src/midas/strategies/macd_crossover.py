@@ -49,7 +49,7 @@ class MACDCrossover(Strategy):
             return 0.0
         # Positive when MACD > signal (bullish), negative when below.
         # Normalize by price so the score is comparable across tickers.
-        return self._clamp(diff / current * 100, -1.0, 1.0)
+        return self.clamp(diff / current * 100, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
