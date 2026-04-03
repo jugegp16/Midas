@@ -43,11 +43,13 @@ class MACDCrossover(Strategy):
         macd_line = fast_ema - slow_ema
         signal_line = _ema(macd_line, self._signal_period)
 
-        if macd_line[-2] <= signal_line[-2] and macd_line[-1] > signal_line[-1]:
-            current = float(price_history[-1])
-            diff = float(macd_line[-1] - signal_line[-1])
-            return self._clamp(min(abs(diff) / current * 100, 1.0))
-        return 0.0
+        current = float(price_history[-1])
+        diff = float(macd_line[-1] - signal_line[-1])
+        if current == 0:
+            return 0.0
+        # Positive when MACD > signal (bullish), negative when below.
+        # Normalize by price so the score is comparable across tickers.
+        return self._clamp(diff / current * 100, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -56,6 +58,6 @@ class MACDCrossover(Strategy):
     @property
     def description(self) -> str:
         return (
-            f"Buy when MACD({self._fast_period},{self._slow_period}) "
-            f"crosses above {self._signal_period}-period signal line"
+            f"Bullish when MACD({self._fast_period},{self._slow_period}) "
+            f"is above {self._signal_period}-period signal line, bearish when below"
         )

@@ -34,7 +34,7 @@ class LiveEngine:
         constraints: AllocationConstraints | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
-        history_days: int = 60,
+        history_days: int = 120,
     ) -> None:
         self._portfolio = portfolio
         self._allocator = allocator

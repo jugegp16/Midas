@@ -234,8 +234,15 @@ class Rebalancer:
             f"{action} {ticker}: target {target_weight:.1%} vs "
             f"current {current_weight:.1%} (blended score {blended:+.3f})"
         )
-        # Primary strategy = highest absolute contribution
-        source = max(contribs, key=lambda k: abs(contribs[k])) if contribs else "Rebalancer"
+        # Primary strategy = largest contributor in the order's direction.
+        # For buys, pick the most positive score; for sells, the most negative.
+        if contribs:
+            if direction == Direction.BUY:
+                source = max(contribs, key=lambda k: contribs[k])
+            else:
+                source = min(contribs, key=lambda k: contribs[k])
+        else:
+            source = "Rebalancer"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,

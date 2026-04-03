@@ -17,17 +17,19 @@ class Momentum(Strategy):
         price_history: np.ndarray,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window + 1:
+        if len(price_history) < self._window:
             return None
 
-        current, prev = float(price_history[-1]), float(price_history[-2])
+        current = float(price_history[-1])
         ma = float(price_history[-self._window :].mean())
-        prev_ma = float(price_history[-(self._window + 1) : -1].mean())
 
-        if prev <= prev_ma and current > ma:
-            pct_above = (current - ma) / ma
-            return self._clamp(pct_above / 0.05)
-        return 0.0
+        if ma == 0:
+            return 0.0
+
+        pct_from_ma = (current - ma) / ma
+        # Positive when price is above MA, negative when below.
+        # Scaled so that 5% above/below maps to ±1.
+        return self._clamp(pct_from_ma / 0.05, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -35,4 +37,4 @@ class Momentum(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy when price crosses above the {self._window}-day moving average from below"
+        return f"Bullish above / bearish below the {self._window}-day moving average"
