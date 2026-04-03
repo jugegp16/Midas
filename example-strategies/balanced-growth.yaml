@@ -1,0 +1,27 @@
+sigmoid_steepness: 2.0
+rebalance_threshold: 0.02
+min_cash_pct: 0.05
+
+strategies:
+  # -- CONVICTION --
+  - name: Momentum
+    weight: 1.0
+    params:
+      window: 20
+
+  - name: RSIOversold
+    weight: 1.0
+    params:
+      window: 14
+      oversold_threshold: 30.0
+
+  - name: ProfitTaking
+    weight: 1.0
+    params:
+      gain_threshold: 0.20
+
+  # -- PROTECTIVE --
+  - name: TrailingStop
+    veto_threshold: -0.5
+    params:
+      trail_pct: 0.10
