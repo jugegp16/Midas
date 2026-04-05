@@ -237,6 +237,12 @@ def live(
     show_default=True,
     help="Number of Optuna optimisation trials.",
 )
+@click.option(
+    "--train-pct",
+    default=DEFAULT_TRAIN_PCT,
+    show_default=True,
+    help="Train/test split ratio (0-1).",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
@@ -244,6 +250,7 @@ def optimize(
     end: date,
     output: str,
     n_trials: int,
+    train_pct: float,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import optimize as run_optimize
@@ -269,6 +276,7 @@ def optimize(
         strategy_names=strategy_names,
         n_trials=n_trials,
         min_cash_pct=min_cash_pct,
+        train_pct=train_pct,
         log_fn=print_status,
     )
 
