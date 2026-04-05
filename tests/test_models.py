@@ -2,8 +2,11 @@
 
 from datetime import date
 
+import pytest
+
 from midas.models import (
     AllocationConstraints,
+    CashInfusion,
     Direction,
     Holding,
     HoldingPeriod,
@@ -99,3 +102,30 @@ def test_strategy_config_defaults() -> None:
     cfg = StrategyConfig(name="TestStrategy")
     assert cfg.weight == 1.0
     assert cfg.veto_threshold == -0.5
+
+
+class TestCashInfusion:
+    def test_advance_biweekly(self) -> None:
+        infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3), frequency="biweekly")
+        infusion.advance()
+        assert infusion.next_date == date(2025, 1, 17)
+
+    def test_advance_weekly(self) -> None:
+        infusion = CashInfusion(amount=500.0, next_date=date(2025, 1, 3), frequency="weekly")
+        infusion.advance()
+        assert infusion.next_date == date(2025, 1, 10)
+
+    def test_advance_monthly(self) -> None:
+        infusion = CashInfusion(amount=2000.0, next_date=date(2025, 1, 3), frequency="monthly")
+        infusion.advance()
+        assert infusion.next_date == date(2025, 2, 2)
+
+    def test_advance_no_frequency_is_noop(self) -> None:
+        infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3))
+        infusion.advance()
+        assert infusion.next_date == date(2025, 1, 3)
+
+    def test_advance_unknown_frequency_raises(self) -> None:
+        infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3), frequency="quarterly")
+        with pytest.raises(ValueError, match="Unknown cash_infusion frequency"):
+            infusion.advance()
