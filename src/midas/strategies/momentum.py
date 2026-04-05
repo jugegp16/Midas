@@ -9,8 +9,9 @@ from midas.strategies.base import Strategy
 
 
 class Momentum(Strategy):
-    def __init__(self, window: int = 20) -> None:
+    def __init__(self, window: int = 20, momentum_scale: float = 0.05) -> None:
         self._window = window
+        self._momentum_scale = momentum_scale
 
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)
@@ -24,7 +25,7 @@ class Momentum(Strategy):
         ma = (cs[w:] - cs[:-w]) / w
         current = prices[w - 1 :]
         pct_from_ma = np.where(ma != 0, (current - ma) / ma, 0.0)
-        raw = np.where(pct_from_ma > 0, pct_from_ma / 0.05, 0.0)
+        raw = np.where(pct_from_ma > 0, pct_from_ma / self._momentum_scale, 0.0)
         scores[w - 1 :] = np.clip(raw, 0.0, 1.0)
         return scores
 
@@ -48,7 +49,7 @@ class Momentum(Strategy):
         # (MeanReversion, RSIOverbought) to avoid double-counting.
         if pct_from_ma <= 0:
             return 0.0
-        return self.clamp(pct_from_ma / 0.05, 0.0, 1.0)
+        return self.clamp(pct_from_ma / self._momentum_scale, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

@@ -9,9 +9,10 @@ from midas.strategies.base import Strategy
 
 
 class MovingAverageCrossover(Strategy):
-    def __init__(self, short_window: int = 20, long_window: int = 50) -> None:
+    def __init__(self, short_window: int = 20, long_window: int = 50, spread_scale: float = 0.05) -> None:
         self._short_window = short_window
         self._long_window = long_window
+        self._spread_scale = spread_scale
 
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)
@@ -28,7 +29,7 @@ class MovingAverageCrossover(Strategy):
         short_at_day = short_rolling[lw - sw : n - sw + 1]
         long_at_day = long_rolling
         spread = np.where(long_at_day != 0, (short_at_day - long_at_day) / long_at_day, 0.0)
-        scores[lw - 1 :] = np.clip(spread / 0.05, -1.0, 1.0)
+        scores[lw - 1 :] = np.clip(spread / self._spread_scale, -1.0, 1.0)
         return scores
 
     def score(
@@ -47,7 +48,7 @@ class MovingAverageCrossover(Strategy):
 
         # Positive when short MA > long MA (bullish), negative when below.
         spread = (short_ma - long_ma) / long_ma
-        return self.clamp(spread / 0.05, -1.0, 1.0)
+        return self.clamp(spread / self._spread_scale, -1.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

@@ -60,6 +60,7 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     },
     "Momentum": {
         "window": (5, 50, 2),
+        "momentum_scale": (0.02, 0.10, 0.01),
         "_weight": (0.5, 3.0, 0.25),
     },
     "RSIOversold": {
@@ -106,6 +107,7 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "MovingAverageCrossover": {
         "short_window": (10, 30, 2),
         "long_window": (40, 100, 5),
+        "spread_scale": (0.02, 0.10, 0.01),
         "_weight": (0.5, 3.0, 0.25),
     },
     ALLOCATION_KEY: {
