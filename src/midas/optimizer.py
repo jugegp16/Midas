@@ -536,7 +536,7 @@ def walk_forward_optimize(
                     strategy_params: dict[str, dict[str, float]] = {}
                     for name in names_ref:
                         strategy_params[name] = _suggest_params(trial, name, ranges_ref[name])
-                    total_ret, _bh, _train, _test, _twr = pool_ref.submit(
+                    _total_ret, _bh, _train, _test, twr = pool_ref.submit(
                         _wf_trial_worker,
                         strategy_params,
                         train_start,
@@ -548,7 +548,7 @@ def walk_forward_optimize(
                         if counter[0] % 25 == 0 or counter[0] == fold_trials:
                             pct = counter[0] * 100 // fold_trials
                             log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best: {study_ref.best_value:.2%}")
-                    return total_ret
+                    return twr
 
                 return objective
 

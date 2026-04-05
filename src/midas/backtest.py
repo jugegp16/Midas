@@ -69,6 +69,7 @@ class _SimState:
     restriction_tracker: RestrictionTracker | None = None
     twr_base_value: float = 0.0  # portfolio value after last cash infusion
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
+    twr_split_idx: int | None = None  # index into twr_periods at train/test split
 
 
 DEFAULT_TRAIN_PCT = 0.70
@@ -284,12 +285,18 @@ class BacktestEngine:
 
             # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
-                state.split_value = state.cash + sum(
+                split_val = state.cash + sum(
                     state.positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
                 )
+                state.split_value = split_val
                 state.split_bh_value = portfolio.available_cash + sum(
                     state.bh_positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
                 )
+                # Close current TWR sub-period at the split boundary.
+                if state.twr_base_value > 0:
+                    state.twr_periods.append(split_val / state.twr_base_value)
+                    state.twr_base_value = split_val
+                state.twr_split_idx = len(state.twr_periods)
 
             # Phased allocator flow
             self._run_day(state, portfolio, current_data, day)
@@ -515,7 +522,6 @@ class BacktestEngine:
         twr -= 1.0
 
         sv = state.starting_value
-        spv = state.split_value
         spbh = state.split_bh_value
 
         if split_date:
@@ -525,10 +531,23 @@ class BacktestEngine:
             train_trades = list(state.trades)
             test_trades = []
 
-        train_return = (spv - sv) / sv if spv is not None and sv > 0 else (final_value - sv) / sv if sv > 0 else 0.0
-        test_return = (
-            (final_value - spv) / spv if spv is not None and spv > 0 else (final_value - sv) / sv if sv > 0 else 0.0
-        )
+        # Compute train/test TWR from sub-period boundaries.
+        split_idx = state.twr_split_idx
+        if split_idx is not None:
+            train_twr = 1.0
+            for p in state.twr_periods[:split_idx]:
+                train_twr *= p
+            train_twr -= 1.0
+            test_twr = 1.0
+            for p in state.twr_periods[split_idx:]:
+                test_twr *= p
+            test_twr -= 1.0
+        else:
+            train_twr = twr
+            test_twr = twr
+
+        train_return = train_twr
+        test_return = test_twr
         train_bh_return = (spbh - sv) / sv if spbh is not None and sv > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
         test_bh_return = (
             (bh_value - spbh) / spbh if spbh is not None and spbh > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
