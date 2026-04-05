@@ -317,6 +317,12 @@ class BacktestEngine:
         current_data: dict[str, np.ndarray],
         day: date,
     ) -> None:
+        # Credit cash infusion if it lands on or before today
+        infusion = portfolio.cash_infusion
+        if infusion and infusion.next_date <= day:
+            state.cash += infusion.amount
+            infusion.advance()
+
         # Build price arrays and current prices for active tickers
         active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
         # Only include tickers that have price data
@@ -346,6 +352,7 @@ class BacktestEngine:
 
         # Phase 4: Rebalancer diffs target vs current, generates orders
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
+
         rebalance_orders = self._rebalancer.generate_orders(
             allocation,
             positions,
@@ -489,14 +496,18 @@ class BacktestEngine:
         spv = state.split_value
         spbh = state.split_bh_value
 
-        train_trades = [t for t in state.trades if split_date and t.date < split_date]
-        test_trades = [t for t in state.trades if split_date and t.date >= split_date]
+        if split_date:
+            train_trades = [t for t in state.trades if t.date < split_date]
+            test_trades = [t for t in state.trades if t.date >= split_date]
+        else:
+            train_trades = list(state.trades)
+            test_trades = []
 
-        train_return = (spv - sv) / sv if spv is not None and sv > 0 else 0.0
+        train_return = (spv - sv) / sv if spv is not None and sv > 0 else (final_value - sv) / sv if sv > 0 else 0.0
         test_return = (
             (final_value - spv) / spv if spv is not None and spv > 0 else (final_value - sv) / sv if sv > 0 else 0.0
         )
-        train_bh_return = (spbh - sv) / sv if spbh is not None and sv > 0 else 0.0
+        train_bh_return = (spbh - sv) / sv if spbh is not None and sv > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
         test_bh_return = (
             (bh_value - spbh) / spbh if spbh is not None and spbh > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
         )

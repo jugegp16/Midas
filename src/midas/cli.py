@@ -238,6 +238,12 @@ def live(
     help="Number of Optuna optimisation trials.",
 )
 @click.option(
+    "--train-pct",
+    default=DEFAULT_TRAIN_PCT,
+    show_default=True,
+    help="Train/test split ratio (0-1).",
+)
+@click.option(
     "--walk-forward",
     is_flag=True,
     default=False,
@@ -250,6 +256,7 @@ def optimize(
     end: date,
     output: str,
     n_trials: int,
+    train_pct: float,
     walk_forward: bool,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
@@ -356,6 +363,7 @@ def optimize(
             strategy_names=strategy_names,
             n_trials=n_trials,
             min_cash_pct=min_cash_pct,
+            train_pct=train_pct,
             log_fn=print_status,
         )
 

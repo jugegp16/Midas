@@ -8,7 +8,7 @@ from conftest import make_price_series
 
 from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
-from midas.models import AllocationConstraints, Direction, Holding, PortfolioConfig
+from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig
 from midas.rebalancer import Rebalancer
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
@@ -205,3 +205,66 @@ def test_backtest_excluded_ticker() -> None:
     assert "GHOST" in excluded_msgs[0]
 
     assert result.starting_value == 1000.0 + 10 * 100.0
+
+
+def test_backtest_cash_infusion_credits_cash() -> None:
+    """Cash infusions should be credited on their next_date during backtest."""
+    prices = make_price_series(date(2024, 1, 2), 100, 100.0, name="AAPL")
+    trading_days = list(prices.index)
+    # Pick an infusion date that falls on a trading day in the middle
+    infusion_date = trading_days[50]
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10)],
+        available_cash=1000.0,
+        cash_infusion=CashInfusion(
+            amount=2000.0,
+            next_date=infusion_date,
+        ),
+    )
+
+    mr = MeanReversion(window=20, threshold=0.05)
+    engine = _build_engine(
+        conviction_strategies=[(mr, 1.0)],
+        enable_split=False,
+    )
+
+    start = trading_days[0]
+    end = trading_days[-1]
+    result = engine.run(portfolio, {"AAPL": prices}, start, end)
+
+    # Final value should reflect the 2000 infusion (starting cash 1000 + infusion 2000 = 3000 base)
+    # Even with no trades, cash portion should include the infusion
+    assert result.final_value >= 3000.0
+
+
+def test_backtest_recurring_cash_infusion() -> None:
+    """Recurring cash infusions should credit multiple times."""
+    prices = make_price_series(date(2024, 1, 2), 100, 100.0, name="AAPL")
+    trading_days = list(prices.index)
+    # Start infusion early so multiple biweekly infusions land in the window
+    infusion_date = trading_days[5]
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10)],
+        available_cash=500.0,
+        cash_infusion=CashInfusion(
+            amount=1000.0,
+            next_date=infusion_date,
+            frequency="biweekly",
+        ),
+    )
+
+    mr = MeanReversion(window=20, threshold=0.05)
+    engine = _build_engine(
+        conviction_strategies=[(mr, 1.0)],
+        enable_split=False,
+    )
+
+    start = trading_days[0]
+    end = trading_days[-1]
+    result = engine.run(portfolio, {"AAPL": prices}, start, end)
+
+    # With ~100 trading days (~140 calendar days), biweekly = ~10 infusions of $1000
+    # Final value must exceed starting holdings + multiple infusions
+    assert result.final_value > 500.0 + 10 * 100.0 + 5000.0

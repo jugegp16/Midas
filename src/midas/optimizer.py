@@ -16,7 +16,7 @@ import pandas as pd
 import yaml
 
 from midas.allocator import Allocator
-from midas.backtest import BacktestEngine
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
@@ -185,6 +185,7 @@ def _run_trial(
     start: date,
     end: date,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
 ) -> tuple[float, float, float, float]:
     """Run a single backtest trial with the allocator+rebalancer system.
@@ -235,6 +236,7 @@ def _run_trial(
         rebalancer=rebalancer,
         mechanical_strategies=mechanical,
         constraints=constraints,
+        train_pct=train_pct,
         enable_split=enable_split,
     )
     result = engine.run(portfolio, price_data, start, end)
@@ -256,6 +258,7 @@ def _init_worker(
     start: date,
     end: date,
     min_cash_pct: float,
+    train_pct: float,
     enable_split: bool = True,
 ) -> None:
     _worker_state.update(
@@ -264,6 +267,7 @@ def _init_worker(
         start=start,
         end=end,
         min_cash_pct=min_cash_pct,
+        train_pct=train_pct,
         enable_split=enable_split,
     )
 
@@ -337,6 +341,7 @@ def optimize(
     strategy_names: list[str] | None = None,
     n_trials: int = DEFAULT_N_TRIALS,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    train_pct: float = DEFAULT_TRAIN_PCT,
     log_fn: Callable[[str], None] | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
@@ -369,7 +374,7 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end, min_cash_pct),
+        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct),
     )
 
     trials_done = 0
