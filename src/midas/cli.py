@@ -275,6 +275,7 @@ def optimize(
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import (
+        ALLOCATION_KEY,
         WF_MIN_TEST_DAYS,
         WF_MIN_TRAIN_PCT,
         walk_forward_optimize,
@@ -384,7 +385,7 @@ def optimize(
         param_table.add_column("Strategy", style="bold")
         param_table.add_column("Parameters")
         for name, params in wf_result.best_params.items():
-            display = name if name != "_global" else "Global"
+            display = name if name != ALLOCATION_KEY else "Global"
             param_str = ", ".join(f"{k}={v}" for k, v in params.items())
             param_table.add_row(display, param_str)
         console.print(param_table)
@@ -427,7 +428,7 @@ def optimize(
         param_table.add_column("Strategy", style="bold")
         param_table.add_column("Parameters")
         for name, params in result.best_params.items():
-            display = name if name != "_global" else "Global"
+            display = name if name != ALLOCATION_KEY else "Global"
             param_str = ", ".join(f"{k}={v}" for k, v in params.items())
             param_table.add_row(display, param_str)
         console.print(param_table)

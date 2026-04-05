@@ -28,7 +28,7 @@ from midas.strategies import STRATEGY_REGISTRY
 from midas.strategies.base import Strategy
 
 # Parameters that should be cast to int when building strategy instances.
-_INT_PARAMS = {
+INT_PARAMS = {
     "window",
     "short_window",
     "long_window",
@@ -41,10 +41,10 @@ _INT_PARAMS = {
 # Meta-params prefixed with _ are not passed to the strategy constructor.
 # _weight: blending weight for conviction strategies.
 # _veto_threshold: veto threshold for protective strategies.
-_META_PARAMS = {"_weight", "_veto_threshold"}
+META_PARAMS = {"_weight", "_veto_threshold"}
 
 # Synthetic key for global allocation knobs (sigmoid_steepness, rebalance_threshold).
-_GLOBAL_KEY = "_global"
+ALLOCATION_KEY = "_global"
 
 # Default parameter ranges per strategy.
 # Each entry: (min, max, step) — step used for Optuna discretisation.
@@ -108,7 +108,7 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
         "long_window": (40, 100, 5),
         "_weight": (0.5, 3.0, 0.25),
     },
-    _GLOBAL_KEY: {
+    ALLOCATION_KEY: {
         "sigmoid_steepness": (1.0, 5.0, 0.5),
         "rebalance_threshold": (0.01, 0.05, 0.005),
         # min_cash_pct is a user risk preference, not optimized
@@ -171,7 +171,7 @@ def _suggest_params(
     params: dict[str, float] = {}
     for param, (lo, hi, step) in ranges.items():
         key = f"{strategy_name}__{param}"
-        if param in _INT_PARAMS:
+        if param in INT_PARAMS:
             params[param] = float(trial.suggest_int(key, int(lo), int(hi), step=int(step)))
         else:
             params[param] = trial.suggest_float(key, lo, hi, step=step)
@@ -197,19 +197,19 @@ def _run_trial(
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
 
     # Extract global allocation knobs
-    global_params = strategy_params.get(_GLOBAL_KEY, {})
+    global_params = strategy_params.get(ALLOCATION_KEY, {})
     conviction: list[tuple[Strategy, float]] = []
     protective: list[tuple[Strategy, float]] = []
     mechanical: list[Strategy] = []
 
     for name, params in strategy_params.items():
-        if name == _GLOBAL_KEY:
+        if name == ALLOCATION_KEY:
             continue
         cls = STRATEGY_REGISTRY[name]
         # Separate meta-params from constructor params
         weight = params.get("_weight", 1.0)
         veto_threshold = params.get("_veto_threshold", -0.5)
-        clean_params = {k: int(v) if k in _INT_PARAMS else v for k, v in params.items() if k not in _META_PARAMS}
+        clean_params = {k: int(v) if k in INT_PARAMS else v for k, v in params.items() if k not in META_PARAMS}
         strategy = cls(**clean_params)
 
         if strategy.tier == StrategyTier.PROTECTIVE:
@@ -311,14 +311,14 @@ def _prepare_names_and_ranges(
     n_tickers: int,
 ) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
     """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
-    names = strategy_names or [k for k in PARAM_RANGES if k != _GLOBAL_KEY]
+    names = strategy_names or [k for k in PARAM_RANGES if k != ALLOCATION_KEY]
     names = [n for n in names if n in PARAM_RANGES and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL]
 
     if not names:
         msg = "No optimizable strategies found"
         raise ValueError(msg)
 
-    names.append(_GLOBAL_KEY)
+    names.append(ALLOCATION_KEY)
 
     equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
     lo = max(round(1.5 * equal_weight, 2), 0.10)
@@ -327,8 +327,8 @@ def _prepare_names_and_ranges(
         lo, hi = 0.10, 0.80
     step = round((hi - lo) / 8, 2) or 0.01
     ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
-    ranges.setdefault(_GLOBAL_KEY, {})
-    ranges[_GLOBAL_KEY]["max_position_pct"] = (lo, hi, step)
+    ranges.setdefault(ALLOCATION_KEY, {})
+    ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
 
     return names, ranges
 
@@ -358,7 +358,7 @@ def optimize(
 
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
-    strat_names = [n for n in names if n != _GLOBAL_KEY]
+    strat_names = [n for n in names if n != ALLOCATION_KEY]
     log(f"Optimizing {len(strat_names)} strategies over {start} to {end}")
     log(f"  {n_trials} trials across {max_workers} workers")
 
@@ -413,7 +413,7 @@ def optimize(
     try:
         study.optimize(objective, n_trials=n_trials, n_jobs=max_workers)
     finally:
-        pool.shutdown(wait=False)
+        pool.shutdown(wait=True)
 
     best = study.best_trial
     best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
@@ -479,7 +479,7 @@ def walk_forward_optimize(
     trials_per_fold = max(n_trials // n_folds, 10)
     max_workers = min((os.cpu_count() or 4) // 2, trials_per_fold) or 1
 
-    strat_names = [n for n in names if n != _GLOBAL_KEY]
+    strat_names = [n for n in names if n != ALLOCATION_KEY]
     log(f"Walk-forward optimization — {len(strat_names)} strategies, {start} to {end}")
     log(f"  {n_folds} folds, ~{test_size} trading days per test window, {trials_per_fold} trials/fold")
 
@@ -587,7 +587,7 @@ def walk_forward_optimize(
                 )
             )
     finally:
-        pool.shutdown(wait=False)
+        pool.shutdown(wait=True)
 
     test_returns = [f.test_return for f in fold_results]
     mean_test = sum(test_returns) / len(test_returns)
@@ -624,8 +624,8 @@ def write_strategies_yaml(
     output: dict[str, object] = {}
 
     # Emit global allocation knobs as top-level keys
-    if _GLOBAL_KEY in params:
-        for k, v in params[_GLOBAL_KEY].items():
+    if ALLOCATION_KEY in params:
+        for k, v in params[ALLOCATION_KEY].items():
             output[k] = round(v, 4)
 
     # min_cash_pct is not optimized — preserve the user's configured value
@@ -633,7 +633,7 @@ def write_strategies_yaml(
 
     strategies = []
     for name, p in params.items():
-        if name == _GLOBAL_KEY:
+        if name == ALLOCATION_KEY:
             continue
         entry: dict[str, object] = {"name": name}
         clean_params: dict[str, object] = {}
@@ -642,7 +642,7 @@ def write_strategies_yaml(
                 entry["weight"] = round(v, 4)
             elif k == "_veto_threshold":
                 entry["veto_threshold"] = round(v, 4)
-            elif k in _INT_PARAMS:
+            elif k in INT_PARAMS:
                 clean_params[k] = int(v)
             else:
                 clean_params[k] = round(v, 4)
