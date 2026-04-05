@@ -12,11 +12,11 @@ import yfinance as yf  # type: ignore[import-untyped]
 
 from midas.data.provider import DataProvider
 
-_DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
+DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
 
 
 class CachedYFinanceProvider(DataProvider):
-    def __init__(self, cache_dir: Path = _DEFAULT_CACHE_DIR) -> None:
+    def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR) -> None:
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 

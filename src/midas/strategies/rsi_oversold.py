@@ -13,6 +13,35 @@ class RSIOversold(Strategy):
         self._window = window
         self._oversold_threshold = oversold_threshold
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w + 1:
+            return scores
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        g_cs = np.empty(len(gains) + 1)
+        g_cs[0] = 0.0
+        np.cumsum(gains, out=g_cs[1:])
+        l_cs = np.empty(len(losses) + 1)
+        l_cs[0] = 0.0
+        np.cumsum(losses, out=l_cs[1:])
+        avg_gain = (g_cs[w:] - g_cs[:-w]) / w
+        avg_loss = (l_cs[w:] - l_cs[:-w]) / w
+        result = np.zeros(len(avg_gain))
+        valid = avg_loss != 0
+        rs = np.where(valid, avg_gain / np.where(valid, avg_loss, 1.0), 0.0)
+        rsi = 100.0 - 100.0 / (1.0 + rs)
+        midpoint = 50.0
+        scale = midpoint - self._oversold_threshold
+        if scale != 0:
+            below_mid = valid & (rsi < midpoint)
+            result[below_mid] = np.clip((midpoint - rsi[below_mid]) / scale, 0.0, 1.0)
+        scores[w:] = result
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,

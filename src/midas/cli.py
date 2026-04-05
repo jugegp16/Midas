@@ -243,6 +243,24 @@ def live(
     show_default=True,
     help="Train/test split ratio (0-1).",
 )
+@click.option(
+    "--walk-forward",
+    is_flag=True,
+    default=False,
+    help="Use walk-forward analysis (auto-determines folds from date range).",
+)
+@click.option(
+    "--wf-min-train-pct",
+    default=None,
+    type=float,
+    help="Walk-forward: minimum initial training window as fraction of data (0-1). Default 0.60.",
+)
+@click.option(
+    "--wf-min-test-days",
+    default=None,
+    type=int,
+    help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
@@ -251,10 +269,33 @@ def optimize(
     output: str,
     n_trials: int,
     train_pct: float,
+    walk_forward: bool,
+    wf_min_train_pct: float | None,
+    wf_min_test_days: int | None,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
-    from midas.optimizer import optimize as run_optimize
-    from midas.optimizer import write_strategies_yaml
+    from midas.optimizer import (
+        ALLOCATION_KEY,
+        WF_MIN_TEST_DAYS,
+        WF_MIN_TRAIN_PCT,
+        walk_forward_optimize,
+        write_strategies_yaml,
+    )
+    from midas.optimizer import (
+        optimize as run_optimize,
+    )
+
+    # Validation
+    if walk_forward and train_pct != DEFAULT_TRAIN_PCT:
+        raise click.UsageError("--train-pct cannot be used with --walk-forward (walk-forward has its own split logic).")
+    if not walk_forward and (wf_min_train_pct is not None or wf_min_test_days is not None):
+        raise click.UsageError("--wf-min-train-pct and --wf-min-test-days require --walk-forward.")
+    if train_pct <= 0 or train_pct > 1:
+        raise click.UsageError("--train-pct must be in (0, 1].")
+    if wf_min_train_pct is not None and (wf_min_train_pct <= 0 or wf_min_train_pct >= 1):
+        raise click.UsageError("--wf-min-train-pct must be in (0, 1).")
+    if wf_min_test_days is not None and wf_min_test_days < 1:
+        raise click.UsageError("--wf-min-test-days must be >= 1.")
 
     port = load_portfolio(Path(portfolio))
 
@@ -268,39 +309,129 @@ def optimize(
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
 
-    result = run_optimize(
-        portfolio=port,
-        price_data=price_data,
-        start=start_d,
-        end=end_d,
-        strategy_names=strategy_names,
-        n_trials=n_trials,
-        min_cash_pct=min_cash_pct,
-        train_pct=train_pct,
-        log_fn=print_status,
-    )
-
-    write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
-    print_status(f"Optimized strategies written to {output}")
-
     from rich.table import Table
-
-    table = Table(title="Optimization Results")
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
-    table.add_row("Total Return", f"{result.best_return:.2%}")
-    table.add_row("Buy & Hold Return", f"{result.best_bh_return:.2%}")
-    table.add_row("Train Return", f"{result.best_train_return:.2%}")
-    table.add_row("Test Return", f"{result.best_test_return:.2%}")
-    table.add_row("Trials Run", str(result.trials_run))
-    table.add_section()
-    for name, params in result.best_params.items():
-        param_str = ", ".join(f"{k}={v}" for k, v in params.items())
-        table.add_row(name, param_str)
 
     from midas.output import console
 
-    console.print(table)
+    if walk_forward:
+        wf_result = walk_forward_optimize(
+            portfolio=port,
+            price_data=price_data,
+            start=start_d,
+            end=end_d,
+            strategy_names=strategy_names,
+            n_trials=n_trials,
+            min_cash_pct=min_cash_pct,
+            min_train_pct=wf_min_train_pct or WF_MIN_TRAIN_PCT,
+            min_test_days=wf_min_test_days or WF_MIN_TEST_DAYS,
+            log_fn=print_status,
+        )
+
+        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct)
+
+        console.print()
+
+        # Per-fold results
+        fold_table = Table(
+            title="Walk-Forward Analysis",
+            title_style="bold",
+            show_lines=True,
+        )
+        fold_table.add_column("Fold", justify="center", style="bold")
+        fold_table.add_column("Train Period")
+        fold_table.add_column("Test Period")
+        fold_table.add_column("Train Return", justify="right")
+        fold_table.add_column("Out-of-Sample Return", justify="right")
+        for f in wf_result.folds:
+            test_style = "green" if f.test_return >= 0 else "red"
+            fold_table.add_row(
+                str(f.fold),
+                f"{f.train_start} → {f.train_end}",
+                f"{f.test_start} → {f.test_end}",
+                f"{f.train_return:.2%}",
+                f"[{test_style}]{f.test_return:.2%}[/{test_style}]",
+            )
+        console.print(fold_table)
+
+        # Summary
+        composite_style = "green" if wf_result.composite_return >= 0 else "red"
+        summary = Table(
+            title="Summary",
+            title_style="bold",
+            show_header=False,
+            box=None,
+            padding=(0, 2),
+        )
+        summary.add_column("Metric", style="bold")
+        summary.add_column("Value", justify="right")
+        summary.add_row(
+            "Composite Out-of-Sample Return",
+            f"[{composite_style}]{wf_result.composite_return:.2%}[/{composite_style}]",
+        )
+        summary.add_row(
+            "Per-Fold Mean ± Std",
+            f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
+        )
+        summary.add_row("Total Trials", str(wf_result.total_trials))
+        summary.add_row("Output", output)
+        console.print(summary)
+
+        # Best params
+        console.print()
+        param_table = Table(
+            title="Deployed Parameters (from latest fold)",
+            title_style="bold",
+        )
+        param_table.add_column("Strategy", style="bold")
+        param_table.add_column("Parameters")
+        for name, params in wf_result.best_params.items():
+            display = name if name != ALLOCATION_KEY else "Global"
+            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            param_table.add_row(display, param_str)
+        console.print(param_table)
+
+    else:
+        result = run_optimize(
+            portfolio=port,
+            price_data=price_data,
+            start=start_d,
+            end=end_d,
+            strategy_names=strategy_names,
+            n_trials=n_trials,
+            min_cash_pct=min_cash_pct,
+            train_pct=train_pct,
+            log_fn=print_status,
+        )
+
+        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
+
+        console.print()
+
+        # Results
+        train_style = "green" if result.best_train_return >= 0 else "red"
+        test_style = "green" if result.best_test_return >= 0 else "red"
+        bh_style = "green" if result.best_bh_return >= 0 else "red"
+
+        table = Table(title="Optimization Results", title_style="bold", show_lines=True)
+        table.add_column("Metric", style="bold")
+        table.add_column("Value", justify="right")
+        table.add_row("Train Return (70%)", f"[{train_style}]{result.best_train_return:.2%}[/{train_style}]")
+        table.add_row("Test Return (30%)", f"[{test_style}]{result.best_test_return:.2%}[/{test_style}]")
+        table.add_row("Buy & Hold Return", f"[{bh_style}]{result.best_bh_return:.2%}[/{bh_style}]")
+        table.add_row("Trials", str(result.trials_run))
+        table.add_row("Output", output)
+        console.print(table)
+
+        # Params
+        console.print()
+        param_table = Table(title="Optimized Parameters", title_style="bold")
+        param_table.add_column("Strategy", style="bold")
+        param_table.add_column("Parameters")
+        for name, params in result.best_params.items():
+            display = name if name != ALLOCATION_KEY else "Global"
+            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            param_table.add_row(display, param_str)
+        console.print(param_table)
 
 
 @cli.command(name="strategies")

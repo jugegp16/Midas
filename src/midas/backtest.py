@@ -40,6 +40,7 @@ class BacktestResult:
     train_bh_return: float
     test_bh_return: float
     split_date: date | None
+    twr: float  # time-weighted return (accounts for cash infusions)
 
 
 @dataclass
@@ -66,6 +67,8 @@ class _SimState:
     split_value: float | None = None
     split_bh_value: float | None = None
     restriction_tracker: RestrictionTracker | None = None
+    twr_base_value: float = 0.0  # portfolio value after last cash infusion
+    twr_periods: list[float] = field(default_factory=list)  # sub-period returns
 
 
 DEFAULT_TRAIN_PCT = 0.70
@@ -101,6 +104,10 @@ class BacktestEngine:
         _, split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
         state = self._init_positions(portfolio, price_data, trading_days, start, end)
+
+        # Precompute strategy signals over full price arrays (one-time cost).
+        full_prices = {ticker: idx.values for ticker, idx in ticker_idx.items()}
+        self._allocator.precompute_signals(full_prices)
 
         deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
 
@@ -212,6 +219,7 @@ class BacktestEngine:
             for t, shares in state.positions.items()
             if shares > 0 and t in state.cost_basis
         )
+        state.twr_base_value = state.starting_value
         return state
 
     def _find_deferred(
@@ -313,10 +321,20 @@ class BacktestEngine:
         current_data: dict[str, np.ndarray],
         day: date,
     ) -> None:
-        # Credit cash infusion if it lands on or before today
+        # Credit cash infusion if it lands on or before today.
+        # For TWR: snapshot portfolio value before the infusion to close
+        # the current sub-period, then reset the base after the infusion.
         infusion = portfolio.cash_infusion
         if infusion and infusion.next_date <= day:
+            pre_infusion_value = state.cash + sum(
+                state.positions.get(t, 0) * float(current_data[t][-1])
+                for t in current_data
+                if state.positions.get(t, 0) > 0
+            )
+            if state.twr_base_value > 0:
+                state.twr_periods.append(pre_infusion_value / state.twr_base_value)
             state.cash += infusion.amount
+            state.twr_base_value = pre_infusion_value + infusion.amount
             infusion.advance()
 
         # Build price arrays and current prices for active tickers
@@ -488,6 +506,14 @@ class BacktestEngine:
             state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
         )
 
+        # Close the final TWR sub-period and compound all periods.
+        if state.twr_base_value > 0:
+            state.twr_periods.append(final_value / state.twr_base_value)
+        twr = 1.0
+        for period_return in state.twr_periods:
+            twr *= period_return
+        twr -= 1.0
+
         sv = state.starting_value
         spv = state.split_value
         spbh = state.split_bh_value
@@ -520,6 +546,7 @@ class BacktestEngine:
             train_bh_return=round(train_bh_return, 4),
             test_bh_return=round(test_bh_return, 4),
             split_date=split_date,
+            twr=round(twr, 4),
         )
 
 
@@ -562,6 +589,7 @@ def write_backtest_csv(result: BacktestResult, path: Path) -> None:
         writer.writerow(["Starting Value", f"${sv:.2f}"])
         writer.writerow(["Final Value", f"${result.final_value:.2f}"])
         writer.writerow(["Total Return", f"{total_return:.2%}"])
+        writer.writerow(["Time-Weighted Return", f"{result.twr:.2%}"])
         writer.writerow(["Buy & Hold Value", f"${result.buy_and_hold_value:.2f}"])
         writer.writerow(["Buy & Hold Return", f"{bh_return:.2%}"])
         writer.writerow(["Total Trades", len(result.trades)])

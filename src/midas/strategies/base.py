@@ -40,6 +40,16 @@ class Strategy(ABC):
         """Clamp *value* into [lo, hi]."""
         return max(lo, min(hi, value))
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        """Precompute scores for every prefix of *prices* in one pass.
+
+        Returns an array *s* of length ``len(prices)`` where ``s[i]`` equals
+        ``self.score(prices[:i+1])`` (or ``NaN`` when ``score`` would return
+        ``None``).  Returns ``None`` when precomputation is not possible
+        (e.g. the strategy needs runtime context like ``cost_basis``).
+        """
+        return None
+
     def generate_intents(
         self,
         ticker: str,
