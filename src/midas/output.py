@@ -83,6 +83,7 @@ def print_backtest_summary(result: BacktestResult) -> None:
     table.add_row("Starting Value", f"${sv:,.2f}")
     table.add_row("Final Value", f"${fv:,.2f}")
     table.add_row("Total Return", f"{total_return:.2%}")
+    table.add_row("Time-Weighted Return", f"{result.twr:.2%}")
     table.add_row("Buy & Hold Value", f"${bhv:,.2f}")
     table.add_row("Buy & Hold Return", f"{bh_return:.2%}")
     table.add_row("Total Trades", str(len(result.trades)))

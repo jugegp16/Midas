@@ -189,10 +189,10 @@ def _run_trial(
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     """Run a single backtest trial with the allocator+rebalancer system.
 
-    Returns (total_return, bh_return, train_return, test_return).
+    Returns (total_return, bh_return, train_return, test_return, twr).
     """
     # Suppress allocator warnings during optimization — the optimizer explores
     # boundary values that trigger heuristic warnings but are fine to evaluate.
@@ -244,11 +244,11 @@ def _run_trial(
     result = engine.run(portfolio, price_data, start, end)
 
     if result.starting_value <= 0:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
 
     total_return = (result.final_value - result.starting_value) / result.starting_value
     bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
-    return total_return, bh_return, result.train_return, result.test_return
+    return total_return, bh_return, result.train_return, result.test_return, result.twr
 
 
 _worker_state: dict[str, Any] = {}
@@ -393,7 +393,7 @@ def optimize(
                 ranges[name],
             )
 
-        _total_ret, bh_ret, train_ret, test_ret = pool.submit(
+        _total_ret, bh_ret, train_ret, test_ret, _twr = pool.submit(
             _trial_worker,
             strategy_params,
         ).result()
@@ -536,7 +536,7 @@ def walk_forward_optimize(
                     strategy_params: dict[str, dict[str, float]] = {}
                     for name in names_ref:
                         strategy_params[name] = _suggest_params(trial, name, ranges_ref[name])
-                    total_ret, _bh, _train, _test = pool_ref.submit(
+                    total_ret, _bh, _train, _test, _twr = pool_ref.submit(
                         _wf_trial_worker,
                         strategy_params,
                         train_start,
@@ -563,7 +563,7 @@ def walk_forward_optimize(
             prev_best_flat = dict(study.best_trial.params)
 
             # --- Evaluate best params on test window ---
-            test_ret, _bh, _train, _test = _run_trial(
+            _test_total, _bh, _train, _test, test_twr = _run_trial(
                 best_params,
                 portfolio,
                 price_data,
@@ -573,7 +573,7 @@ def walk_forward_optimize(
                 enable_split=False,
             )
 
-            log(f"  Result — train: {train_return:.2%} | out-of-sample: {test_ret:.2%}")
+            log(f"  Result — train: {train_return:.2%} | out-of-sample: {test_twr:.2%}")
 
             fold_results.append(
                 FoldResult(
@@ -584,7 +584,7 @@ def walk_forward_optimize(
                     test_end=fold_test_end,
                     best_params=best_params,
                     train_return=round(train_return, 4),
-                    test_return=round(test_ret, 4),
+                    test_return=round(test_twr, 4),
                     trials_run=len(study.trials),
                 )
             )
