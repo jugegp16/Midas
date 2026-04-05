@@ -249,6 +249,18 @@ def live(
     default=False,
     help="Use walk-forward analysis (auto-determines folds from date range).",
 )
+@click.option(
+    "--wf-min-train-pct",
+    default=None,
+    type=float,
+    help="Walk-forward: minimum initial training window as fraction of data (0-1). Default 0.60.",
+)
+@click.option(
+    "--wf-min-test-days",
+    default=None,
+    type=int,
+    help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
@@ -258,10 +270,31 @@ def optimize(
     n_trials: int,
     train_pct: float,
     walk_forward: bool,
+    wf_min_train_pct: float | None,
+    wf_min_test_days: int | None,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
-    from midas.optimizer import optimize as run_optimize
-    from midas.optimizer import walk_forward_optimize, write_strategies_yaml
+    from midas.optimizer import (
+        WF_MIN_TEST_DAYS,
+        WF_MIN_TRAIN_PCT,
+        walk_forward_optimize,
+        write_strategies_yaml,
+    )
+    from midas.optimizer import (
+        optimize as run_optimize,
+    )
+
+    # Validation
+    if walk_forward and train_pct != DEFAULT_TRAIN_PCT:
+        raise click.UsageError("--train-pct cannot be used with --walk-forward (walk-forward has its own split logic).")
+    if not walk_forward and (wf_min_train_pct is not None or wf_min_test_days is not None):
+        raise click.UsageError("--wf-min-train-pct and --wf-min-test-days require --walk-forward.")
+    if train_pct <= 0 or train_pct > 1:
+        raise click.UsageError("--train-pct must be in (0, 1].")
+    if wf_min_train_pct is not None and (wf_min_train_pct <= 0 or wf_min_train_pct >= 1):
+        raise click.UsageError("--wf-min-train-pct must be in (0, 1).")
+    if wf_min_test_days is not None and wf_min_test_days < 1:
+        raise click.UsageError("--wf-min-test-days must be >= 1.")
 
     port = load_portfolio(Path(portfolio))
 
@@ -288,6 +321,8 @@ def optimize(
             strategy_names=strategy_names,
             n_trials=n_trials,
             min_cash_pct=min_cash_pct,
+            min_train_pct=wf_min_train_pct or WF_MIN_TRAIN_PCT,
+            min_test_days=wf_min_test_days or WF_MIN_TEST_DAYS,
             log_fn=print_status,
         )
 

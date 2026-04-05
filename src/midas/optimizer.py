@@ -438,13 +438,15 @@ def walk_forward_optimize(
     strategy_names: list[str] | None = None,
     n_trials: int = DEFAULT_N_TRIALS,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    min_train_pct: float = WF_MIN_TRAIN_PCT,
+    min_test_days: int = WF_MIN_TEST_DAYS,
     log_fn: Callable[[str], None] | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
-    Reserves the first 60% of trading days as the minimum training window,
-    then carves the remaining 40% into ~3-month test windows.  Each fold
-    grows the training window while the test window slides forward.
+    Reserves *min_train_pct* of trading days as the minimum training window,
+    then carves the remainder into test windows of *min_test_days* each.
+    Each fold grows the training window while the test window slides forward.
     Parameters are re-optimised per fold so every test period is genuinely
     out-of-sample.
     """
@@ -459,17 +461,15 @@ def walk_forward_optimize(
         all_dates.update(d for d in series.index if start <= d <= end)
     trading_days = sorted(all_dates)
 
-    # Reserve 60% for the initial training window, split the rest into
-    # ~3-month test windows (at least 2 folds).
     n_days = len(trading_days)
-    train_cutoff = int(n_days * WF_MIN_TRAIN_PCT)
+    train_cutoff = int(n_days * min_train_pct)
     remaining = n_days - train_cutoff
-    if remaining < WF_MIN_TEST_DAYS * 2:
-        min_needed = int(WF_MIN_TEST_DAYS * 2 / (1 - WF_MIN_TRAIN_PCT))
+    if remaining < min_test_days * 2:
+        min_needed = int(min_test_days * 2 / (1 - min_train_pct))
         msg = f"Not enough data for walk-forward ({n_days} days, need ≥{min_needed})"
         raise ValueError(msg)
 
-    n_folds = max(remaining // WF_MIN_TEST_DAYS, 2)
+    n_folds = max(remaining // min_test_days, 2)
     test_size = remaining // n_folds
 
     # Build fold boundaries: [train_cutoff, train_cutoff + test_size, ...]
