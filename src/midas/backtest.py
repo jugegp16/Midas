@@ -313,6 +313,12 @@ class BacktestEngine:
         current_data: dict[str, np.ndarray],
         day: date,
     ) -> None:
+        # Credit cash infusion if it lands on or before today
+        infusion = portfolio.cash_infusion
+        if infusion and infusion.next_date <= day:
+            state.cash += infusion.amount
+            infusion.advance()
+
         # Build price arrays and current prices for active tickers
         active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
         # Only include tickers that have price data
@@ -342,6 +348,7 @@ class BacktestEngine:
 
         # Phase 4: Rebalancer diffs target vs current, generates orders
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
+
         rebalance_orders = self._rebalancer.generate_orders(
             allocation,
             positions,

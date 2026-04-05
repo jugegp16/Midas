@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 
 DEFAULT_MIN_CASH_PCT = 0.05
@@ -45,11 +45,28 @@ class Holding:
     cost_basis: float | None = None
 
 
+FREQUENCY_DAYS: dict[str, int] = {
+    "weekly": 7,
+    "biweekly": 14,
+    "monthly": 30,
+}
+
+
 @dataclass
 class CashInfusion:
     amount: float
     next_date: date
     frequency: str | None = None
+
+    def advance(self) -> None:
+        """Advance next_date by frequency. No-op if frequency is None."""
+        if self.frequency is None:
+            return
+        days = FREQUENCY_DAYS.get(self.frequency)
+        if days is None:
+            msg = f"Unknown cash_infusion frequency: {self.frequency!r}"
+            raise ValueError(msg)
+        self.next_date += timedelta(days=days)
 
 
 @dataclass
