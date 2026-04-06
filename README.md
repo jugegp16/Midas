@@ -65,76 +65,18 @@ strategies:
       amount: 500.00        # dollar amount per DCA buy
 ```
 
-Each strategy has an intrinsic tier determined by its class:
-
-| Tier | Behavior | Strategies |
-|------|----------|------------|
-| CONVICTION | Scores blended via weighted average into target weights | MeanReversion, Momentum, RSIOversold, RSIOverbought, BollingerBand, MACDCrossover, VWAPReversion, MovingAverageCrossover, GapDownRecovery, ProfitTaking |
-| PROTECTIVE | Evaluated after blending; vetoes position (forces weight to 0) if score <= `veto_threshold` | StopLoss, TrailingStop |
-| MECHANICAL | Bypasses allocator entirely; generates independent order intents | DollarCostAveraging |
-
-**Strategy knobs:**
-
-| Field | Scope | Default | Description |
-|-------|-------|---------|-------------|
-| `sigmoid_steepness` | Global | 2.0 | Controls how aggressively the allocator responds to conviction scores. Higher = more extreme position sizes |
-| `rebalance_threshold` | Global | 0.02 | Minimum weight diff to trigger a rebalance trade. Higher = fewer, larger trades |
-| `min_cash_pct` | Global | 0.05 | Minimum cash allocation as a fraction of portfolio value. Higher = more conservative |
-| `max_position_pct` | Global | auto | Maximum weight for any single position. Omit to auto-compute from portfolio size |
-| `weight` | CONVICTION only | 1.0 | How much influence this strategy has in the blended score. Higher = more influence relative to other strategies. Ignored for PROTECTIVE and MECHANICAL strategies |
-| `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0.0. Lower (e.g. -0.8) = only veto on extreme conviction. Higher (e.g. -0.3) = veto more easily. Ignored for CONVICTION and MECHANICAL strategies |
-| `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
-
-All knobs except `min_cash_pct` are tunable by the optimizer. `min_cash_pct` is a user risk preference.
-
-To add a strategy: implement the `Strategy` base class and register it in `strategies/__init__.py`.
+See [Strategies](docs/strategies.md) for all available strategies, their parameters, and how to compose them. Pre-built configurations are in [`example-strategies/`](example-strategies/).
 
 ## Optimizer
 
-The optimizer uses Bayesian optimisation (Optuna TPE) to search over all tunable parameters. It tunes the following layers jointly:
-
-| Layer | What it controls | Examples |
-|-------|-----------------|----------|
-| Strategy parameters | When a strategy fires and how strong | `window`, `threshold`, `loss_threshold` |
-| Strategy weights | How much influence each conviction strategy has in the blend | `_weight: 0.5` to `3.0` |
-| Veto thresholds | When a protective strategy overrides the blend | `_veto_threshold: -0.8` to `-0.2` |
-| Sigmoid steepness | How aggressively the allocator responds to conviction | `sigmoid_steepness: 1.0` to `5.0` |
-| Rebalance threshold | Minimum weight diff to trigger a trade | `rebalance_threshold: 0.01` to `0.05` |
-| Max position % | Maximum weight for any single position | `max_position_pct: 0.15` to `0.50` |
-
-Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a `strategies.yaml` with optimized `params`, `weight`, and `veto_threshold` per strategy.
-
-MECHANICAL strategies (DCA) are excluded from optimization — their parameters are user preferences, not performance parameters.
+The optimizer uses Bayesian optimization to search over all tunable parameters jointly -- strategy params, weights, veto thresholds, and global allocator settings. It outputs a strategies YAML with optimized values.
 
 ```bash
 uv run midas optimize -p portfolio.yaml --start 2015-01-01 --end 2024-12-31 -o optimized.yaml
-```
-
-### Walk-Forward Optimization
-
-[Walk-forward optimization](https://en.wikipedia.org/wiki/Walk_forward_optimization) is considered the gold standard for validating trading strategies. It determines optimal parameters while testing their robustness against overfitting.
-
-Standard optimization can overfit — parameters that look great on historical data may not work going forward. Walk-forward fixes this by repeatedly optimizing on in-sample data, then testing on out-of-sample data that was never used during optimization. The time window rolls forward and the process repeats until all available data is used.
-
-```
-Fold 1: train [2020───2023.01]  test [2023.01───2023.04]  → 4.3%
-Fold 2: train [2020───2023.04]  test [2023.04───2023.07]  → 2.1%
-Fold 3: train [2020───2023.07]  test [2023.07───2023.10]  → 3.8%
-```
-
-The optimizer only sees training data when picking parameters — it has no access to the test window. So when you evaluate those parameters on the test window, the results tell you how the strategy would have performed on data it wasn't tuned for. A robust strategy shows consistent positive out-of-sample results across multiple folds. The summary reports annualized CAGR, per-fold OOS mean/std, best/worst fold, and an efficiency ratio (how much of the training performance holds up out-of-sample).
-
-Parameters written to the output YAML come from the last fold (trained on the most data).
-
-```bash
 uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward -n 200
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--walk-forward` | off | Enable walk-forward optimization |
-| `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data |
-| `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months) |
+See [Architecture](docs/architecture.md#optimizer) for details on standard vs. walk-forward optimization.
 
 ## Development
 

@@ -90,15 +90,42 @@ The core engine doesn't run itself -- it needs a driver that feeds it price data
 
 The optimizer is usually the starting point. Rather than hand-tuning strategy parameters, you let the optimizer search for a combination that performs well on historical data. It outputs a strategies YAML that you can then feed into backtest or live mode.
 
-The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search over all tunable parameters jointly. This includes strategy-specific parameters (lookback windows, thresholds), strategy weights, protective veto thresholds, and global allocator settings (sigmoid steepness, rebalance threshold, max position size). MECHANICAL strategies are excluded since their parameters are user preferences, not performance-tunable.
+The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search over all tunable parameters. It tunes the following layers jointly:
+
+| Layer | What it controls | Search range |
+|-------|-----------------|--------------|
+| Strategy parameters | When a strategy fires and how strong | `window`, `threshold`, `loss_threshold`, etc. |
+| Strategy weights | How much influence each conviction strategy has in the blend | 0.5 to 3.0 |
+| Veto thresholds | When a protective strategy overrides the blend | -0.8 to -0.2 |
+| Sigmoid steepness | How aggressively the allocator responds to conviction | 1.0 to 5.0 |
+| Rebalance threshold | Minimum weight diff to trigger a trade | 0.01 to 0.05 |
+| Max position % | Maximum weight for any single position | 0.15 to 0.50 |
+
+Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a strategies YAML with optimized `params`, `weight`, and `veto_threshold` per strategy. MECHANICAL strategies (DCA) are excluded -- their parameters are user preferences, not performance parameters.
 
 **Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination, runs a full backtest with train/test split, and returns the training return as the optimization objective. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
-**Walk-Forward Mode** -- Standard optimization can overfit -- parameters that look great on historical data may fail going forward. Walk-forward optimization addresses this by repeatedly expanding the training window and testing on the next unseen slice of data.
+#### Walk-Forward Optimization
 
-The training window starts at 60% of the data and grows with each fold. Each fold re-optimizes parameters on its training data, then evaluates on the subsequent test window (minimum ~3 months). The test window rolls forward until all data is used. Each fold is warm-started with the previous fold's best parameters to exploit correlation between adjacent time periods.
+[Walk-forward optimization](https://en.wikipedia.org/wiki/Walk_forward_optimization) is considered the gold standard for validating trading strategies. It determines optimal parameters while testing their robustness against overfitting.
 
-The summary reports annualized CAGR across all out-of-sample windows, per-fold mean and standard deviation, best/worst fold, and an efficiency ratio measuring how much of the training performance holds up out-of-sample. A robust strategy shows consistent positive out-of-sample results across folds. The final output YAML uses parameters from the last fold, which was trained on the most data.
+Standard optimization can overfit -- parameters that look great on historical data may not work going forward. Walk-forward fixes this by repeatedly optimizing on in-sample data, then testing on out-of-sample data that was never used during optimization. The time window rolls forward and the process repeats until all available data is used.
+
+```
+Fold 1: train [2020───2023.01]  test [2023.01───2023.04]  → 4.3%
+Fold 2: train [2020───2023.04]  test [2023.04───2023.07]  → 2.1%
+Fold 3: train [2020───2023.07]  test [2023.07───2023.10]  → 3.8%
+```
+
+The optimizer only sees training data when picking parameters -- it has no access to the test window. So when you evaluate those parameters on the test window, the results tell you how the strategy would have performed on data it wasn't tuned for. A robust strategy shows consistent positive out-of-sample results across multiple folds. The summary reports annualized CAGR, per-fold OOS mean/std, best/worst fold, and an efficiency ratio (how much of the training performance holds up out-of-sample).
+
+Parameters written to the output YAML come from the last fold (trained on the most data). Each fold is warm-started with the previous fold's best parameters to exploit correlation between adjacent time periods.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--walk-forward` | off | Enable walk-forward optimization |
+| `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data |
+| `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months) |
 
 ### Backtest
 
