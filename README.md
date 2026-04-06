@@ -1,6 +1,6 @@
 # Midas
 
-Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transform, and a rebalancer diffs against current holdings to generate trades. Backtest against years of historical data with train/test splits, or run it live with real-time polling.
+Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transformation, and a rebalancer diffs against current holdings to generate trades. Optimize strategy parameters with walk-forward optimization, backtest against years of historical data with train/test splits, and run it live with real-time polling.
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.14+.
 
 ## Quick Start
