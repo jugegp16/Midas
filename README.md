@@ -12,6 +12,7 @@ uv run midas strategies
 uv run midas backtest -p portfolio.yaml -s strategies.yaml --start 2023-01-01 --end 2024-12-31 -o results.csv
 uv run midas live -p portfolio.yaml -s strategies.yaml
 uv run midas optimize -p portfolio.yaml --start 2023-01-01 --end 2024-12-31
+uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward
 ```
 
 ## Config
@@ -108,6 +109,32 @@ MECHANICAL strategies (DCA) are excluded from optimization — their parameters 
 ```bash
 uv run midas optimize -p portfolio.yaml --start 2015-01-01 --end 2024-12-31 -o optimized.yaml
 ```
+
+### Walk-Forward Analysis
+
+[Walk-forward analysis](https://en.wikipedia.org/wiki/Walk_forward_optimization) is considered the gold standard for validating trading strategies. It determines optimal parameters while testing their robustness against overfitting.
+
+Standard optimization can overfit — parameters that look great on historical data may not work going forward. Walk-forward fixes this by repeatedly optimizing on in-sample data, then testing on out-of-sample data that was never used during optimization. The time window rolls forward and the process repeats until all available data is used.
+
+```
+Fold 1: train [2020───2023.01]  test [2023.01───2023.04]  → 4.3%
+Fold 2: train [2020───2023.04]  test [2023.04───2023.07]  → 2.1%
+Fold 3: train [2020───2023.07]  test [2023.07───2023.10]  → 3.8%
+```
+
+The optimizer only sees training data when picking parameters — it has no access to the test window. So when you evaluate those parameters on the test window, the results tell you how the strategy would have performed on data it wasn't tuned for. A robust strategy shows consistent positive out-of-sample results across multiple folds. The summary reports annualized CAGR, per-fold OOS mean/std, best/worst fold, and an efficiency ratio (how much of the training performance holds up out-of-sample).
+
+Parameters written to the output YAML come from the last fold (trained on the most data).
+
+```bash
+uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward -n 200
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--walk-forward` | off | Enable walk-forward analysis |
+| `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data |
+| `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months) |
 
 ## Development
 
