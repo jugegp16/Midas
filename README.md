@@ -1,7 +1,6 @@
 # Midas
 
-Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transform, and a rebalancer diffs against current holdings to generate trades. Backtest against years of historical data with train/test splits, or run it live with real-time polling. You pull the trigger.
-
+Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transformation, and a rebalancer diffs against current holdings to generate trades. Optimize strategy parameters with walk-forward optimization, backtest against years of historical data with train/test splits, and run it live with real-time polling.
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.14+.
 
 ## Quick Start
@@ -110,9 +109,9 @@ MECHANICAL strategies (DCA) are excluded from optimization — their parameters 
 uv run midas optimize -p portfolio.yaml --start 2015-01-01 --end 2024-12-31 -o optimized.yaml
 ```
 
-### Walk-Forward Analysis
+### Walk-Forward Optimization
 
-[Walk-forward analysis](https://en.wikipedia.org/wiki/Walk_forward_optimization) is considered the gold standard for validating trading strategies. It determines optimal parameters while testing their robustness against overfitting.
+[Walk-forward optimization](https://en.wikipedia.org/wiki/Walk_forward_optimization) is considered the gold standard for validating trading strategies. It determines optimal parameters while testing their robustness against overfitting.
 
 Standard optimization can overfit — parameters that look great on historical data may not work going forward. Walk-forward fixes this by repeatedly optimizing on in-sample data, then testing on out-of-sample data that was never used during optimization. The time window rolls forward and the process repeats until all available data is used.
 
@@ -132,7 +131,7 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--walk-forward` | off | Enable walk-forward analysis |
+| `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months) |
 
