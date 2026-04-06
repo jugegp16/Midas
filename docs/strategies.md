@@ -2,7 +2,7 @@
 
 All strategies are stateless and ticker-agnostic. They receive a price history array and return a conviction score between -1 (bearish) and +1 (bullish), or None to abstain.
 
-Strategies are registered by name in `strategies/__init__.py`. To add a new strategy, implement the `Strategy` base class and add it to `STRATEGY_REGISTRY`.
+Strategies are registered by name in `strategies/__init__.py`. To add a new strategy: implement the `Strategy` base class in a new file under `strategies/`, register it in `strategies/__init__.py`, and optionally add param ranges in `PARAM_RANGES` in `optimizer.py` to make it optimizable.
 
 ## Summary
 

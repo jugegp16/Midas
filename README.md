@@ -2,8 +2,6 @@
 
 Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transformation, and a rebalancer diffs against current holdings to generate trades. Optimize strategy parameters with walk-forward optimization, backtest against years of historical data with train/test splits, and run it live with real-time polling.
 
-See [Architecture](docs/architecture.md) for how the engine works and [Strategies](docs/strategies.md) for a reference of all available strategies.
-
 ## Quick Start
 
 ```bash
@@ -14,6 +12,8 @@ uv run midas live -p portfolio.yaml -s strategies.yaml
 uv run midas optimize -p portfolio.yaml --start 2023-01-01 --end 2024-12-31
 uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward
 ```
+
+See [Architecture](docs/architecture.md) for how the engine works and [Strategies](docs/strategies.md) for a reference of all available strategies. Pre-built strategy compositions are available in [`example-strategies/`](example-strategies/).
 
 ## Config
 
