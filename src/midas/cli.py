@@ -247,7 +247,7 @@ def live(
     "--walk-forward",
     is_flag=True,
     default=False,
-    help="Use walk-forward analysis (auto-determines folds from date range).",
+    help="Use walk-forward optimization (auto-determines folds from date range).",
 )
 @click.option(
     "--wf-min-train-pct",
@@ -333,7 +333,7 @@ def optimize(
 
         # Per-fold results
         fold_table = Table(
-            title="Walk-Forward Analysis",
+            title="Walk-Forward Optimization",
             title_style="bold",
             show_lines=True,
         )
