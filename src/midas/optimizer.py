@@ -157,9 +157,13 @@ class WalkForwardResult:
     """Aggregated result of walk-forward optimisation across all folds."""
 
     folds: list[FoldResult]
-    composite_return: float  # compounded out-of-sample return across all folds
+    annualized_return: float  # CAGR over the OOS period
     mean_test_return: float
     std_test_return: float
+    winning_folds: int  # number of folds with positive OOS return
+    best_fold_return: float  # best single-fold OOS return
+    worst_fold_return: float  # worst single-fold OOS return
+    efficiency_ratio: float  # mean OOS return / mean train return
     best_params: dict[str, dict[str, float]]  # from last fold (most recent data)
     total_trials: int
 
@@ -596,22 +600,40 @@ def walk_forward_optimize(
     variance = sum((r - mean_test) ** 2 for r in test_returns) / max(len(test_returns) - 1, 1)
     std_test = variance**0.5
 
-    # Compound the per-fold test returns into a single out-of-sample return.
-    composite = 1.0
+    # CAGR: compound per-fold returns, then annualize over the OOS period.
+    compounded = 1.0
     for r in test_returns:
-        composite *= 1.0 + r
-    composite -= 1.0
+        compounded *= 1.0 + r
+    first_test_start = fold_results[0].test_start
+    last_test_end = fold_results[-1].test_end
+    years = (last_test_end - first_test_start).days / 365.25
+    annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
+
+    winning_folds = sum(1 for r in test_returns if r > 0)
+    best_fold = max(test_returns)
+    worst_fold = min(test_returns)
+
+    # Efficiency ratio: how much in-sample performance survives out-of-sample.
+    train_returns = [f.train_return for f in fold_results]
+    mean_train = sum(train_returns) / len(train_returns)
+    efficiency = mean_test / mean_train if mean_train != 0 else 0.0
 
     log("")
     log("Walk-forward complete")
-    log(f"  Composite out-of-sample return: {composite:.2%}")
+    log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
     log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
+    log(f"  Winning folds: {winning_folds}/{len(fold_results)} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
+    log(f"  Efficiency ratio: {efficiency:.0%}")
 
     return WalkForwardResult(
         folds=fold_results,
-        composite_return=round(composite, 4),
+        annualized_return=round(annualized, 4),
         mean_test_return=round(mean_test, 4),
         std_test_return=round(std_test, 4),
+        winning_folds=winning_folds,
+        best_fold_return=round(best_fold, 4),
+        worst_fold_return=round(worst_fold, 4),
+        efficiency_ratio=round(efficiency, 4),
         best_params=fold_results[-1].best_params,
         total_trials=sum(f.trials_run for f in fold_results),
     )

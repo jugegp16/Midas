@@ -354,7 +354,10 @@ def optimize(
         console.print(fold_table)
 
         # Summary
-        composite_style = "green" if wf_result.composite_return >= 0 else "red"
+        cagr_style = "green" if wf_result.annualized_return >= 0 else "red"
+        worst_style = "green" if wf_result.worst_fold_return >= 0 else "red"
+        n_folds = len(wf_result.folds)
+
         summary = Table(
             title="Summary",
             title_style="bold",
@@ -365,12 +368,24 @@ def optimize(
         summary.add_column("Metric", style="bold")
         summary.add_column("Value", justify="right")
         summary.add_row(
-            "Composite Out-of-Sample Return",
-            f"[{composite_style}]{wf_result.composite_return:.2%}[/{composite_style}]",
+            "Annualized OOS Return (CAGR)",
+            f"[{cagr_style}]{wf_result.annualized_return:.2%}[/{cagr_style}]",
         )
         summary.add_row(
-            "Per-Fold Mean ± Std",
+            "Per-Fold OOS Mean ± Std",
             f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
+        )
+        summary.add_row(
+            "Winning Folds",
+            f"{wf_result.winning_folds}/{n_folds}",
+        )
+        best_style = "green" if wf_result.best_fold_return >= 0 else "red"
+        best_val = f"[{best_style}]{wf_result.best_fold_return:.2%}[/{best_style}]"
+        worst_val = f"[{worst_style}]{wf_result.worst_fold_return:.2%}[/{worst_style}]"
+        summary.add_row("Best / Worst Fold", f"{best_val} / {worst_val}")
+        summary.add_row(
+            "Efficiency Ratio",
+            f"{wf_result.efficiency_ratio:.0%}",
         )
         summary.add_row("Total Trials", str(wf_result.total_trials))
         summary.add_row("Output", output)
