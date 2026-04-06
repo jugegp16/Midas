@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import decimal
 import logging
 import os
 import threading
@@ -177,6 +178,10 @@ def _suggest_params(
     params: dict[str, float] = {}
     for param, (lo, hi, step) in ranges.items():
         key = f"{strategy_name}__{param}"
+        # Snap hi down so (hi - lo) is divisible by step, avoiding Optuna warnings.
+        # Use Decimal to match Optuna's own check and avoid float noise.
+        d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
+        hi = float((d_hi - d_lo) // d_step * d_step + d_lo)
         if param in INT_PARAMS:
             params[param] = float(trial.suggest_int(key, int(lo), int(hi), step=int(step)))
         else:
