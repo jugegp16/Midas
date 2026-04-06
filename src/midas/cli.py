@@ -333,7 +333,7 @@ def optimize(
 
         # Per-fold results
         fold_table = Table(
-            title="Walk-Forward Optimization",
+            title="Walk-Forward Analysis",
             title_style="bold",
             show_lines=True,
         )
