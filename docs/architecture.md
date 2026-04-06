@@ -36,19 +36,7 @@ See [Strategies](strategies.md) for a reference of all available strategies.
 
 ### Allocator
 
-The allocator takes conviction scores and produces target portfolio weights. It runs in four phases, governed by the following knobs (all configurable in the strategies YAML):
-
-| Field | Scope | Default | Description |
-|-------|-------|---------|-------------|
-| `sigmoid_steepness` | Global | 2.0 | Controls how aggressively the allocator responds to conviction scores. Higher = more extreme position sizes |
-| `rebalance_threshold` | Global | 0.02 | Minimum weight diff to trigger a rebalance trade. Higher = fewer, larger trades |
-| `min_cash_pct` | Global | 0.05 | Minimum cash allocation as a fraction of portfolio value. Higher = more conservative |
-| `max_position_pct` | Global | auto | Maximum weight for any single position. Omit to auto-compute from portfolio size |
-| `weight` | CONVICTION only | 1.0 | How much influence this strategy has in the blended score. Ignored for PROTECTIVE and MECHANICAL strategies |
-| `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0. Ignored for CONVICTION and MECHANICAL strategies |
-| `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
-
-All knobs except `min_cash_pct` are tunable by the optimizer. `min_cash_pct` is a user risk preference.
+The allocator takes conviction scores and produces target portfolio weights. It runs in four phases.
 
 #### Phase 1: Score and Blend
 
@@ -133,11 +121,7 @@ The optimizer only sees training data when picking parameters -- it has no acces
 
 Parameters written to the output YAML come from the last fold (trained on the most data). Each fold is warm-started with the previous fold's best parameters to exploit correlation between adjacent time periods.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--walk-forward` | off | Enable walk-forward optimization |
-| `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data |
-| `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months) |
+See [CLI Reference](cli.md#optimize) for all optimizer options.
 
 ### Backtest
 
@@ -153,6 +137,8 @@ The backtest engine simulates the full pipeline over historical data, stepping t
 
 **Deferred Holdings** -- If a portfolio ticker has no price data at the backtest start date (e.g., the company IPO'd mid-backtest), the position is deferred and automatically activated when data becomes available.
 
+See [CLI Reference](cli.md#backtest) for all backtest options.
+
 ### Live
 
 After optimizing and backtesting, live mode puts the strategy to work on real-time market data. It polls current prices and tells you what trades to make right now based on your portfolio's actual holdings.
@@ -160,3 +146,5 @@ After optimizing and backtesting, live mode puts the strategy to work on real-ti
 The live engine polls real-time prices on a configurable interval (default 60 seconds) and emits order alerts for manual execution. On each tick, it fetches the last 120 days of price history, runs the full allocation and rebalancing pipeline, and compares the resulting order set to the previous tick. If nothing changed, it stays quiet. If new orders appear or existing ones change, it emits an alert with the ticker, price, reason, strategy scores, and suggested share count.
 
 The live engine is fully stateless -- it reads current holdings from the portfolio config each tick and re-derives everything from scratch. It does not execute trades; it's designed for operators who want signal alerts and execute manually through their broker.
+
+See [CLI Reference](cli.md#live) for all live options.

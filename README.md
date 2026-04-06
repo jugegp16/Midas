@@ -1,26 +1,36 @@
 # Midas
 
-Target-weight allocation engine for your portfolio. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights via sigmoid transformation, and a rebalancer diffs against current holdings to generate trades. Optimize strategy parameters with walk-forward optimization, backtest against years of historical data with train/test splits, and run it live with real-time polling.
+Target-weight allocation engine for your portfolio. Define your holdings and pick a set of strategies to fit your thesis -- Midas scores every position using technical indicators, blends those scores into target portfolio weights via a sigmoid transformation, and generates the trades needed to rebalance.
+
+- **Optimize** strategy parameters with Bayesian search and walk-forward validation
+- **Backtest** against years of historical data with train/test splits
+- **Live** poll real-time prices and get trade alerts
 
 ## Quick Start
 
 ```bash
 uv sync
+
+# list available strategies
 uv run midas strategies
-uv run midas backtest -p portfolio.yaml -s strategies.yaml --start 2023-01-01 --end 2024-12-31 -o results.csv
+
+# find optimal parameters
+uv run midas optimize -p portfolio.yaml -s strategies.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward -o optimized.yaml
+
+# validate performance
+uv run midas backtest -p portfolio.yaml -s strategies.yaml --start 2020-01-01 --end 2025-01-01
+
+# real-time alerts
 uv run midas live -p portfolio.yaml -s strategies.yaml
-uv run midas optimize -p portfolio.yaml --start 2023-01-01 --end 2024-12-31
-uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward
 ```
 
-See [Architecture](docs/architecture.md) for how the engine works and [Strategies](docs/strategies.md) for a reference of all available strategies. Pre-built strategy compositions are available in [`example-strategies/`](example-strategies/).
+## Configuration
 
-## Config
+Midas takes two YAML files: a portfolio (what you own) and a strategies file (how to trade it).
 
 ### Portfolio
 
 ```yaml
-# portfolio.yaml
 portfolio:
   - ticker: VOO
     shares: 5
@@ -32,7 +42,7 @@ portfolio:
 available_cash: 2000.00
 
 trading_restrictions:
-  round_trip_days: 30  # can't buy then sell (or vice versa) the same ticker within 30 days
+  round_trip_days: 30
 
 cash_infusion:
   amount: 1500.00
@@ -43,42 +53,38 @@ cash_infusion:
 ### Strategies
 
 ```yaml
-# strategies.yaml
-sigmoid_steepness: 2.0        # how aggressively the allocator responds to conviction
-rebalance_threshold: 0.02     # ignore weight diffs smaller than 2%
-min_cash_pct: 0.05            # always keep 5% cash
-# max_position_pct: 0.20      # omit to auto-compute from portfolio size
+sigmoid_steepness: 2.0
+rebalance_threshold: 0.02
+min_cash_pct: 0.05
 
 strategies:
-  - name: MeanReversion
-    weight: 1.5              # blending influence (conviction strategies only)
+  - name: BollingerBand
+    weight: 1.0
     params:
-      window: 30
-      threshold: 0.10
+      window: 20
+      num_std: 2.0
+  - name: RSIOversold
+    weight: 1.0
+    params:
+      window: 14
+      oversold_threshold: 30.0
   - name: StopLoss
-    veto_threshold: -0.5     # score at or below which position is force-liquidated
+    veto_threshold: -0.5
     params:
       loss_threshold: 0.10
-  - name: DollarCostAveraging
-    params:
-      frequency_days: 14
-      amount: 500.00        # dollar amount per DCA buy
 ```
 
-See [Strategies](docs/strategies.md) for all available strategies, their parameters, and how to compose them. Pre-built configurations are in [`example-strategies/`](example-strategies/).
+Don't want to build your own? Start with one of the [pre-built compositions](example-strategies/).
 
-## Optimizer
+## Docs
 
-The optimizer uses Bayesian optimization to search over all tunable parameters jointly -- strategy params, weights, veto thresholds, and global allocator settings. It outputs a strategies YAML with optimized values.
-
-```bash
-uv run midas optimize -p portfolio.yaml --start 2015-01-01 --end 2024-12-31 -o optimized.yaml
-uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --walk-forward -n 200
-```
-
-See [Architecture](docs/architecture.md#optimizer) for details on standard vs. walk-forward optimization.
+- [Architecture](docs/architecture.md) -- how the engine works: strategies, allocator, rebalancer, and execution modes
+- [Strategies](docs/strategies.md) -- all 13 strategies, how to compose them, and how they interact
+- [CLI Reference](docs/cli.md) -- every command and option
 
 ## Development
+
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.14+.
 
 ```bash
 uv sync                     # install all deps
@@ -87,5 +93,3 @@ uv run ruff check . --fix   # lint
 uv run ruff format .        # format
 uv run mypy src             # type check
 ```
-
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.14+.
