@@ -36,7 +36,19 @@ See [Strategies](strategies.md) for a reference of all available strategies.
 
 ### Allocator
 
-The allocator takes conviction scores and produces target portfolio weights. It runs in four phases.
+The allocator takes conviction scores and produces target portfolio weights. It runs in four phases, governed by the following knobs (all configurable in the strategies YAML):
+
+| Field | Scope | Default | Description |
+|-------|-------|---------|-------------|
+| `sigmoid_steepness` | Global | 2.0 | Controls how aggressively the allocator responds to conviction scores. Higher = more extreme position sizes |
+| `rebalance_threshold` | Global | 0.02 | Minimum weight diff to trigger a rebalance trade. Higher = fewer, larger trades |
+| `min_cash_pct` | Global | 0.05 | Minimum cash allocation as a fraction of portfolio value. Higher = more conservative |
+| `max_position_pct` | Global | auto | Maximum weight for any single position. Omit to auto-compute from portfolio size |
+| `weight` | CONVICTION only | 1.0 | How much influence this strategy has in the blended score. Ignored for PROTECTIVE and MECHANICAL strategies |
+| `veto_threshold` | PROTECTIVE only | -0.5 | Score at or below which the strategy forces target weight to 0. Ignored for CONVICTION and MECHANICAL strategies |
+| `params` | All | `{}` | Strategy-specific parameters (window sizes, thresholds, etc.) |
+
+All knobs except `min_cash_pct` are tunable by the optimizer. `min_cash_pct` is a user risk preference.
 
 #### Phase 1: Score and Blend
 
