@@ -1,5 +1,6 @@
 """Tests for the backtest engine."""
 
+import math
 from datetime import date
 from pathlib import Path
 
@@ -7,8 +8,18 @@ import pandas as pd
 from conftest import make_price_series
 
 from midas.allocator import Allocator
-from midas.backtest import BacktestEngine, write_backtest_csv
-from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig
+from midas.backtest import (
+    TRADING_DAYS_PER_YEAR,
+    BacktestEngine,
+    compute_cagr,
+    compute_max_drawdown,
+    compute_sharpe,
+    compute_sortino,
+    compute_strategy_stats,
+    compute_trade_stats,
+    write_backtest_csv,
+)
+from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig, TradeRecord
 from midas.rebalancer import Rebalancer
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
@@ -268,3 +279,269 @@ def test_backtest_recurring_cash_infusion() -> None:
     # With ~100 trading days (~140 calendar days), biweekly = ~10 infusions of $1000
     # Final value must exceed starting holdings + multiple infusions
     assert result.final_value > 500.0 + 10 * 100.0 + 5000.0
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the metric helpers
+# ---------------------------------------------------------------------------
+
+
+def _curve(values: list[float], start: date = date(2024, 1, 1)) -> list[tuple[date, float]]:
+    """Build an equity curve from a list of daily values."""
+    return [(date.fromordinal(start.toordinal() + i), v) for i, v in enumerate(values)]
+
+
+def _sell(d: date, ticker: str, shares: float, price: float, strategy: str = "S1") -> TradeRecord:
+    return TradeRecord(
+        date=d, ticker=ticker, direction=Direction.SELL, shares=shares, price=price, strategy_name=strategy
+    )
+
+
+def _buy(d: date, ticker: str, shares: float, price: float, strategy: str = "S1") -> TradeRecord:
+    return TradeRecord(
+        date=d, ticker=ticker, direction=Direction.BUY, shares=shares, price=price, strategy_name=strategy
+    )
+
+
+# --- compute_cagr ---
+
+
+def test_cagr_one_year_double() -> None:
+    # 100 → 200 over ~one year ≈ 100% CAGR.
+    # `days` is an int and the function divides by 365.25, so use a slightly
+    # larger window to clear the rounding gap.
+    cagr = compute_cagr(100.0, 200.0, 366)
+    assert math.isclose(cagr, 1.0, abs_tol=1e-2)
+
+
+def test_cagr_two_year_quadruple() -> None:
+    # 100 → 400 over 2 years = 100% CAGR
+    cagr = compute_cagr(100.0, 400.0, 731)
+    assert math.isclose(cagr, 1.0, abs_tol=1e-2)
+
+
+def test_cagr_zero_days_returns_zero() -> None:
+    assert compute_cagr(100.0, 200.0, 0) == 0.0
+
+
+def test_cagr_invalid_starting_returns_zero() -> None:
+    assert compute_cagr(0.0, 200.0, 365) == 0.0
+    assert compute_cagr(-10.0, 200.0, 365) == 0.0
+
+
+def test_cagr_loss() -> None:
+    # 100 → 50 over ~1 year = -50% CAGR
+    cagr = compute_cagr(100.0, 50.0, 366)
+    assert math.isclose(cagr, -0.5, abs_tol=1e-2)
+
+
+# --- compute_max_drawdown ---
+
+
+def test_max_drawdown_monotone_up_is_zero() -> None:
+    assert compute_max_drawdown(_curve([100, 110, 120, 130])) == 0.0
+
+
+def test_max_drawdown_monotone_down() -> None:
+    # 100 → 50 = 50% drawdown
+    assert compute_max_drawdown(_curve([100, 90, 75, 50])) == 0.5
+
+
+def test_max_drawdown_peak_then_recover() -> None:
+    # peak 120 → trough 60 = 50%
+    dd = compute_max_drawdown(_curve([100, 120, 90, 60, 80, 110]))
+    assert math.isclose(dd, 0.5, abs_tol=1e-9)
+
+
+def test_max_drawdown_single_point() -> None:
+    assert compute_max_drawdown(_curve([100])) == 0.0
+
+
+def test_max_drawdown_empty() -> None:
+    assert compute_max_drawdown([]) == 0.0
+
+
+# --- compute_sharpe ---
+
+
+def test_sharpe_flat_curve_is_zero() -> None:
+    assert compute_sharpe(_curve([100, 100, 100, 100])) == 0.0
+
+
+def test_sharpe_too_few_points() -> None:
+    assert compute_sharpe(_curve([100, 101])) == 0.0
+    assert compute_sharpe([]) == 0.0
+
+
+def test_sharpe_positive_when_mean_positive() -> None:
+    # Mix of up and down days with positive bias
+    curve = _curve([100, 102, 101, 103, 102, 104, 103, 105])
+    s = compute_sharpe(curve)
+    assert s > 0
+
+
+def test_sharpe_negative_when_mean_negative() -> None:
+    curve = _curve([100, 98, 99, 97, 98, 96, 97, 95])
+    assert compute_sharpe(curve) < 0
+
+
+def test_sharpe_annualization_factor() -> None:
+    # Returns with positive mean & nonzero std should scale by sqrt(252).
+    curve = _curve([100, 101, 102, 103])  # roughly +1%/day with shrinking returns
+    s = compute_sharpe(curve)
+    # mean ≈ 0.0099, std small but nonzero — annualized factor present
+    assert s > math.sqrt(TRADING_DAYS_PER_YEAR) * 0.5
+
+
+# --- compute_sortino ---
+
+
+def test_sortino_no_downside_returns_zero_not_inf() -> None:
+    # All-up curve → no negative returns → undefined → 0.0 (NOT inf)
+    curve = _curve([100, 101, 102, 103, 104])
+    result = compute_sortino(curve)
+    assert result == 0.0
+    assert not math.isinf(result)
+
+
+def test_sortino_flat_returns_zero() -> None:
+    assert compute_sortino(_curve([100, 100, 100, 100])) == 0.0
+
+
+def test_sortino_too_few_points() -> None:
+    assert compute_sortino(_curve([100, 101])) == 0.0
+    assert compute_sortino([]) == 0.0
+
+
+def test_sortino_negative_when_mean_negative() -> None:
+    curve = _curve([100, 98, 99, 97, 98, 96, 97, 95])
+    assert compute_sortino(curve) < 0
+
+
+def test_sortino_positive_when_mean_positive_with_some_downside() -> None:
+    curve = _curve([100, 102, 101, 103, 102, 104, 103, 105])
+    assert compute_sortino(curve) > 0
+
+
+# --- compute_trade_stats ---
+
+
+def test_trade_stats_no_sells() -> None:
+    trades = [_buy(date(2024, 1, 1), "AAPL", 10, 100.0)]
+    win_rate, pf, avg_win, avg_loss = compute_trade_stats(trades, [])
+    assert (win_rate, pf, avg_win, avg_loss) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_trade_stats_all_wins() -> None:
+    trades = [
+        _sell(date(2024, 1, 2), "AAPL", 10, 110.0),
+        _sell(date(2024, 1, 3), "AAPL", 5, 120.0),
+    ]
+    basis = [100.0, 100.0]  # gains: +100, +100
+    win_rate, pf, avg_win, avg_loss = compute_trade_stats(trades, basis)
+    assert win_rate == 1.0
+    assert math.isinf(pf)
+    assert avg_win == 100.0
+    assert avg_loss == 0.0
+
+
+def test_trade_stats_all_losses() -> None:
+    trades = [_sell(date(2024, 1, 2), "AAPL", 10, 90.0)]
+    basis = [100.0]  # loss: -100
+    win_rate, pf, avg_win, avg_loss = compute_trade_stats(trades, basis)
+    assert win_rate == 0.0
+    assert pf == 0.0
+    assert avg_win == 0.0
+    assert avg_loss == -100.0
+
+
+def test_trade_stats_mixed() -> None:
+    trades = [
+        _sell(date(2024, 1, 2), "AAPL", 10, 110.0),  # +100
+        _sell(date(2024, 1, 3), "AAPL", 10, 90.0),  # -100
+        _sell(date(2024, 1, 4), "AAPL", 10, 120.0),  # +200
+    ]
+    basis = [100.0, 100.0, 100.0]
+    win_rate, pf, avg_win, avg_loss = compute_trade_stats(trades, basis)
+    assert math.isclose(win_rate, 2 / 3, abs_tol=1e-9)
+    assert math.isclose(pf, 300.0 / 100.0, abs_tol=1e-9)
+    assert math.isclose(avg_win, 150.0, abs_tol=1e-9)
+    assert math.isclose(avg_loss, -100.0, abs_tol=1e-9)
+
+
+def test_trade_stats_same_day_same_ticker_no_collision() -> None:
+    """Two sells of the same ticker on the same day must each see their own basis."""
+    day = date(2024, 1, 2)
+    trades = [
+        _sell(day, "AAPL", 5, 110.0, strategy="A"),  # basis 100 → +50
+        _sell(day, "AAPL", 5, 110.0, strategy="B"),  # basis 80 → +150
+    ]
+    basis = [100.0, 80.0]
+    win_rate, pf, avg_win, _avg_loss = compute_trade_stats(trades, basis)
+    assert win_rate == 1.0
+    # Both wins: 50 + 150 = 200; avg = 100
+    assert math.isclose(avg_win, 100.0, abs_tol=1e-9)
+    assert math.isinf(pf)
+
+
+def test_trade_stats_breakeven_counts_as_win() -> None:
+    trades = [_sell(date(2024, 1, 2), "AAPL", 10, 100.0)]
+    basis = [100.0]
+    win_rate, _pf, _avg_win, _avg_loss = compute_trade_stats(trades, basis)
+    assert win_rate == 1.0
+
+
+# --- compute_strategy_stats ---
+
+
+def test_strategy_stats_groups_by_strategy() -> None:
+    trades = [
+        _buy(date(2024, 1, 1), "AAPL", 10, 100.0, strategy="A"),
+        _sell(date(2024, 1, 2), "AAPL", 10, 110.0, strategy="A"),  # +100
+        _buy(date(2024, 1, 1), "MSFT", 5, 200.0, strategy="B"),
+        _sell(date(2024, 1, 3), "MSFT", 5, 190.0, strategy="B"),  # -50
+    ]
+    basis = [100.0, 200.0]  # parallel to sells in trade order
+    stats = compute_strategy_stats(trades, basis)
+    by_name = {s.name: s for s in stats}
+    assert by_name["A"].buys == 1
+    assert by_name["A"].sells == 1
+    assert by_name["A"].pnl == 100.0
+    assert by_name["A"].win_rate == 1.0
+    assert by_name["B"].pnl == -50.0
+    assert by_name["B"].win_rate == 0.0
+
+
+def test_strategy_stats_same_day_collision() -> None:
+    """Two strategies sell the same ticker on the same day with different bases."""
+    day = date(2024, 1, 2)
+    trades = [
+        _sell(day, "AAPL", 5, 110.0, strategy="A"),  # basis 100 → +50
+        _sell(day, "AAPL", 5, 110.0, strategy="B"),  # basis 80  → +150
+    ]
+    basis = [100.0, 80.0]
+    stats = compute_strategy_stats(trades, basis)
+    by_name = {s.name: s for s in stats}
+    assert by_name["A"].pnl == 50.0
+    assert by_name["B"].pnl == 150.0
+
+
+def test_strategy_stats_empty() -> None:
+    assert compute_strategy_stats([], []) == []
+
+
+# --- end-to-end check that BacktestResult populates new metrics ---
+
+
+def test_backtest_populates_new_metrics() -> None:
+    portfolio, price_data = _make_backtest_data()
+    mr = MeanReversion(window=10, threshold=-0.05)
+    engine = _build_engine(conviction_strategies=[(mr, 1.0)], enable_split=False)
+    idx = list(price_data["AAPL"].index)
+    start, end = idx[0], idx[-1]
+    result = engine.run(portfolio, price_data, start, end)
+    assert len(result.equity_curve) > 0
+    assert result.equity_curve[-1][0] == end
+    assert result.max_drawdown >= 0.0
+    # Sortino must never be inf — even on a perfect run we cap to 0.
+    assert not math.isinf(result.sortino_ratio)

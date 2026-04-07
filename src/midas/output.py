@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -110,9 +111,26 @@ def print_run_info(rows: list[tuple[str, str]], title: str = "Run Info") -> None
     print_centered(table)
 
 
-def print_backtest_summary(result: BacktestResult) -> None:
-    import math
+def print_params_table(
+    title: str,
+    params: dict[str, dict[str, float]],
+    global_key: str | None = None,
+) -> None:
+    """Render an optimizer's per-strategy parameter table.
 
+    `global_key`, if supplied, is the synthetic strategy name used to hold
+    portfolio-wide allocation knobs; it's relabeled as "Global" for display.
+    """
+    table = make_wide_table(title)
+    table.add_column("Strategy", style="bold")
+    table.add_column("Parameters")
+    for name, p in params.items():
+        display = "Global" if global_key is not None and name == global_key else name
+        table.add_row(display, ", ".join(f"{k}={v}" for k, v in p.items()))
+    print_centered(table)
+
+
+def print_backtest_summary(result: BacktestResult) -> None:
     sv, fv, bhv = result.starting_value, result.final_value, result.buy_and_hold_value
     total_return = (fv - sv) / sv if sv > 0 else 0
     bh_return = (bhv - sv) / sv if sv > 0 else 0

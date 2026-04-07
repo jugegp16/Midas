@@ -316,17 +316,9 @@ def optimize(
         make_wide_table,
         print_backtest_summary,
         print_centered,
+        print_params_table,
         print_run_info,
     )
-
-    def _print_params_table(title: str, params: dict[str, dict[str, float]]) -> None:
-        table = make_wide_table(title)
-        table.add_column("Strategy", style="bold")
-        table.add_column("Parameters")
-        for name, p in params.items():
-            display = name if name != ALLOCATION_KEY else "Global"
-            table.add_row(display, ", ".join(f"{k}={v}" for k, v in p.items()))
-        print_centered(table)
 
     if walk_forward:
         wf_result = walk_forward_optimize(
@@ -395,7 +387,11 @@ def optimize(
         print_centered(agg)
 
         print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
-        _print_params_table("Deployed Parameters (from latest fold)", wf_result.best_params)
+        print_params_table(
+            "Deployed Parameters (from latest fold)",
+            wf_result.best_params,
+            global_key=ALLOCATION_KEY,
+        )
 
     else:
         result = run_optimize(
@@ -425,7 +421,7 @@ def optimize(
                 ("Output", output),
             ]
         )
-        _print_params_table("Optimized Parameters", result.best_params)
+        print_params_table("Optimized Parameters", result.best_params, global_key=ALLOCATION_KEY)
 
 
 @cli.command(name="strategies")

@@ -84,7 +84,12 @@ class _SimState:
 
     positions: dict[str, float] = field(default_factory=dict)
     cost_basis: dict[str, float] = field(default_factory=dict)
-    cost_basis_at_sell: dict[tuple[date, str], float] = field(default_factory=dict)
+    # Cost basis recorded at the moment each SELL trade was executed, in the
+    # same order as SELL entries in `trades`. A parallel list (rather than a
+    # (date, ticker)-keyed dict) is required so that multiple sells of the
+    # same ticker on the same day — e.g. from different strategies — each get
+    # their own basis snapshot instead of overwriting one another.
+    basis_per_sell: list[float] = field(default_factory=list)
     bh_positions: dict[str, float] = field(default_factory=dict)
     purchase_dates: dict[str, list[tuple[float, date]]] = field(default_factory=dict)
     cash: float = 0.0
@@ -143,7 +148,13 @@ def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
 
 
 def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
-    """Annualized Sortino ratio (risk-free = 0, downside deviation only)."""
+    """Annualized Sortino ratio (risk-free = 0, downside deviation only).
+
+    When there is no downside (no negative daily returns) the metric is
+    undefined. We return 0.0 as a sentinel rather than `inf` so that callers
+    averaging across multiple windows (e.g. walk-forward folds) aren't
+    poisoned by a single zero-downside fold.
+    """
     if len(equity_curve) < 3:
         return 0.0
     values = [v for _, v in equity_curve]
@@ -153,7 +164,7 @@ def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
     mean_r = sum(daily_returns) / len(daily_returns)
     downside = [r for r in daily_returns if r < 0]
     if not downside:
-        return float("inf") if mean_r > 0 else 0.0
+        return 0.0
     downside_var = sum(r**2 for r in downside) / len(daily_returns)
     downside_dev = math.sqrt(downside_var) if downside_var > 0 else 0.0
     if downside_dev == 0:
@@ -161,19 +172,38 @@ def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
     return (mean_r / downside_dev) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
+def _pair_sells_with_basis(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> list[tuple[TradeRecord, float]]:
+    """Zip SELL trades with their recorded cost basis (parallel-list order).
+
+    Falls back to the trade price (zero P&L) for any sell beyond the recorded
+    basis list — defensive only; the lists should always be the same length.
+    """
+    sells = [t for t in trades if t.direction == Direction.SELL]
+    paired: list[tuple[TradeRecord, float]] = []
+    for i, t in enumerate(sells):
+        basis = basis_per_sell[i] if i < len(basis_per_sell) else t.price
+        paired.append((t, basis))
+    return paired
+
+
 def compute_trade_stats(
     trades: list[TradeRecord],
-    cost_basis_at_sell: dict[tuple[date, str], float],
+    basis_per_sell: list[float],
 ) -> tuple[float, float, float, float]:
-    """Return (win_rate, profit_factor, avg_win, avg_loss) from sell trades."""
-    sells = [t for t in trades if t.direction == Direction.SELL]
-    if not sells:
+    """Return (win_rate, profit_factor, avg_win, avg_loss) from sell trades.
+
+    Breakeven sells (`pnl == 0`) are counted as wins by convention.
+    """
+    paired = _pair_sells_with_basis(trades, basis_per_sell)
+    if not paired:
         return 0.0, 0.0, 0.0, 0.0
 
     wins: list[float] = []
     losses: list[float] = []
-    for t in sells:
-        basis = cost_basis_at_sell.get((t.date, t.ticker), t.price)
+    for t, basis in paired:
         pnl = (t.price - basis) * t.shares
         if pnl >= 0:
             wins.append(pnl)
@@ -192,9 +222,11 @@ def compute_trade_stats(
 
 def compute_strategy_stats(
     trades: list[TradeRecord],
-    cost_basis_at_sell: dict[tuple[date, str], float],
+    basis_per_sell: list[float],
 ) -> list[StrategyStats]:
     """Compute per-strategy trade breakdown."""
+    sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
+
     by_strategy: dict[str, list[TradeRecord]] = defaultdict(list)
     for t in trades:
         by_strategy[t.strategy_name].append(t)
@@ -206,7 +238,7 @@ def compute_strategy_stats(
         winning_sells = 0
         total_pnl = 0.0
         for t in sells:
-            basis = cost_basis_at_sell.get((t.date, t.ticker), t.price)
+            basis = sell_basis.get(id(t), t.price)
             pnl = (t.price - basis) * t.shares
             total_pnl += pnl
             if pnl >= 0:
@@ -600,12 +632,16 @@ class BacktestEngine:
         for order in filtered_orders:
             if order.shares <= 0:
                 continue
-            # Snapshot cost basis before sell for P&L tracking
-            if order.direction == Direction.SELL and order.ticker in state.cost_basis:
-                state.cost_basis_at_sell[(day, order.ticker)] = state.cost_basis[order.ticker]
+            # Snapshot cost basis before _execute / cash update; the position
+            # may close inside _execute and have its basis popped below.
+            sell_basis: float | None = None
+            if order.direction == Direction.SELL:
+                sell_basis = state.cost_basis.get(order.ticker, order.price)
             trade = self._execute(order, day, state)
             if trade is not None:
                 state.trades.append(trade)
+                if sell_basis is not None:
+                    state.basis_per_sell.append(sell_basis)
                 if state.restriction_tracker:
                     state.restriction_tracker.record_trade(
                         order.ticker,
@@ -751,9 +787,9 @@ class BacktestEngine:
         max_drawdown = compute_max_drawdown(equity_curve)
         sharpe = compute_sharpe(equity_curve)
         sortino = compute_sortino(equity_curve)
-        win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.cost_basis_at_sell)
+        win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)
         efficiency = test_return / train_return if split_date and train_return != 0 else 0.0
-        strategy_stats = compute_strategy_stats(state.trades, state.cost_basis_at_sell)
+        strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
         return BacktestResult(
             trades=state.trades,
