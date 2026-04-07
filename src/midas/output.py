@@ -78,7 +78,7 @@ METRIC_COL_WIDTH = (BACKTEST_TABLE_WIDTH - 4) // 2
 VALUE_COL_WIDTH = BACKTEST_TABLE_WIDTH - 4 - METRIC_COL_WIDTH
 
 
-def _color(value: float, fmt: str = ".2%") -> str:
+def color_signed(value: float, fmt: str = ".2%") -> str:
     """Color-code a numeric value green/red based on sign."""
     style = "green" if value >= 0 else "red"
     return f"[{style}]{value:{fmt}}[/{style}]"
@@ -98,21 +98,21 @@ def print_backtest_summary(result: BacktestResult) -> None:
 
     table.add_row("Starting Value", f"${sv:,.2f}")
     table.add_row("Final Value", f"${fv:,.2f}")
-    table.add_row("Total Return", _color(total_return))
-    table.add_row("CAGR", _color(result.cagr))
-    table.add_row("Time-Weighted Return", _color(result.twr))
+    table.add_row("Total Return", color_signed(total_return))
+    table.add_row("CAGR", color_signed(result.cagr))
+    table.add_row("Time-Weighted Return", color_signed(result.twr))
     table.add_row("Buy & Hold Value", f"${bhv:,.2f}")
-    table.add_row("Buy & Hold Return", _color(bh_return))
+    table.add_row("Buy & Hold Return", color_signed(bh_return))
     table.add_row("Total Trades", str(len(result.trades)))
 
     if result.split_date:
         table.add_section()
         table.add_row("Split Date", result.split_date.isoformat())
-        table.add_row("Train Return", _color(result.train_return))
-        table.add_row("Train B&H Return", _color(result.train_bh_return))
+        table.add_row("Train Return", color_signed(result.train_return))
+        table.add_row("Train B&H Return", color_signed(result.train_bh_return))
         table.add_row("Train Trades", str(len(result.train_trades)))
-        table.add_row("Test Return", _color(result.test_return))
-        table.add_row("Test B&H Return", _color(result.test_bh_return))
+        table.add_row("Test Return", color_signed(result.test_return))
+        table.add_row("Test B&H Return", color_signed(result.test_bh_return))
         table.add_row("Test Trades", str(len(result.test_trades)))
         table.add_row("Efficiency Ratio", f"{result.efficiency_ratio:.0%}")
 
@@ -124,8 +124,8 @@ def print_backtest_summary(result: BacktestResult) -> None:
     risk_table.add_column("Value", justify="right", width=VALUE_COL_WIDTH)
 
     risk_table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
-    risk_table.add_row("Sharpe Ratio", _color(result.sharpe_ratio, fmt=".2f"))
-    risk_table.add_row("Sortino Ratio", _color(result.sortino_ratio, fmt=".2f"))
+    risk_table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
+    risk_table.add_row("Sortino Ratio", color_signed(result.sortino_ratio, fmt=".2f"))
 
     console.print(risk_table, justify="center")
 
@@ -136,7 +136,7 @@ def print_backtest_summary(result: BacktestResult) -> None:
         trade_table.add_column("Metric", style="bold", width=METRIC_COL_WIDTH)
         trade_table.add_column("Value", justify="right", width=VALUE_COL_WIDTH)
 
-        trade_table.add_row("Win Rate", _color(result.win_rate))
+        trade_table.add_row("Win Rate", color_signed(result.win_rate))
         pf_str = f"{result.profit_factor:.2f}" if not math.isinf(result.profit_factor) else "∞"
         trade_table.add_row("Profit Factor", pf_str)
         trade_table.add_row("Avg Win", f"[green]${result.avg_win:,.2f}[/green]")

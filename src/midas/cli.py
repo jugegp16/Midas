@@ -331,7 +331,7 @@ def optimize(
 
         console.print()
 
-        from midas.output import BACKTEST_TABLE_WIDTH
+        from midas.output import BACKTEST_TABLE_WIDTH, color_signed
 
         # Per-fold results
         fold_table = Table(
@@ -349,25 +349,20 @@ def optimize(
         fold_table.add_column("Sharpe", justify="right")
         fold_table.add_column("Win Rate", justify="right")
         for f in wf_result.folds:
-            test_style = "green" if f.test_return >= 0 else "red"
-            sharpe_style = "green" if f.sharpe_ratio >= 0 else "red"
             fold_table.add_row(
                 str(f.fold),
                 f"{f.train_start} → {f.train_end}",
                 f"{f.test_start} → {f.test_end}",
                 f"{f.train_return:.2%}",
-                f"[{test_style}]{f.test_return:.2%}[/{test_style}]",
+                color_signed(f.test_return),
                 f"[red]{f.max_drawdown:.2%}[/red]",
-                f"[{sharpe_style}]{f.sharpe_ratio:.2f}[/{sharpe_style}]",
+                color_signed(f.sharpe_ratio, fmt=".2f"),
                 f"{f.win_rate:.0%}" if f.win_rate > 0 else "—",
             )
         console.print(fold_table)
 
         # Summary
-        cagr_style = "green" if wf_result.annualized_return >= 0 else "red"
-        worst_style = "green" if wf_result.worst_fold_return >= 0 else "red"
         n_folds = len(wf_result.folds)
-
         summary = Table(
             title="Summary",
             title_style="bold",
@@ -378,36 +373,19 @@ def optimize(
         )
         summary.add_column("Metric", style="bold")
         summary.add_column("Value", justify="right")
-        summary.add_row(
-            "Annualized OOS Return (CAGR)",
-            f"[{cagr_style}]{wf_result.annualized_return:.2%}[/{cagr_style}]",
-        )
+        summary.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
         summary.add_row(
             "Per-Fold OOS Mean ± Std",
             f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
         )
+        summary.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")
         summary.add_row(
-            "Winning Folds",
-            f"{wf_result.winning_folds}/{n_folds}",
+            "Best / Worst Fold",
+            f"{color_signed(wf_result.best_fold_return)} / {color_signed(wf_result.worst_fold_return)}",
         )
-        best_style = "green" if wf_result.best_fold_return >= 0 else "red"
-        best_val = f"[{best_style}]{wf_result.best_fold_return:.2%}[/{best_style}]"
-        worst_val = f"[{worst_style}]{wf_result.worst_fold_return:.2%}[/{worst_style}]"
-        summary.add_row("Best / Worst Fold", f"{best_val} / {worst_val}")
-        summary.add_row(
-            "Efficiency Ratio",
-            f"{wf_result.efficiency_ratio:.0%}",
-        )
-        dd_style = "red" if wf_result.mean_max_drawdown > 0 else "dim"
-        summary.add_row(
-            "Mean Max Drawdown",
-            f"[{dd_style}]{wf_result.mean_max_drawdown:.2%}[/{dd_style}]",
-        )
-        sharpe_style = "green" if wf_result.mean_sharpe >= 0 else "red"
-        summary.add_row(
-            "Mean Sharpe Ratio",
-            f"[{sharpe_style}]{wf_result.mean_sharpe:.2f}[/{sharpe_style}]",
-        )
+        summary.add_row("Efficiency Ratio", f"{wf_result.efficiency_ratio:.0%}")
+        summary.add_row("Mean Max Drawdown", f"[red]{wf_result.mean_max_drawdown:.2%}[/red]")
+        summary.add_row("Mean Sharpe Ratio", color_signed(wf_result.mean_sharpe, fmt=".2f"))
         summary.add_row(
             "Mean Win Rate",
             f"{wf_result.mean_win_rate:.0%}" if wf_result.mean_win_rate > 0 else "—",
@@ -448,24 +426,25 @@ def optimize(
 
         console.print()
 
-        # Results
-        train_style = "green" if result.best_train_return >= 0 else "red"
-        test_style = "green" if result.best_test_return >= 0 else "red"
-        bh_style = "green" if result.best_bh_return >= 0 else "red"
+        from midas.output import BACKTEST_TABLE_WIDTH, color_signed
 
-        table = Table(title="Optimization Results", title_style="bold", show_lines=True)
+        table = Table(title="Optimization Results", title_style="bold", show_lines=True, width=BACKTEST_TABLE_WIDTH)
         table.add_column("Metric", style="bold")
         table.add_column("Value", justify="right")
-        table.add_row("Train Return (70%)", f"[{train_style}]{result.best_train_return:.2%}[/{train_style}]")
-        table.add_row("Test Return (30%)", f"[{test_style}]{result.best_test_return:.2%}[/{test_style}]")
-        table.add_row("Buy & Hold Return", f"[{bh_style}]{result.best_bh_return:.2%}[/{bh_style}]")
+        test_pct = 1.0 if train_pct >= 1.0 else 1 - train_pct
+        table.add_row(f"Train Return ({train_pct:.0%})", color_signed(result.best_train_return))
+        table.add_row(f"Test Return ({test_pct:.0%})", color_signed(result.best_test_return))
+        table.add_row("Buy & Hold Return", color_signed(result.best_bh_return))
+        table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
+        table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
+        table.add_row("Win Rate", f"{result.win_rate:.0%}" if result.win_rate > 0 else "—")
         table.add_row("Trials", str(result.trials_run))
         table.add_row("Output", output)
         console.print(table)
 
         # Params
         console.print()
-        param_table = Table(title="Optimized Parameters", title_style="bold")
+        param_table = Table(title="Optimized Parameters", title_style="bold", width=BACKTEST_TABLE_WIDTH)
         param_table.add_column("Strategy", style="bold")
         param_table.add_column("Parameters")
         for name, params in result.best_params.items():

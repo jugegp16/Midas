@@ -136,6 +136,9 @@ class OptimizeResult:
     best_train_return: float
     best_test_return: float
     trials_run: int
+    max_drawdown: float = 0.0
+    sharpe_ratio: float = 0.0
+    win_rate: float = 0.0
 
 
 @dataclass
@@ -439,6 +442,24 @@ def optimize(
 
     log(f"Optimization complete — best train return: {best.value:.2%}")
 
+    # Re-run best params in the main process to capture the full BacktestResult
+    # (risk/trade metrics aren't serialised through the worker pool).
+    _total, _bh, _train, _test, _twr, best_result = _run_trial(
+        best_params,
+        portfolio,
+        price_data,
+        start,
+        end,
+        min_cash_pct=min_cash_pct,
+        train_pct=train_pct,
+    )
+
+    log(
+        f"  Max drawdown: {best_result.max_drawdown:.2%} | "
+        f"Sharpe: {best_result.sharpe_ratio:.2f} | "
+        f"Win rate: {best_result.win_rate:.2%}"
+    )
+
     return OptimizeResult(
         best_params=best_params,
         best_return=round(best.value or 0.0, 4),
@@ -446,6 +467,9 @@ def optimize(
         best_train_return=round(best.user_attrs["train_return"], 4),
         best_test_return=round(best.user_attrs["test_return"], 4),
         trials_run=len(study.trials),
+        max_drawdown=round(best_result.max_drawdown, 4),
+        sharpe_ratio=round(best_result.sharpe_ratio, 4),
+        win_rate=round(best_result.win_rate, 4),
     )
 
 
