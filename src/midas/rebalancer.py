@@ -234,15 +234,17 @@ class Rebalancer:
             f"{action} {ticker}: target {target_weight:.1%} vs "
             f"current {current_weight:.1%} (blended score {blended:+.3f})"
         )
-        # Primary strategy = largest contributor in the order's direction.
-        # For buys, pick the most positive score; for sells, the most negative.
-        if contribs:
-            if direction == Direction.BUY:
-                source = max(contribs, key=lambda k: contribs[k])
-            else:
-                source = min(contribs, key=lambda k: contribs[k])
+        # Primary strategy = largest contributor whose score is actually
+        # directionally aligned with the order. Buys need a positive score;
+        # sells need a negative score. Picking min/max without this filter
+        # blames buy-only strategies for sells (and vice versa) whenever no
+        # strategy truly drove the order — the allocator just rebalanced.
+        if direction == Direction.BUY:
+            aligned = {k: v for k, v in contribs.items() if v > 0}
+            source = max(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
         else:
-            source = "Rebalancer"
+            aligned = {k: v for k, v in contribs.items() if v < 0}
+            source = min(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,
