@@ -17,7 +17,7 @@ import pandas as pd
 import yaml
 
 from midas.allocator import Allocator
-from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, BacktestResult
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
@@ -136,6 +136,7 @@ class OptimizeResult:
     best_train_return: float
     best_test_return: float
     trials_run: int
+    best_result: BacktestResult | None = None
 
 
 @dataclass
@@ -151,6 +152,10 @@ class FoldResult:
     train_return: float
     test_return: float
     trials_run: int
+    max_drawdown: float = 0.0
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    win_rate: float = 0.0
 
 
 @dataclass
@@ -167,6 +172,10 @@ class WalkForwardResult:
     efficiency_ratio: float  # mean OOS return / mean train return
     best_params: dict[str, dict[str, float]]  # from last fold (most recent data)
     total_trials: int
+    mean_max_drawdown: float = 0.0
+    mean_sharpe: float = 0.0
+    mean_sortino: float = 0.0
+    mean_win_rate: float = 0.0
 
 
 def _suggest_params(
@@ -198,10 +207,10 @@ def _run_trial(
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, BacktestResult]:
     """Run a single backtest trial with the allocator+rebalancer system.
 
-    Returns (total_return, bh_return, train_return, test_return, twr).
+    Returns (total_return, bh_return, train_return, test_return, twr, result).
     """
     # Suppress allocator warnings during optimization — the optimizer explores
     # boundary values that trigger heuristic warnings but are fine to evaluate.
@@ -253,11 +262,11 @@ def _run_trial(
     result = engine.run(portfolio, price_data, start, end)
 
     if result.starting_value <= 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, result
 
     total_return = (result.final_value - result.starting_value) / result.starting_value
     bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
-    return total_return, bh_return, result.train_return, result.test_return, result.twr
+    return total_return, bh_return, result.train_return, result.test_return, result.twr, result
 
 
 _worker_state: dict[str, Any] = {}
@@ -284,7 +293,8 @@ def _init_worker(
 
 
 def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
-    return _run_trial(strategy_params, **_worker_state)
+    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(strategy_params, **_worker_state)
+    return total_ret, bh_ret, train_ret, test_ret, twr
 
 
 def _wf_init_worker(
@@ -305,7 +315,7 @@ def _wf_trial_worker(
     start: date,
     end: date,
 ) -> tuple[float, ...]:
-    return _run_trial(
+    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(
         strategy_params,
         _worker_state["portfolio"],
         _worker_state["price_data"],
@@ -314,6 +324,7 @@ def _wf_trial_worker(
         _worker_state["min_cash_pct"],
         enable_split=False,
     )
+    return total_ret, bh_ret, train_ret, test_ret, twr
 
 
 def _prepare_names_and_ranges(
@@ -431,6 +442,24 @@ def optimize(
 
     log(f"Optimization complete — best train return: {best.value:.2%}")
 
+    # Re-run best params in the main process to capture the full BacktestResult
+    # (risk/trade metrics aren't serialised through the worker pool).
+    _total, _bh, _train, _test, _twr, best_result = _run_trial(
+        best_params,
+        portfolio,
+        price_data,
+        start,
+        end,
+        min_cash_pct=min_cash_pct,
+        train_pct=train_pct,
+    )
+
+    log(
+        f"  Max drawdown: {best_result.max_drawdown:.2%} | "
+        f"Sharpe: {best_result.sharpe_ratio:.2f} | "
+        f"Win rate: {best_result.win_rate:.2%}"
+    )
+
     return OptimizeResult(
         best_params=best_params,
         best_return=round(best.value or 0.0, 4),
@@ -438,6 +467,7 @@ def optimize(
         best_train_return=round(best.user_attrs["train_return"], 4),
         best_test_return=round(best.user_attrs["test_return"], 4),
         trials_run=len(study.trials),
+        best_result=best_result,
     )
 
 
@@ -572,7 +602,7 @@ def walk_forward_optimize(
             prev_best_flat = dict(study.best_trial.params)
 
             # --- Evaluate best params on test window ---
-            _test_total, _bh, _train, _test, test_twr = _run_trial(
+            _test_total, _bh, _train, _test, test_twr, test_result = _run_trial(
                 best_params,
                 portfolio,
                 price_data,
@@ -595,6 +625,10 @@ def walk_forward_optimize(
                     train_return=round(train_return, 4),
                     test_return=round(test_twr, 4),
                     trials_run=len(study.trials),
+                    max_drawdown=round(test_result.max_drawdown, 4),
+                    sharpe_ratio=round(test_result.sharpe_ratio, 4),
+                    sortino_ratio=round(test_result.sortino_ratio, 4),
+                    win_rate=round(test_result.win_rate, 4),
                 )
             )
     finally:
@@ -619,16 +653,25 @@ def walk_forward_optimize(
     worst_fold = min(test_returns)
 
     # Efficiency ratio: how much in-sample performance survives out-of-sample.
+    # Anchored IS windows overlap so we can't annualize them apples-to-apples
+    # with OOS — only the ratio of mean raw returns is reported.
     train_returns = [f.train_return for f in fold_results]
     mean_train = sum(train_returns) / len(train_returns)
     efficiency = mean_test / mean_train if mean_train != 0 else 0.0
+
+    n = len(fold_results)
+    mean_dd = sum(f.max_drawdown for f in fold_results) / n
+    mean_sharpe = sum(f.sharpe_ratio for f in fold_results) / n
+    mean_sortino = sum(f.sortino_ratio for f in fold_results) / n
+    mean_wr = sum(f.win_rate for f in fold_results) / n
 
     log("")
     log("Walk-forward complete")
     log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
     log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
-    log(f"  Winning folds: {winning_folds}/{len(fold_results)} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
+    log(f"  Winning folds: {winning_folds}/{n} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
     log(f"  Efficiency ratio: {efficiency:.0%}")
+    log(f"  Mean max drawdown: {mean_dd:.2%} | Mean Sharpe: {mean_sharpe:.2f}")
 
     return WalkForwardResult(
         folds=fold_results,
@@ -641,6 +684,10 @@ def walk_forward_optimize(
         efficiency_ratio=round(efficiency, 4),
         best_params=fold_results[-1].best_params,
         total_trials=sum(f.trials_run for f in fold_results),
+        mean_max_drawdown=round(mean_dd, 4),
+        mean_sharpe=round(mean_sharpe, 4),
+        mean_sortino=round(mean_sortino, 4),
+        mean_win_rate=round(mean_wr, 4),
     )
 
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import math
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -28,6 +30,18 @@ from midas.strategies.base import Strategy
 
 
 @dataclass
+class StrategyStats:
+    """Per-strategy performance breakdown."""
+
+    name: str
+    trades: int
+    buys: int
+    sells: int
+    win_rate: float  # fraction of profitable sells
+    pnl: float  # total realized P&L from sells
+
+
+@dataclass
 class BacktestResult:
     trades: list[TradeRecord]
     final_value: float
@@ -41,6 +55,18 @@ class BacktestResult:
     test_bh_return: float
     split_date: date | None
     twr: float  # time-weighted return (accounts for cash infusions)
+    # New metrics
+    equity_curve: list[tuple[date, float]]  # daily (date, portfolio_value)
+    cagr: float  # compound annual growth rate
+    max_drawdown: float  # peak-to-trough percentage decline
+    sharpe_ratio: float  # annualized, risk-free=0
+    sortino_ratio: float  # annualized, downside deviation only
+    win_rate: float  # fraction of round-trip sells that were profitable
+    profit_factor: float  # gross wins / gross losses (inf if no losses)
+    avg_win: float  # average P&L of winning sells
+    avg_loss: float  # average P&L of losing sells
+    efficiency_ratio: float  # test_return / train_return (0 if no split)
+    strategy_stats: list[StrategyStats]
 
 
 @dataclass
@@ -58,6 +84,12 @@ class _SimState:
 
     positions: dict[str, float] = field(default_factory=dict)
     cost_basis: dict[str, float] = field(default_factory=dict)
+    # Cost basis recorded at the moment each SELL trade was executed, in the
+    # same order as SELL entries in `trades`. A parallel list (rather than a
+    # (date, ticker)-keyed dict) is required so that multiple sells of the
+    # same ticker on the same day — e.g. from different strategies — each get
+    # their own basis snapshot instead of overwriting one another.
+    basis_per_sell: list[float] = field(default_factory=list)
     bh_positions: dict[str, float] = field(default_factory=dict)
     purchase_dates: dict[str, list[tuple[float, date]]] = field(default_factory=dict)
     cash: float = 0.0
@@ -70,6 +102,159 @@ class _SimState:
     twr_base_value: float = 0.0  # portfolio value after last cash infusion
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
+    equity_curve: list[tuple[date, float]] = field(default_factory=list)
+
+
+TRADING_DAYS_PER_YEAR = 252
+
+
+def compute_cagr(starting: float, final: float, days: int) -> float:
+    """Compound annual growth rate from total return over *days* calendar days."""
+    if starting <= 0 or final <= 0 or days <= 0:
+        return 0.0
+    years = days / 365.25
+    return float((final / starting) ** (1.0 / years) - 1.0)
+
+
+def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
+    """Maximum peak-to-trough percentage decline."""
+    if len(equity_curve) < 2:
+        return 0.0
+    peak = equity_curve[0][1]
+    max_dd = 0.0
+    for _, value in equity_curve:
+        if value > peak:
+            peak = value
+        dd = (peak - value) / peak if peak > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd
+
+
+def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
+    """Annualized Sharpe ratio (risk-free = 0) from daily returns."""
+    if len(equity_curve) < 3:
+        return 0.0
+    values = [v for _, v in equity_curve]
+    daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+    if len(daily_returns) < 2:
+        return 0.0
+    mean_r = sum(daily_returns) / len(daily_returns)
+    variance = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0.0
+    if std_r == 0:
+        return 0.0
+    return (mean_r / std_r) * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+
+def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
+    """Annualized Sortino ratio (risk-free = 0, downside deviation only).
+
+    When there is no downside (no negative daily returns) the metric is
+    undefined. We return 0.0 as a sentinel rather than `inf` so that callers
+    averaging across multiple windows (e.g. walk-forward folds) aren't
+    poisoned by a single zero-downside fold.
+    """
+    if len(equity_curve) < 3:
+        return 0.0
+    values = [v for _, v in equity_curve]
+    daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+    if len(daily_returns) < 2:
+        return 0.0
+    mean_r = sum(daily_returns) / len(daily_returns)
+    downside = [r for r in daily_returns if r < 0]
+    if not downside:
+        return 0.0
+    downside_var = sum(r**2 for r in downside) / len(daily_returns)
+    downside_dev = math.sqrt(downside_var) if downside_var > 0 else 0.0
+    if downside_dev == 0:
+        return 0.0
+    return (mean_r / downside_dev) * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+
+def _pair_sells_with_basis(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> list[tuple[TradeRecord, float]]:
+    """Zip SELL trades with their recorded cost basis (parallel-list order).
+
+    Falls back to the trade price (zero P&L) for any sell beyond the recorded
+    basis list — defensive only; the lists should always be the same length.
+    """
+    sells = [t for t in trades if t.direction == Direction.SELL]
+    paired: list[tuple[TradeRecord, float]] = []
+    for i, t in enumerate(sells):
+        basis = basis_per_sell[i] if i < len(basis_per_sell) else t.price
+        paired.append((t, basis))
+    return paired
+
+
+def compute_trade_stats(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> tuple[float, float, float, float]:
+    """Return (win_rate, profit_factor, avg_win, avg_loss) from sell trades.
+
+    Breakeven sells (`pnl == 0`) are counted as wins by convention.
+    """
+    paired = _pair_sells_with_basis(trades, basis_per_sell)
+    if not paired:
+        return 0.0, 0.0, 0.0, 0.0
+
+    wins: list[float] = []
+    losses: list[float] = []
+    for t, basis in paired:
+        pnl = (t.price - basis) * t.shares
+        if pnl >= 0:
+            wins.append(pnl)
+        else:
+            losses.append(pnl)
+
+    total = len(wins) + len(losses)
+    win_rate = len(wins) / total if total > 0 else 0.0
+    gross_wins = sum(wins) if wins else 0.0
+    gross_losses = abs(sum(losses)) if losses else 0.0
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0.0
+    avg_win = gross_wins / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0  # negative number
+    return win_rate, profit_factor, avg_win, avg_loss
+
+
+def compute_strategy_stats(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> list[StrategyStats]:
+    """Compute per-strategy trade breakdown."""
+    sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
+
+    by_strategy: dict[str, list[TradeRecord]] = defaultdict(list)
+    for t in trades:
+        by_strategy[t.strategy_name].append(t)
+
+    stats: list[StrategyStats] = []
+    for name, strades in sorted(by_strategy.items()):
+        buys = [t for t in strades if t.direction == Direction.BUY]
+        sells = [t for t in strades if t.direction == Direction.SELL]
+        winning_sells = 0
+        total_pnl = 0.0
+        for t in sells:
+            basis = sell_basis.get(id(t), t.price)
+            pnl = (t.price - basis) * t.shares
+            total_pnl += pnl
+            if pnl >= 0:
+                winning_sells += 1
+        win_rate = winning_sells / len(sells) if sells else 0.0
+        stats.append(
+            StrategyStats(
+                name=name,
+                trades=len(strades),
+                buys=len(buys),
+                sells=len(sells),
+                win_rate=round(win_rate, 4),
+                pnl=round(total_pnl, 2),
+            )
+        )
+    return stats
 
 
 DEFAULT_TRAIN_PCT = 0.70
@@ -301,6 +486,14 @@ class BacktestEngine:
             # Phased allocator flow
             self._run_day(state, portfolio, current_data, day)
 
+            # Record equity curve snapshot
+            day_value = state.cash + sum(
+                state.positions.get(t, 0) * float(current_data[t][-1])
+                for t in current_data
+                if state.positions.get(t, 0) > 0
+            )
+            state.equity_curve.append((day, day_value))
+
     def _activate_deferred(
         self,
         state: _SimState,
@@ -439,9 +632,16 @@ class BacktestEngine:
         for order in filtered_orders:
             if order.shares <= 0:
                 continue
+            # Snapshot cost basis before _execute / cash update; the position
+            # may close inside _execute and have its basis popped below.
+            sell_basis: float | None = None
+            if order.direction == Direction.SELL:
+                sell_basis = state.cost_basis.get(order.ticker, order.price)
             trade = self._execute(order, day, state)
             if trade is not None:
                 state.trades.append(trade)
+                if sell_basis is not None:
+                    state.basis_per_sell.append(sell_basis)
                 if state.restriction_tracker:
                     state.restriction_tracker.record_trade(
                         order.ticker,
@@ -580,6 +780,17 @@ class BacktestEngine:
             (bh_value - spbh) / spbh if spbh is not None and spbh > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
         )
 
+        # New metrics
+        equity_curve = state.equity_curve
+        total_days = (trading_days[-1] - trading_days[0]).days if len(trading_days) > 1 else 0
+        cagr = compute_cagr(sv, final_value, total_days)
+        max_drawdown = compute_max_drawdown(equity_curve)
+        sharpe = compute_sharpe(equity_curve)
+        sortino = compute_sortino(equity_curve)
+        win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)
+        efficiency = test_return / train_return if split_date and train_return != 0 else 0.0
+        strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
+
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
@@ -593,6 +804,17 @@ class BacktestEngine:
             test_bh_return=round(test_bh_return, 4),
             split_date=split_date,
             twr=round(twr, 4),
+            equity_curve=equity_curve,
+            cagr=round(cagr, 4),
+            max_drawdown=round(max_drawdown, 4),
+            sharpe_ratio=round(sharpe, 4),
+            sortino_ratio=round(sortino, 4),
+            win_rate=round(win_rate, 4),
+            profit_factor=round(profit_factor, 4) if not math.isinf(profit_factor) else float("inf"),
+            avg_win=round(avg_win, 2),
+            avg_loss=round(avg_loss, 2),
+            efficiency_ratio=round(efficiency, 4),
+            strategy_stats=strategy_stats,
         )
 
 
@@ -635,10 +857,27 @@ def write_backtest_csv(result: BacktestResult, path: Path) -> None:
         writer.writerow(["Starting Value", f"${sv:.2f}"])
         writer.writerow(["Final Value", f"${result.final_value:.2f}"])
         writer.writerow(["Total Return", f"{total_return:.2%}"])
+        writer.writerow(["CAGR", f"{result.cagr:.2%}"])
         writer.writerow(["Time-Weighted Return", f"{result.twr:.2%}"])
         writer.writerow(["Buy & Hold Value", f"${result.buy_and_hold_value:.2f}"])
         writer.writerow(["Buy & Hold Return", f"{bh_return:.2%}"])
         writer.writerow(["Total Trades", len(result.trades)])
+
+        writer.writerow([])
+        writer.writerow(["=== RISK METRICS ==="])
+        writer.writerow(["Max Drawdown", f"{result.max_drawdown:.2%}"])
+        writer.writerow(["Sharpe Ratio", f"{result.sharpe_ratio:.4f}"])
+        writer.writerow(["Sortino Ratio", f"{result.sortino_ratio:.4f}"])
+
+        sells = [t for t in result.trades if t.direction == Direction.SELL]
+        if sells:
+            writer.writerow([])
+            writer.writerow(["=== TRADE QUALITY ==="])
+            writer.writerow(["Win Rate", f"{result.win_rate:.2%}"])
+            pf = f"{result.profit_factor:.4f}" if not math.isinf(result.profit_factor) else "inf"
+            writer.writerow(["Profit Factor", pf])
+            writer.writerow(["Avg Win", f"${result.avg_win:.2f}"])
+            writer.writerow(["Avg Loss", f"${result.avg_loss:.2f}"])
 
         if result.split_date:
             writer.writerow([])
@@ -650,3 +889,20 @@ def write_backtest_csv(result: BacktestResult, path: Path) -> None:
             writer.writerow(["Test Return", f"{result.test_return:.2%}"])
             writer.writerow(["Test B&H Return", f"{result.test_bh_return:.2%}"])
             writer.writerow(["Test Trades", len(result.test_trades)])
+            writer.writerow(["Efficiency Ratio", f"{result.efficiency_ratio:.2%}"])
+
+        if result.strategy_stats:
+            writer.writerow([])
+            writer.writerow(["=== STRATEGY BREAKDOWN ==="])
+            writer.writerow(["Strategy", "Trades", "Buys", "Sells", "Win Rate", "P&L"])
+            for s in result.strategy_stats:
+                writer.writerow(
+                    [
+                        s.name,
+                        s.trades,
+                        s.buys,
+                        s.sells,
+                        f"{s.win_rate:.2%}" if s.sells > 0 else "",
+                        f"${s.pnl:.2f}" if s.sells > 0 else "",
+                    ]
+                )

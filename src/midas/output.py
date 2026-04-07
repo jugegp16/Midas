@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -68,7 +69,65 @@ def print_strategy_table(strategies: list[Strategy]) -> None:
         tags = ", ".join(t.value for t in s.suitability)
         table.add_row(s.name, s.tier.value, s.description, tags)
 
-    console.print(table)
+    console.print(table, justify="center")
+
+
+BACKTEST_TABLE_WIDTH = 100
+# Split table in half so the column divider is centered.
+# Account for 4 chars of box borders/separator (outer borders + center separator).
+METRIC_COL_WIDTH = (BACKTEST_TABLE_WIDTH - 4) // 2
+VALUE_COL_WIDTH = BACKTEST_TABLE_WIDTH - 4 - METRIC_COL_WIDTH
+
+
+def color_signed(value: float, fmt: str = ".2%") -> str:
+    """Color-code a numeric value green/red based on sign."""
+    style = "green" if value >= 0 else "red"
+    return f"[{style}]{value:{fmt}}[/{style}]"
+
+
+def make_metric_table(title: str) -> Table:
+    """2-column metric/value table — the canonical layout for summary outputs."""
+    table = Table(title=title, show_lines=True, width=BACKTEST_TABLE_WIDTH)
+    table.add_column("Metric", style="bold", width=METRIC_COL_WIDTH)
+    table.add_column("Value", justify="right", width=VALUE_COL_WIDTH)
+    return table
+
+
+def make_wide_table(title: str, width: int = BACKTEST_TABLE_WIDTH) -> Table:
+    """Multi-column table at the standard width (caller adds columns)."""
+    return Table(title=title, title_style="bold", show_lines=True, width=width)
+
+
+def print_centered(table: Table) -> None:
+    """Centered render — used by all summary tables for visual consistency."""
+    console.print(table, justify="center")
+
+
+def print_run_info(rows: list[tuple[str, str]], title: str = "Run Info") -> None:
+    """Render a small key/value table for run metadata (trials, output path, etc)."""
+    table = make_metric_table(title)
+    for k, v in rows:
+        table.add_row(k, v)
+    print_centered(table)
+
+
+def print_params_table(
+    title: str,
+    params: dict[str, dict[str, float]],
+    global_key: str | None = None,
+) -> None:
+    """Render an optimizer's per-strategy parameter table.
+
+    `global_key`, if supplied, is the synthetic strategy name used to hold
+    portfolio-wide allocation knobs; it's relabeled as "Global" for display.
+    """
+    table = make_wide_table(title)
+    table.add_column("Strategy", style="bold")
+    table.add_column("Parameters")
+    for name, p in params.items():
+        display = "Global" if global_key is not None and name == global_key else name
+        table.add_row(display, ", ".join(f"{k}={v}" for k, v in p.items()))
+    print_centered(table)
 
 
 def print_backtest_summary(result: BacktestResult) -> None:
@@ -76,26 +135,67 @@ def print_backtest_summary(result: BacktestResult) -> None:
     total_return = (fv - sv) / sv if sv > 0 else 0
     bh_return = (bhv - sv) / sv if sv > 0 else 0
 
-    table = Table(title="Backtest Summary")
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
+    # --- Performance ---
+    perf = make_metric_table("Performance")
+    perf.add_row("Starting Value", f"${sv:,.2f}")
+    perf.add_row("Final Value", f"${fv:,.2f}")
+    perf.add_row("Total Return", color_signed(total_return))
+    perf.add_row("CAGR", color_signed(result.cagr))
+    perf.add_row("Time-Weighted Return", color_signed(result.twr))
+    perf.add_row("Buy & Hold Value", f"${bhv:,.2f}")
+    perf.add_row("Buy & Hold Return", color_signed(bh_return))
+    perf.add_row("Total Trades", str(len(result.trades)))
+    print_centered(perf)
 
-    table.add_row("Starting Value", f"${sv:,.2f}")
-    table.add_row("Final Value", f"${fv:,.2f}")
-    table.add_row("Total Return", f"{total_return:.2%}")
-    table.add_row("Time-Weighted Return", f"{result.twr:.2%}")
-    table.add_row("Buy & Hold Value", f"${bhv:,.2f}")
-    table.add_row("Buy & Hold Return", f"{bh_return:.2%}")
-    table.add_row("Total Trades", str(len(result.trades)))
-
+    # --- Train / Test Split ---
     if result.split_date:
-        table.add_section()
-        table.add_row("Split Date", result.split_date.isoformat())
-        table.add_row("Train Return", f"{result.train_return:.2%}")
-        table.add_row("Train B&H Return", f"{result.train_bh_return:.2%}")
-        table.add_row("Train Trades", str(len(result.train_trades)))
-        table.add_row("Test Return", f"{result.test_return:.2%}")
-        table.add_row("Test B&H Return", f"{result.test_bh_return:.2%}")
-        table.add_row("Test Trades", str(len(result.test_trades)))
+        split = make_metric_table("Train / Test Split")
+        split.add_row("Split Date", result.split_date.isoformat())
+        split.add_row("Train Return", color_signed(result.train_return))
+        split.add_row("Train B&H Return", color_signed(result.train_bh_return))
+        split.add_row("Train Trades", str(len(result.train_trades)))
+        split.add_row("Test Return", color_signed(result.test_return))
+        split.add_row("Test B&H Return", color_signed(result.test_bh_return))
+        split.add_row("Test Trades", str(len(result.test_trades)))
+        split.add_row("Efficiency Ratio", f"{result.efficiency_ratio:.0%}")
+        print_centered(split)
 
-    console.print(table)
+    # --- Risk Metrics ---
+    risk_table = make_metric_table("Risk Metrics")
+    risk_table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
+    risk_table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
+    risk_table.add_row("Sortino Ratio", color_signed(result.sortino_ratio, fmt=".2f"))
+    print_centered(risk_table)
+
+    # --- Trade Quality ---
+    if any(t.direction == Direction.SELL for t in result.trades):
+        trade_table = make_metric_table("Trade Quality")
+        trade_table.add_row("Win Rate", color_signed(result.win_rate))
+        pf_str = f"{result.profit_factor:.2f}" if not math.isinf(result.profit_factor) else "∞"
+        trade_table.add_row("Profit Factor", pf_str)
+        trade_table.add_row("Avg Win", f"[green]${result.avg_win:,.2f}[/green]")
+        trade_table.add_row("Avg Loss", f"[red]${result.avg_loss:,.2f}[/red]")
+        print_centered(trade_table)
+
+    # --- Per-Strategy Breakdown ---
+    if result.strategy_stats:
+        strat_table = make_wide_table("Strategy Breakdown")
+        strat_table.add_column("Strategy", style="bold")
+        strat_table.add_column("Trades", justify="right")
+        strat_table.add_column("Buys", justify="right")
+        strat_table.add_column("Sells", justify="right")
+        strat_table.add_column("Win Rate", justify="right")
+        strat_table.add_column("P&L", justify="right")
+
+        for s in result.strategy_stats:
+            pnl_style = "green" if s.pnl >= 0 else "red"
+            strat_table.add_row(
+                s.name,
+                str(s.trades),
+                str(s.buys),
+                str(s.sells),
+                f"{s.win_rate:.0%}" if s.sells > 0 else "—",
+                f"[{pnl_style}]${s.pnl:,.2f}[/{pnl_style}]" if s.sells > 0 else "—",
+            )
+
+        print_centered(strat_table)
