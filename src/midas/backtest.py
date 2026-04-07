@@ -314,10 +314,26 @@ class BacktestEngine:
                 continue
             if ticker in current_data:
                 entry_price = float(current_data[ticker][-1])
+                added_value = shares * entry_price
+
+                # Treat deferred activation like a capital infusion for TWR:
+                # close the current sub-period on existing positions (excluding
+                # the newly activated ticker), then reset the base to include
+                # the new position. Otherwise the new capital would be counted
+                # as pure return by the closing final_value / twr_base ratio.
+                pre_activation_value = state.cash + sum(
+                    state.positions.get(t, 0) * float(current_data[t][-1])
+                    for t in current_data
+                    if state.positions.get(t, 0) > 0
+                )
+                if state.twr_base_value > 0:
+                    state.twr_periods.append(pre_activation_value / state.twr_base_value)
+                state.twr_base_value = pre_activation_value + added_value
+
                 state.positions[ticker] = shares
                 state.cost_basis[ticker] = entry_price
                 state.purchase_dates[ticker] = [(shares, day)]
-                state.starting_value += shares * entry_price
+                state.starting_value += added_value
                 activated.add(ticker)
                 self._log(f"{ticker}: activated on {day} at ${entry_price:.2f} ({shares} shares)")
 
@@ -507,7 +523,18 @@ class BacktestEngine:
         trading_days: list[date],
         split_date: date | None,
     ) -> BacktestResult:
-        final_prices = {t: float(s.iloc[-1]) for t, s in price_data.items() if len(s) > 0}
+        # Use prices at the last trading day within the backtest range, not the
+        # last row of the raw series (which may extend beyond `end` when the
+        # caller reuses one price_data dict across multiple sub-windows — e.g.
+        # walk-forward fold evaluation).
+        end_day = trading_days[-1]
+        final_prices: dict[str, float] = {}
+        for ticker, series in price_data.items():
+            if len(series) == 0:
+                continue
+            in_range = series[series.index <= end_day]
+            if len(in_range) > 0:
+                final_prices[ticker] = float(in_range.iloc[-1])
         final_value = state.cash + sum(state.positions.get(t, 0) * p for t, p in final_prices.items())
         bh_value = portfolio.available_cash + sum(
             state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
