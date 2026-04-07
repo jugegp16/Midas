@@ -331,25 +331,35 @@ def optimize(
 
         console.print()
 
+        from midas.output import BACKTEST_TABLE_WIDTH
+
         # Per-fold results
         fold_table = Table(
             title="Walk-Forward Analysis",
             title_style="bold",
             show_lines=True,
+            width=BACKTEST_TABLE_WIDTH,
         )
         fold_table.add_column("Fold", justify="center", style="bold")
         fold_table.add_column("Train Period")
         fold_table.add_column("Test Period")
         fold_table.add_column("Train Return", justify="right")
-        fold_table.add_column("Out-of-Sample Return", justify="right")
+        fold_table.add_column("OOS Return", justify="right")
+        fold_table.add_column("Max DD", justify="right")
+        fold_table.add_column("Sharpe", justify="right")
+        fold_table.add_column("Win Rate", justify="right")
         for f in wf_result.folds:
             test_style = "green" if f.test_return >= 0 else "red"
+            sharpe_style = "green" if f.sharpe_ratio >= 0 else "red"
             fold_table.add_row(
                 str(f.fold),
                 f"{f.train_start} → {f.train_end}",
                 f"{f.test_start} → {f.test_end}",
                 f"{f.train_return:.2%}",
                 f"[{test_style}]{f.test_return:.2%}[/{test_style}]",
+                f"[red]{f.max_drawdown:.2%}[/red]",
+                f"[{sharpe_style}]{f.sharpe_ratio:.2f}[/{sharpe_style}]",
+                f"{f.win_rate:.0%}" if f.win_rate > 0 else "—",
             )
         console.print(fold_table)
 
@@ -364,6 +374,7 @@ def optimize(
             show_header=False,
             box=None,
             padding=(0, 2),
+            width=BACKTEST_TABLE_WIDTH,
         )
         summary.add_column("Metric", style="bold")
         summary.add_column("Value", justify="right")
@@ -387,6 +398,20 @@ def optimize(
             "Efficiency Ratio",
             f"{wf_result.efficiency_ratio:.0%}",
         )
+        dd_style = "red" if wf_result.mean_max_drawdown > 0 else "dim"
+        summary.add_row(
+            "Mean Max Drawdown",
+            f"[{dd_style}]{wf_result.mean_max_drawdown:.2%}[/{dd_style}]",
+        )
+        sharpe_style = "green" if wf_result.mean_sharpe >= 0 else "red"
+        summary.add_row(
+            "Mean Sharpe Ratio",
+            f"[{sharpe_style}]{wf_result.mean_sharpe:.2f}[/{sharpe_style}]",
+        )
+        summary.add_row(
+            "Mean Win Rate",
+            f"{wf_result.mean_win_rate:.0%}" if wf_result.mean_win_rate > 0 else "—",
+        )
         summary.add_row("Total Trials", str(wf_result.total_trials))
         summary.add_row("Output", output)
         console.print(summary)
@@ -396,6 +421,7 @@ def optimize(
         param_table = Table(
             title="Deployed Parameters (from latest fold)",
             title_style="bold",
+            width=BACKTEST_TABLE_WIDTH,
         )
         param_table.add_column("Strategy", style="bold")
         param_table.add_column("Parameters")
