@@ -309,9 +309,24 @@ def optimize(
     start_d, end_d = _to_date(start), _to_date(end)
     price_data = _fetch_prices(port, start_d, end_d)
 
-    from rich.table import Table
+    from midas.output import (
+        color_signed,
+        console,
+        make_metric_table,
+        make_wide_table,
+        print_backtest_summary,
+        print_centered,
+        print_run_info,
+    )
 
-    from midas.output import console
+    def _print_params_table(title: str, params: dict[str, dict[str, float]]) -> None:
+        table = make_wide_table(title)
+        table.add_column("Strategy", style="bold")
+        table.add_column("Parameters")
+        for name, p in params.items():
+            display = name if name != ALLOCATION_KEY else "Global"
+            table.add_row(display, ", ".join(f"{k}={v}" for k, v in p.items()))
+        print_centered(table)
 
     if walk_forward:
         wf_result = walk_forward_optimize(
@@ -331,22 +346,16 @@ def optimize(
 
         console.print()
 
-        from midas.output import BACKTEST_TABLE_WIDTH, color_signed
-
-        # Per-fold results
-        fold_table = Table(
-            title="Walk-Forward Analysis",
-            title_style="bold",
-            show_lines=True,
-            width=BACKTEST_TABLE_WIDTH,
-        )
+        # Per-fold results — wider since this table has 9 columns.
+        fold_table = make_wide_table("Walk-Forward Analysis", width=140)
         fold_table.add_column("Fold", justify="center", style="bold")
-        fold_table.add_column("Train Period")
-        fold_table.add_column("Test Period")
-        fold_table.add_column("Train Return", justify="right")
+        fold_table.add_column("IS Period")
+        fold_table.add_column("OOS Period")
+        fold_table.add_column("IS Return", justify="right")
         fold_table.add_column("OOS Return", justify="right")
         fold_table.add_column("Max DD", justify="right")
         fold_table.add_column("Sharpe", justify="right")
+        fold_table.add_column("Sortino", justify="right")
         fold_table.add_column("Win Rate", justify="right")
         for f in wf_result.folds:
             fold_table.add_row(
@@ -357,57 +366,36 @@ def optimize(
                 color_signed(f.test_return),
                 f"[red]{f.max_drawdown:.2%}[/red]",
                 color_signed(f.sharpe_ratio, fmt=".2f"),
+                color_signed(f.sortino_ratio, fmt=".2f"),
                 f"{f.win_rate:.0%}" if f.win_rate > 0 else "—",
             )
-        console.print(fold_table)
+        print_centered(fold_table)
 
-        # Summary
+        # Aggregate metrics — same layout as the backtest summary tables.
         n_folds = len(wf_result.folds)
-        summary = Table(
-            title="Summary",
-            title_style="bold",
-            show_header=False,
-            box=None,
-            padding=(0, 2),
-            width=BACKTEST_TABLE_WIDTH,
-        )
-        summary.add_column("Metric", style="bold")
-        summary.add_column("Value", justify="right")
-        summary.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
-        summary.add_row(
+        agg = make_metric_table("Walk-Forward Aggregate")
+        agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
+        agg.add_row(
             "Per-Fold OOS Mean ± Std",
             f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
         )
-        summary.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")
-        summary.add_row(
+        agg.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")
+        agg.add_row(
             "Best / Worst Fold",
             f"{color_signed(wf_result.best_fold_return)} / {color_signed(wf_result.worst_fold_return)}",
         )
-        summary.add_row("Efficiency Ratio", f"{wf_result.efficiency_ratio:.0%}")
-        summary.add_row("Mean Max Drawdown", f"[red]{wf_result.mean_max_drawdown:.2%}[/red]")
-        summary.add_row("Mean Sharpe Ratio", color_signed(wf_result.mean_sharpe, fmt=".2f"))
-        summary.add_row(
+        agg.add_row("Efficiency Ratio", f"{wf_result.efficiency_ratio:.0%}")
+        agg.add_row("Mean Max Drawdown", f"[red]{wf_result.mean_max_drawdown:.2%}[/red]")
+        agg.add_row("Mean Sharpe Ratio", color_signed(wf_result.mean_sharpe, fmt=".2f"))
+        agg.add_row("Mean Sortino Ratio", color_signed(wf_result.mean_sortino, fmt=".2f"))
+        agg.add_row(
             "Mean Win Rate",
             f"{wf_result.mean_win_rate:.0%}" if wf_result.mean_win_rate > 0 else "—",
         )
-        summary.add_row("Total Trials", str(wf_result.total_trials))
-        summary.add_row("Output", output)
-        console.print(summary)
+        print_centered(agg)
 
-        # Best params
-        console.print()
-        param_table = Table(
-            title="Deployed Parameters (from latest fold)",
-            title_style="bold",
-            width=BACKTEST_TABLE_WIDTH,
-        )
-        param_table.add_column("Strategy", style="bold")
-        param_table.add_column("Parameters")
-        for name, params in wf_result.best_params.items():
-            display = name if name != ALLOCATION_KEY else "Global"
-            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
-            param_table.add_row(display, param_str)
-        console.print(param_table)
+        print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
+        _print_params_table("Deployed Parameters (from latest fold)", wf_result.best_params)
 
     else:
         result = run_optimize(
@@ -426,32 +414,18 @@ def optimize(
 
         console.print()
 
-        from midas.output import BACKTEST_TABLE_WIDTH, color_signed
+        # Reuse the backtest summary tables for the optimized strategy.
+        assert result.best_result is not None
+        print_backtest_summary(result.best_result)
 
-        table = Table(title="Optimization Results", title_style="bold", show_lines=True, width=BACKTEST_TABLE_WIDTH)
-        table.add_column("Metric", style="bold")
-        table.add_column("Value", justify="right")
-        test_pct = 1.0 if train_pct >= 1.0 else 1 - train_pct
-        table.add_row(f"Train Return ({train_pct:.0%})", color_signed(result.best_train_return))
-        table.add_row(f"Test Return ({test_pct:.0%})", color_signed(result.best_test_return))
-        table.add_row("Buy & Hold Return", color_signed(result.best_bh_return))
-        table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
-        table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
-        table.add_row("Win Rate", f"{result.win_rate:.0%}" if result.win_rate > 0 else "—")
-        table.add_row("Trials", str(result.trials_run))
-        table.add_row("Output", output)
-        console.print(table)
-
-        # Params
-        console.print()
-        param_table = Table(title="Optimized Parameters", title_style="bold", width=BACKTEST_TABLE_WIDTH)
-        param_table.add_column("Strategy", style="bold")
-        param_table.add_column("Parameters")
-        for name, params in result.best_params.items():
-            display = name if name != ALLOCATION_KEY else "Global"
-            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
-            param_table.add_row(display, param_str)
-        console.print(param_table)
+        print_run_info(
+            [
+                ("Trials", str(result.trials_run)),
+                ("Train/Test Split", f"{train_pct:.0%} / {1 - train_pct:.0%}" if train_pct < 1.0 else "100% / 0%"),
+                ("Output", output),
+            ]
+        )
+        _print_params_table("Optimized Parameters", result.best_params)
 
 
 @cli.command(name="strategies")

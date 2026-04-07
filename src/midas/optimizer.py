@@ -136,9 +136,7 @@ class OptimizeResult:
     best_train_return: float
     best_test_return: float
     trials_run: int
-    max_drawdown: float = 0.0
-    sharpe_ratio: float = 0.0
-    win_rate: float = 0.0
+    best_result: BacktestResult | None = None
 
 
 @dataclass
@@ -156,6 +154,7 @@ class FoldResult:
     trials_run: int
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
     win_rate: float = 0.0
 
 
@@ -175,6 +174,7 @@ class WalkForwardResult:
     total_trials: int
     mean_max_drawdown: float = 0.0
     mean_sharpe: float = 0.0
+    mean_sortino: float = 0.0
     mean_win_rate: float = 0.0
 
 
@@ -467,9 +467,7 @@ def optimize(
         best_train_return=round(best.user_attrs["train_return"], 4),
         best_test_return=round(best.user_attrs["test_return"], 4),
         trials_run=len(study.trials),
-        max_drawdown=round(best_result.max_drawdown, 4),
-        sharpe_ratio=round(best_result.sharpe_ratio, 4),
-        win_rate=round(best_result.win_rate, 4),
+        best_result=best_result,
     )
 
 
@@ -629,6 +627,7 @@ def walk_forward_optimize(
                     trials_run=len(study.trials),
                     max_drawdown=round(test_result.max_drawdown, 4),
                     sharpe_ratio=round(test_result.sharpe_ratio, 4),
+                    sortino_ratio=round(test_result.sortino_ratio, 4),
                     win_rate=round(test_result.win_rate, 4),
                 )
             )
@@ -654,6 +653,8 @@ def walk_forward_optimize(
     worst_fold = min(test_returns)
 
     # Efficiency ratio: how much in-sample performance survives out-of-sample.
+    # Anchored IS windows overlap so we can't annualize them apples-to-apples
+    # with OOS — only the ratio of mean raw returns is reported.
     train_returns = [f.train_return for f in fold_results]
     mean_train = sum(train_returns) / len(train_returns)
     efficiency = mean_test / mean_train if mean_train != 0 else 0.0
@@ -661,6 +662,7 @@ def walk_forward_optimize(
     n = len(fold_results)
     mean_dd = sum(f.max_drawdown for f in fold_results) / n
     mean_sharpe = sum(f.sharpe_ratio for f in fold_results) / n
+    mean_sortino = sum(f.sortino_ratio for f in fold_results) / n
     mean_wr = sum(f.win_rate for f in fold_results) / n
 
     log("")
@@ -684,6 +686,7 @@ def walk_forward_optimize(
         total_trials=sum(f.trials_run for f in fold_results),
         mean_max_drawdown=round(mean_dd, 4),
         mean_sharpe=round(mean_sharpe, 4),
+        mean_sortino=round(mean_sortino, 4),
         mean_win_rate=round(mean_wr, 4),
     )
 
