@@ -80,6 +80,8 @@ The rebalancer compares target weights from the allocator against the portfolio'
 
 The rebalancer computes the current weight of each ticker (its market value as a fraction of total portfolio value) and diffs it against the target weight. If the difference is smaller than the `rebalance_threshold` (default 2%), it's ignored -- this prevents excessive trading on tiny weight fluctuations.
 
+**Justification check.** Before emitting an order, the rebalancer verifies the trade is either (a) driven by a conviction strategy directionally aligned with the trade direction, or (b) forced by a Phase 4 cap trim. Trades that fail both checks are pure drift-to-base artifacts — they serve no purpose and are suppressed entirely. With the softmax allocator in place this check rarely fires, since softmax + Option A together eliminate most unjustified targets at the source, but it acts as a belt-and-braces guard.
+
 Sells are processed before buys. This is intentional: sell proceeds become available cash for subsequent buy orders. Each sell is capped at the actual shares held, and each buy is constrained by available cash.
 
 #### Slippage
