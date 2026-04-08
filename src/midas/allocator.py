@@ -146,28 +146,27 @@ class Allocator:
         if n == 0:
             return AllocationResult({}, {}, {}, {})
 
-        base_weight = (1.0 - self._constraints.min_cash_pct) / n
-        k = self._constraints.sigmoid_steepness
+        investable = 1.0 - self._constraints.min_cash_pct
+        base_weight = investable / n  # fallback when current_weights unknown
+        k = self._constraints.sigmoid_steepness  # softmax temperature
 
-        # Phase 1+2: Score conviction strategies and blend
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
-        targets: dict[str, float] = {}
+        targets: dict[str, float] = dict.fromkeys(tickers, 0.0)
         trim_reasons: dict[str, str] = {}
 
-        def _neutral_target(ticker: str) -> float:
-            # Neutral = hold (Option A). Falls back to base_weight only when
-            # no current weight is known (e.g. first-ever allocation).
-            if current_weights is None:
-                return base_weight
-            return cur_w.get(ticker, 0.0)
+        # Phase 1: Score conviction strategies and compute blended scores.
+        # Partition tickers into `active` (at least one strategy scored) and
+        # `held` (all strategies abstained — Option A: hold current weight).
+        active: list[str] = []
+        held: list[str] = []
 
         for ticker in tickers:
             prices = price_data.get(ticker)
             if prices is None or len(prices) == 0:
-                targets[ticker] = _neutral_target(ticker)
                 contributions[ticker] = {}
                 blended_scores[ticker] = 0.0
+                held.append(ticker)
                 continue
 
             ticker_ctx = ctx.get(ticker, {})
@@ -187,19 +186,15 @@ class Allocator:
             contributions[ticker] = ticker_contributions
 
             if weight_total > 0:
-                blended = weighted_sum / weight_total
-                blended_scores[ticker] = blended
-                # Symmetric sigmoid transform
-                sigmoid_val = 1.0 / (1.0 + math.exp(-k * blended))
-                targets[ticker] = base_weight * 2.0 * sigmoid_val
+                blended_scores[ticker] = weighted_sum / weight_total
+                active.append(ticker)
             else:
-                # No conviction strategy scored — hold current weight rather
-                # than drifting to base_weight and forcing drift-correction
-                # trades on every rebalance.
                 blended_scores[ticker] = 0.0
-                targets[ticker] = _neutral_target(ticker)
+                held.append(ticker)
 
-        # Phase 3: PROTECTIVE vetoes
+        # Phase 2: Protective vetoes. A vetoed ticker is removed from `active`
+        # (its softmax slot vanishes and its share of budget flows to peers).
+        vetoed: set[str] = set()
         for entry in self._protective:
             for ticker in tickers:
                 prices = price_data.get(ticker)
@@ -210,26 +205,97 @@ class Allocator:
                     ticker_ctx = ctx.get(ticker, {})
                     s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None and s <= entry.veto_threshold:
-                    targets[ticker] = 0.0
-                    # Record protective strategy in contributions
+                    vetoed.add(ticker)
                     contributions.setdefault(ticker, {})[entry.strategy.name] = s
+        active = [t for t in active if t not in vetoed]
+        held = [t for t in held if t not in vetoed]
+        for t in vetoed:
+            targets[t] = 0.0
 
-        # Phase 4: Apply constraints
-        for ticker in tickers:
-            pre = targets[ticker]
-            clamped = max(0.0, min(pre, self._max_position_pct))
-            if clamped < pre:
-                trim_reasons[ticker] = "cap"
-            targets[ticker] = clamped
+        # Held tickers (Option A) consume their current weight from the
+        # investable budget. Remaining budget goes to the active softmax.
+        def _held_target(ticker: str) -> float:
+            if current_weights is None:
+                return base_weight
+            return cur_w.get(ticker, 0.0)
 
-        # Normalize so sum <= 1 - min_cash_pct
-        total = sum(targets.values())
-        max_total = 1.0 - self._constraints.min_cash_pct
-        if total > max_total and total > 0:
-            scale = max_total / total
-            for ticker in targets:
-                targets[ticker] *= scale
-                # "cap" takes precedence — it's more specific than normalize.
-                trim_reasons.setdefault(ticker, "normalize")
+        held_total = 0.0
+        for t in held:
+            w = _held_target(t)
+            targets[t] = w
+            held_total += w
+
+        budget_for_active = max(investable - held_total, 0.0)
+
+        # Phase 3: Softmax construct-to-budget over active tickers. Sum of
+        # softmax weights is exactly budget_for_active by construction, so
+        # there is no normalize step.
+        self._softmax_allocate(active, blended_scores, budget_for_active, k, targets)
+
+        # Phase 4: Position cap with redistribution (Option X). Iteratively
+        # clamp any ticker exceeding max_position_pct and re-softmax the
+        # survivors over the reduced remaining budget. Usually converges in
+        # one pass; bounded by len(active) for safety.
+        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, k, targets, trim_reasons)
 
         return AllocationResult(targets, contributions, blended_scores, trim_reasons)
+
+    def _softmax_allocate(
+        self,
+        tickers: list[str],
+        blended_scores: dict[str, float],
+        budget: float,
+        k: float,
+        targets: dict[str, float],
+    ) -> None:
+        """Distribute `budget` across `tickers` via softmax(k * blended_scores)."""
+        if not tickers or budget <= 0:
+            for t in tickers:
+                targets[t] = 0.0
+            return
+        # Subtract max for numerical stability — softmax is translation-invariant.
+        max_score = max(blended_scores[t] for t in tickers)
+        exps = {t: math.exp(k * (blended_scores[t] - max_score)) for t in tickers}
+        z = sum(exps.values())
+        if z <= 0:
+            # Degenerate (shouldn't happen after max-subtraction, but be safe).
+            equal = budget / len(tickers)
+            for t in tickers:
+                targets[t] = equal
+            return
+        for t in tickers:
+            targets[t] = budget * exps[t] / z
+
+    def _apply_cap_with_redistribution(
+        self,
+        active: list[str],
+        blended_scores: dict[str, float],
+        initial_budget: float,
+        k: float,
+        targets: dict[str, float],
+        trim_reasons: dict[str, str],
+    ) -> None:
+        """Clamp targets exceeding max_position_pct; re-softmax the survivors.
+
+        Option X: when a cap trims a ticker, the freed budget is redistributed
+        to uncapped tickers in proportion to their softmax weight (achieved by
+        re-running softmax over the survivors with the reduced budget).
+        """
+        cap = self._max_position_pct
+        survivors = list(active)
+        budget = initial_budget
+        # At most one iteration per ticker (each pass pins at least one).
+        for _ in range(len(active) + 1):
+            over = [t for t in survivors if targets[t] > cap + 1e-12]
+            if not over:
+                return
+            for t in over:
+                targets[t] = cap
+                trim_reasons[t] = "cap"
+                budget -= cap
+                survivors.remove(t)
+            if not survivors or budget <= 0:
+                for t in survivors:
+                    targets[t] = 0.0
+                return
+            self._softmax_allocate(survivors, blended_scores, budget, k, targets)

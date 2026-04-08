@@ -19,7 +19,7 @@ def _prices(values: list[float]) -> np.ndarray:
 
 class TestAllocator:
     def test_uniform_scores_produce_equal_weights(self):
-        """When all strategies score 0.0, targets equal base_weight (after cap)."""
+        """When all strategies score 0.0, softmax produces equal weights summing to investable."""
         mr = MeanReversion(window=5, threshold=0.01)
         constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.50)
         allocator = Allocator(
@@ -28,16 +28,12 @@ class TestAllocator:
             constraints=constraints,
             n_tickers=2,
         )
-        # Flat prices -> score 0.0
-        prices = {
-            "A": _prices([100.0] * 10),
-            "B": _prices([100.0] * 10),
-        }
+        prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}
         result = allocator.allocate(["A", "B"], prices)
         base = (1 - 0.05) / 2  # 0.475
-        # sigmoid(0) = 0.5, so target = base * 2 * 0.5 = base
-        assert abs(result.targets["A"] - base) < 1e-6
-        assert abs(result.targets["B"] - base) < 1e-6
+        # softmax of equal scores → equal split of investable budget
+        assert abs(result.targets["A"] - base) < 1e-9
+        assert abs(result.targets["B"] - base) < 1e-9
 
     def test_bullish_score_increases_weight(self):
         """A positive blended score should produce weight > base_weight."""
@@ -191,12 +187,9 @@ class TestAllocator:
         result = allocator.allocate(["A", "B"], {"A": prices_a, "B": prices_b})
         assert result.trim_reasons.get("A") == "cap"
 
-    def test_trim_reason_normalize_recorded(self):
-        """When normalization scales sum down, trim_reasons['normalize'] recorded."""
+    def test_softmax_sum_equals_investable(self):
+        """Softmax construct-to-budget: sum of active targets == investable, exactly."""
         mr = MeanReversion(window=5, threshold=0.01)
-        # High sigmoid steepness pushes targets near base_weight * 2 each, so
-        # their sum exceeds (1 - min_cash_pct) and triggers normalize. Large
-        # max_position_pct so cap doesn't fire first.
         constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
@@ -210,7 +203,52 @@ class TestAllocator:
             "C": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
         }
         result = allocator.allocate(["A", "B", "C"], prices)
-        assert all(result.trim_reasons.get(t) == "normalize" for t in ["A", "B", "C"])
+        investable = 1.0 - 0.20
+        assert abs(sum(result.targets.values()) - investable) < 1e-9
+        # No normalize trim — construct-to-budget means normalize cannot fire.
+        assert all(r != "normalize" for r in result.trim_reasons.values())
+
+    def test_softmax_concentrates_on_higher_conviction(self):
+        """Higher blended score → larger softmax share of the budget."""
+        # Use a large threshold so scores don't saturate at 1.0.
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=4.0, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        # A moderately bullish (bigger drop), B mildly bullish, C flat.
+        prices = {
+            "A": _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0]),  # ~10% drop
+            "B": _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 96.0]),  # ~4% drop
+            "C": _prices([100.0] * 7),  # flat
+        }
+        result = allocator.allocate(["A", "B", "C"], prices)
+        assert result.targets["A"] > result.targets["B"] > result.targets["C"]
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9
+
+    def test_cap_with_redistribution(self):
+        """When a cap clamps a ticker, freed budget redistributes to survivors."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=8.0, max_position_pct=0.50)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        # A overwhelmingly bullish → pre-cap softmax would give it > 0.50.
+        prices_a = _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 40.0])
+        prices_b = _prices([100.0] * 7)
+        result = allocator.allocate(["A", "B"], {"A": prices_a, "B": prices_b})
+        # A pinned at cap.
+        assert abs(result.targets["A"] - 0.50) < 1e-9
+        assert result.trim_reasons["A"] == "cap"
+        # Freed budget went to B, not to cash — sum stays at investable.
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9
+        assert result.targets["B"] > 0.40  # got the freed 0.45-ish
 
     def test_sigmoid_symmetry(self):
         """Verify sigmoid transform is symmetric around 0."""
