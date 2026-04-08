@@ -84,6 +84,11 @@ class Allocator:
                     equal_weight,
                 )
 
+    @property
+    def strategies(self) -> list[Strategy]:
+        """All strategies the allocator owns (conviction + protective)."""
+        return [s.strategy for s in self._conviction] + [e.strategy for e in self._protective]
+
     def precompute_signals(self, price_data: dict[str, np.ndarray]) -> None:
         """Precompute strategy scores for all tickers over the full price arrays.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, Strategy
 
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:
@@ -28,6 +28,13 @@ class MACDCrossover(Strategy):
         self._fast_period = fast_period
         self._slow_period = slow_period
         self._signal_period = signal_period
+
+    @property
+    def warmup_period(self) -> int:
+        # MACD chains three EMAs (fast, slow, signal). Strict min is
+        # slow + signal; give EMA room to converge with the recursive
+        # multiplier applied to the slow leg.
+        return self._slow_period * RECURSIVE_WARMUP_MULTIPLIER + self._signal_period
 
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)

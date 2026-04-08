@@ -3,6 +3,7 @@
 import numpy as np
 
 from midas.models import StrategyTier
+from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
 from midas.strategies.dca import DollarCostAveraging
 from midas.strategies.gap_down_recovery import GapDownRecovery
@@ -307,3 +308,59 @@ class TestMovingAverageCrossover:
     def test_name_and_description(self) -> None:
         s = MovingAverageCrossover(short_window=15, long_window=45)
         assert s.name == "MovingAverageCrossover"
+
+
+class TestWarmupPeriod:
+    """Each strategy advertises the history it needs before scoring."""
+
+    def test_rolling_window_strategies_match_their_window(self) -> None:
+        assert Momentum(window=25).warmup_period == 25
+        assert MeanReversion(window=40).warmup_period == 40
+        assert BollingerBand(window=30).warmup_period == 30
+        assert VWAPReversion(window=15).warmup_period == 15
+
+    def test_ma_crossover_uses_long_window(self) -> None:
+        assert MovingAverageCrossover(short_window=10, long_window=60).warmup_period == 60
+
+    def test_rsi_applies_recursive_multiplier(self) -> None:
+        # Recursive indicators need 4x their nominal period to converge
+        # (TA-Lib unstable-period convention).
+        assert RSIOversold(window=14).warmup_period == 56
+        assert RSIOverbought(window=14).warmup_period == 56
+
+    def test_macd_uses_slow_period_times_multiplier_plus_signal(self) -> None:
+        assert MACDCrossover(slow_period=26, signal_period=9).warmup_period == 26 * 4 + 9
+
+    def test_stateless_exit_strategies_need_no_warmup(self) -> None:
+        # StopLoss / ProfitTaking / TrailingStop / DCA inherit the default 0.
+        assert StopLoss().warmup_period == 0
+        assert ProfitTaking().warmup_period == 0
+        assert TrailingStop().warmup_period == 0
+        assert DollarCostAveraging().warmup_period == 0
+
+    def test_gap_down_recovery_needs_three_bars(self) -> None:
+        assert GapDownRecovery().warmup_period == 3
+
+
+class TestWarmupBarsToCalendarDays:
+    """``warmup_bars_to_calendar_days`` floors at ``MIN_WARMUP_CALENDAR_DAYS``.
+
+    Live mode derives its history-fetch window from this helper. If a
+    mechanical-only setup (StopLoss/TrailingStop/DCA) returned 0, the
+    live engine would request a single-day price history and frequently
+    receive nothing on weekends/holidays. The floor prevents that.
+    """
+
+    def test_zero_bars_floors_to_minimum(self) -> None:
+        assert warmup_bars_to_calendar_days(0) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_negative_bars_floors_to_minimum(self) -> None:
+        assert warmup_bars_to_calendar_days(-5) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_small_warmup_floors_to_minimum(self) -> None:
+        # 3 bars * 1.5 + 10 = 14, still below the 30-day floor.
+        assert warmup_bars_to_calendar_days(3) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_large_warmup_scales_above_floor(self) -> None:
+        # 100 bars * 1.5 + 10 = 160, well above the floor.
+        assert warmup_bars_to_calendar_days(100) == 160

@@ -188,6 +188,67 @@ def test_backtest_deferred_ticker() -> None:
     assert result.starting_value == 2000.0 + 5 * 80.0
 
 
+def test_backtest_consumes_warmup_prefix() -> None:
+    """Bars before ``start`` should prime strategy signals from day one.
+
+    Without a warmup prefix, a `window=20` strategy spends the first 20
+    days of the simulation in warmup and emits no signals. With a warmup
+    prefix fetched ahead of ``start``, the allocator can produce valid
+    conviction scores on the very first simulation day.
+    """
+    # 60 bars total: bars 0-19 are warmup, bars 20-59 are the sim window.
+    # Flat at 100 through bar 30, then drop — so the drop lands inside
+    # the sim window but needs the warmup bars to compute its 20-day MA.
+    returns = [0.0] * 30 + [-0.02] * 10 + [0.0] * 20
+    prices = make_price_series(date(2024, 1, 2), 60, 100.0, returns, name="AAPL")
+    trading_days = list(prices.index)
+    sim_start = trading_days[20]
+    sim_end = trading_days[-1]
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10, cost_basis=100.0)],
+        available_cash=5000.0,
+    )
+
+    mr = MeanReversion(window=20, threshold=0.05)
+    engine = _build_engine(
+        conviction_strategies=[(mr, 1.0)],
+        enable_split=False,
+    )
+    result = engine.run(portfolio, {"AAPL": prices}, sim_start, sim_end)
+
+    # With warmup consumed, the drop triggers a mean-reversion buy inside
+    # the sim window. Without warmup, the strategy would still be in its
+    # 20-day cold start when the drop started and miss it entirely.
+    buys = [t for t in result.trades if t.direction == Direction.BUY]
+    assert buys, "Expected at least one buy — warmup prefix was not consumed"
+    assert all(sim_start <= t.date <= sim_end for t in buys)
+
+
+def test_backtest_logs_insufficient_warmup() -> None:
+    """A ticker with less history than a strategy needs should log a warning."""
+    # Only 25 bars total, starting exactly at the sim start — no prefix.
+    prices = make_price_series(date(2024, 1, 2), 25, 100.0, name="AAPL")
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10, cost_basis=100.0)],
+        available_cash=1000.0,
+    )
+
+    # window=50 → warmup_period=50, but only ~25 bars are available.
+    mr = MeanReversion(window=50, threshold=0.05)
+    log_messages: list[str] = []
+    engine = _build_engine(
+        conviction_strategies=[(mr, 1.0)],
+        enable_split=False,
+        log_fn=log_messages.append,
+    )
+    engine.run(portfolio, {"AAPL": prices}, min(prices.index), max(prices.index))
+
+    warmup_msgs = [m for m in log_messages if "warmup" in m.lower()]
+    assert warmup_msgs, f"Expected warmup warning, got: {log_messages}"
+    assert "AAPL" in warmup_msgs[0]
+
+
 def test_backtest_excluded_ticker() -> None:
     """Tickers with no data in the range should be excluded and logged."""
     portfolio = PortfolioConfig(
