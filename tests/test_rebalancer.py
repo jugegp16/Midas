@@ -160,9 +160,9 @@ class TestRebalancer:
     def test_unjustified_trade_skipped(self):
         """No aligned contrib AND no trim reason → order is suppressed entirely.
 
-        Pure drift-to-base trades are artifacts of the sigmoid centering on
-        base_weight. They serve no purpose and should not appear in the order
-        book.
+        Unjustified drift-correction trades serve no purpose and should not
+        appear in the order book. Softmax + Option A eliminate most of these
+        at the source; this check is a belt-and-braces guard.
         """
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
         allocation = _alloc_result({"A": 0.30}, contribs={"A": {}})

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from midas.allocator import Allocator
@@ -38,7 +36,7 @@ class TestAllocator:
     def test_bullish_score_increases_weight(self):
         """A positive blended score should produce weight > base_weight."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=2.0, max_position_pct=0.90)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.5, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -110,7 +108,7 @@ class TestAllocator:
     def test_normalization_respects_min_cash(self):
         """Sum of all target weights should not exceed 1 - min_cash_pct."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0)
+        constraints = AllocationConstraints(min_cash_pct=0.20, softmax_temperature=0.2)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -190,7 +188,7 @@ class TestAllocator:
     def test_softmax_sum_equals_investable(self):
         """Softmax construct-to-budget: sum of active targets == investable, exactly."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0, max_position_pct=0.90)
+        constraints = AllocationConstraints(min_cash_pct=0.20, softmax_temperature=0.2, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -212,7 +210,7 @@ class TestAllocator:
         """Higher blended score → larger softmax share of the budget."""
         # Use a large threshold so scores don't saturate at 1.0.
         mr = MeanReversion(window=5, threshold=0.20)
-        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=4.0, max_position_pct=0.90)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.25, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -232,7 +230,7 @@ class TestAllocator:
     def test_cap_with_redistribution(self):
         """When a cap clamps a ticker, freed budget redistributes to survivors."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=8.0, max_position_pct=0.50)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.125, max_position_pct=0.50)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -249,12 +247,3 @@ class TestAllocator:
         # Freed budget went to B, not to cash — sum stays at investable.
         assert abs(sum(result.targets.values()) - 0.95) < 1e-9
         assert result.targets["B"] > 0.40  # got the freed 0.45-ish
-
-    def test_sigmoid_symmetry(self):
-        """Verify sigmoid transform is symmetric around 0."""
-        k = 2.0
-        for score in [0.5, 1.0, 0.3]:
-            pos = 1.0 / (1.0 + math.exp(-k * score))
-            neg = 1.0 / (1.0 + math.exp(-k * (-score)))
-            # pos + neg should equal 1.0 (sigmoid symmetry)
-            assert abs(pos + neg - 1.0) < 1e-10

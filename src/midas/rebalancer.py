@@ -72,10 +72,10 @@ class Rebalancer:
             if abs(delta) < constraints.rebalance_threshold:
                 continue
 
-            # Skip unsupported drift-to-base trades: no conviction strategy
+            # Skip unjustified drift-correction trades: no conviction strategy
             # is directionally aligned with this trade AND no Phase 4 trim
-            # forced it. These are pure artifacts of the sigmoid centering
-            # on base_weight and serve no purpose.
+            # forced it. Belt-and-braces guard — softmax + Option A eliminate
+            # most of these at the source, but this catches any residue.
             direction = Direction.SELL if delta < 0 else Direction.BUY
             if not self._has_justification(allocation, ticker, direction):
                 continue

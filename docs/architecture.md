@@ -51,10 +51,10 @@ For each ticker, the allocator collects scores from all CONVICTION strategies an
 The blended scores need to become target portfolio weights that sum to the investable budget (1 minus the minimum cash reserve). The allocator uses softmax — the same construct-to-budget operator used by QuantConnect LEAN's `InsightWeightingPortfolioConstructionModel`, mean-variance optimizers, risk-parity libraries, and every production portfolio construction system in the literature.
 
 ```
-target_i = investable_budget * exp(k * blended_i) / sum_j(exp(k * blended_j))
+target_i = investable_budget * exp(blended_i / T) / sum_j(exp(blended_j / T))
 ```
 
-By construction, `sum(targets) == investable_budget` exactly, always. There is no separate normalize step because oversubscription is mathematically impossible. The `sigmoid_steepness` parameter `k` acts as the softmax temperature: `k = 0` produces equal weights, large `k` concentrates on the highest-conviction ticker (winner-take-most).
+By construction, `sum(targets) == investable_budget` exactly, always. There is no separate normalize step because oversubscription is mathematically impossible. The `softmax_temperature` parameter `T` follows the standard ML softmax convention: low `T` concentrates budget on the highest-conviction ticker (winner-take-most, `T → 0` is argmax), `T = 1` is the unscaled softmax over raw scores, and high `T` approaches a uniform split regardless of conviction. Midas defaults to `T = 0.5`, a mild concentration bias.
 
 Compared to the older "score → sigmoid → multiply by base_weight → clip → normalize" pattern, softmax eliminates a class of phantom rebalance trades that arose whenever the sum of per-ticker targets drifted past the budget and had to be scaled back proportionally. Under softmax, relative weight shifts cleanly reflect relative conviction shifts — the allocator reallocates between tickers rather than "normalizing" them.
 

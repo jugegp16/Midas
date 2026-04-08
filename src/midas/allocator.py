@@ -148,7 +148,7 @@ class Allocator:
 
         investable = 1.0 - self._constraints.min_cash_pct
         base_weight = investable / n  # fallback when current_weights unknown
-        k = self._constraints.sigmoid_steepness  # softmax temperature
+        temperature = self._constraints.softmax_temperature
 
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
@@ -194,6 +194,17 @@ class Allocator:
 
         # Phase 2: Protective vetoes. A vetoed ticker is removed from `active`
         # (its softmax slot vanishes and its share of budget flows to peers).
+        #
+        # KNOWN LIMITATION: the vetoed score is stored in ``contributions`` and
+        # the Rebalancer's justification/attribution picker filters by sign
+        # (``v < 0`` for SELL). A protective strategy that vetoes with a score
+        # >= 0 would therefore have its forced-exit SELL either suppressed by
+        # the justification check or mislabeled as ``Rebalancer (unknown)``.
+        # All currently shipped protective strategies (StopLoss, TrailingStop)
+        # return strictly negative scores when they veto, so this is not
+        # exploitable today. The whole protective tier is slated for removal
+        # in favor of direct EXIT_RULE order intents — see #26 — at which
+        # point this pathway (and the limitation) disappears entirely.
         vetoed: set[str] = set()
         for entry in self._protective:
             for ticker in tickers:
@@ -230,32 +241,46 @@ class Allocator:
         # Phase 3: Softmax construct-to-budget over active tickers. Sum of
         # softmax weights is exactly budget_for_active by construction, so
         # there is no normalize step.
-        self._softmax_allocate(active, blended_scores, budget_for_active, k, targets)
+        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
 
         # Phase 4: Position cap with redistribution (Option X). Iteratively
         # clamp any ticker exceeding max_position_pct and re-softmax the
         # survivors over the reduced remaining budget. Usually converges in
         # one pass; bounded by len(active) for safety.
-        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, k, targets, trim_reasons)
+        self._apply_cap_with_redistribution(
+            active, blended_scores, budget_for_active, temperature, targets, trim_reasons
+        )
 
         return AllocationResult(targets, contributions, blended_scores, trim_reasons)
+
+    # Temperature floor prevents division-by-zero and bounds exp() growth in the
+    # winner-take-all limit. Combined with max-subtraction below, the softmax
+    # collapses cleanly to argmax as temperature → 0.
+    _MIN_TEMPERATURE = 1e-6
 
     def _softmax_allocate(
         self,
         tickers: list[str],
         blended_scores: dict[str, float],
         budget: float,
-        k: float,
+        temperature: float,
         targets: dict[str, float],
     ) -> None:
-        """Distribute `budget` across `tickers` via softmax(k * blended_scores)."""
+        """Distribute `budget` across `tickers` via softmax(blended_scores / T).
+
+        Temperature semantics:
+            T → 0   winner-take-all (budget to the argmax ticker)
+            T = 1   standard softmax over raw scores
+            T → ∞   uniform split regardless of conviction
+        """
         if not tickers or budget <= 0:
             for t in tickers:
                 targets[t] = 0.0
             return
+        t_safe = max(temperature, self._MIN_TEMPERATURE)
         # Subtract max for numerical stability — softmax is translation-invariant.
         max_score = max(blended_scores[t] for t in tickers)
-        exps = {t: math.exp(k * (blended_scores[t] - max_score)) for t in tickers}
+        exps = {t: math.exp((blended_scores[t] - max_score) / t_safe) for t in tickers}
         z = sum(exps.values())
         if z <= 0:
             # Degenerate (shouldn't happen after max-subtraction, but be safe).
@@ -271,7 +296,7 @@ class Allocator:
         active: list[str],
         blended_scores: dict[str, float],
         initial_budget: float,
-        k: float,
+        temperature: float,
         targets: dict[str, float],
         trim_reasons: dict[str, str],
     ) -> None:
@@ -298,4 +323,4 @@ class Allocator:
                 for t in survivors:
                     targets[t] = 0.0
                 return
-            self._softmax_allocate(survivors, blended_scores, budget, k, targets)
+            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)
