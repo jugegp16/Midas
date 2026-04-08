@@ -52,6 +52,8 @@ The blended score (a number between -1 and +1) needs to become a target portfoli
 
 The sigmoid is centered so that a blended score of 0 produces the equal-weight baseline (total investable weight divided evenly across tickers). Positive scores push above the baseline (overweight), negative scores push below (underweight). The `sigmoid_steepness` parameter controls how aggressively the curve responds -- higher values mean small conviction differences produce larger weight swings.
 
+**Neutral = hold.** When no conviction strategy produces a score for a ticker (all abstain — e.g. during warmup or when indicators don't apply), the allocator holds the current weight instead of reverting to the equal-weight baseline. This avoids churn from drift-correction trades on days when no signal is actually firing. The allocator only falls back to equal-weight when it has no knowledge of the current portfolio (the very first allocation).
+
 #### Phase 3: Protective Vetoes
 
 Each PROTECTIVE strategy is evaluated per ticker. If its score falls at or below its veto threshold, the target weight is forced to zero. This is a hard override -- no amount of bullish conviction can prevent a protective liquidation. This is how stop-losses and trailing stops work: they don't reduce the position, they eliminate it.
@@ -59,6 +61,8 @@ Each PROTECTIVE strategy is evaluated per ticker. If its score falls at or below
 #### Phase 4: Constraints
 
 Finally, the allocator enforces portfolio-level constraints. Each ticker's weight is capped at `max_position_pct` to prevent excessive concentration. If `max_position_pct` is not configured, it's auto-computed as 2.5x the equal-weight baseline (capped at 25%), which allows meaningful overweighting without extreme concentration. Then all weights are normalized so their sum doesn't exceed the investable portion of the portfolio (1 minus the minimum cash reserve).
+
+When either constraint trims a target, the allocator records the reason (`cap` or `normalize`) on the result. The rebalancer uses this to label trades that weren't driven by any specific strategy: a buy/sell with no aligned conviction contributor is sourced to `Rebalancer (cap)` or `Rebalancer (normalize)` instead of the bare `Rebalancer` fallback, so attribution reports can distinguish structural rebalances from unexplained drift.
 
 ### Rebalancer
 

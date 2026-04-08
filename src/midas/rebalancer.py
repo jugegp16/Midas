@@ -245,6 +245,13 @@ class Rebalancer:
         else:
             aligned = {k: v for k, v in contribs.items() if v < 0}
             source = min(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
+        # Tag fallback "Rebalancer" source with the Phase 4 constraint that
+        # caused the trim (cap or normalize), so attribution reports can
+        # distinguish structural rebalances from mystery drift.
+        if source == "Rebalancer":
+            trim = allocation.trim_reasons.get(ticker)
+            if trim:
+                source = f"Rebalancer ({trim})"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,

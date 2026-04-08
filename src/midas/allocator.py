@@ -40,6 +40,10 @@ class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
+    # ticker -> "cap" | "normalize" when Phase 4 constraints trimmed the target.
+    # Used by the Rebalancer to label fallback attribution when no conviction
+    # strategy drove the trade.
+    trim_reasons: dict[str, str]
 
 
 class Allocator:
@@ -119,6 +123,7 @@ class Allocator:
         tickers: list[str],
         price_data: dict[str, np.ndarray],
         context: dict[str, dict[str, Any]] | None = None,
+        current_weights: dict[str, float] | None = None,
     ) -> AllocationResult:
         """Compute target weights for all tickers.
 
@@ -126,15 +131,20 @@ class Allocator:
             tickers: Active tickers in the portfolio.
             price_data: Ticker -> price series mapping.
             context: Per-ticker context dict (e.g. {"AAPL": {"cost_basis": 150.0}}).
+            current_weights: Ticker -> current portfolio weight. When no
+                conviction strategy scores a ticker, the allocator holds the
+                current weight instead of reverting to equal-weight (Option A:
+                neutral = hold). If omitted, falls back to equal-weight base.
 
         Returns:
             AllocationResult with target weights, per-ticker contributions,
-            and blended scores.
+            blended scores, and trim reasons.
         """
         ctx = context or {}
+        cur_w = current_weights or {}
         n = len(tickers)
         if n == 0:
-            return AllocationResult({}, {}, {})
+            return AllocationResult({}, {}, {}, {})
 
         base_weight = (1.0 - self._constraints.min_cash_pct) / n
         k = self._constraints.sigmoid_steepness
@@ -143,11 +153,19 @@ class Allocator:
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
         targets: dict[str, float] = {}
+        trim_reasons: dict[str, str] = {}
+
+        def _neutral_target(ticker: str) -> float:
+            # Neutral = hold (Option A). Falls back to base_weight only when
+            # no current weight is known (e.g. first-ever allocation).
+            if current_weights is None:
+                return base_weight
+            return cur_w.get(ticker, 0.0)
 
         for ticker in tickers:
             prices = price_data.get(ticker)
             if prices is None or len(prices) == 0:
-                targets[ticker] = base_weight
+                targets[ticker] = _neutral_target(ticker)
                 contributions[ticker] = {}
                 blended_scores[ticker] = 0.0
                 continue
@@ -168,13 +186,18 @@ class Allocator:
 
             contributions[ticker] = ticker_contributions
 
-            blended = weighted_sum / weight_total if weight_total > 0 else 0.0
-
-            blended_scores[ticker] = blended
-
-            # Symmetric sigmoid transform
-            sigmoid_val = 1.0 / (1.0 + math.exp(-k * blended))
-            targets[ticker] = base_weight * 2.0 * sigmoid_val
+            if weight_total > 0:
+                blended = weighted_sum / weight_total
+                blended_scores[ticker] = blended
+                # Symmetric sigmoid transform
+                sigmoid_val = 1.0 / (1.0 + math.exp(-k * blended))
+                targets[ticker] = base_weight * 2.0 * sigmoid_val
+            else:
+                # No conviction strategy scored — hold current weight rather
+                # than drifting to base_weight and forcing drift-correction
+                # trades on every rebalance.
+                blended_scores[ticker] = 0.0
+                targets[ticker] = _neutral_target(ticker)
 
         # Phase 3: PROTECTIVE vetoes
         for entry in self._protective:
@@ -193,7 +216,11 @@ class Allocator:
 
         # Phase 4: Apply constraints
         for ticker in tickers:
-            targets[ticker] = max(0.0, min(targets[ticker], self._max_position_pct))
+            pre = targets[ticker]
+            clamped = max(0.0, min(pre, self._max_position_pct))
+            if clamped < pre:
+                trim_reasons[ticker] = "cap"
+            targets[ticker] = clamped
 
         # Normalize so sum <= 1 - min_cash_pct
         total = sum(targets.values())
@@ -202,5 +229,7 @@ class Allocator:
             scale = max_total / total
             for ticker in targets:
                 targets[ticker] *= scale
+                # "cap" takes precedence — it's more specific than normalize.
+                trim_reasons.setdefault(ticker, "normalize")
 
-        return AllocationResult(targets, contributions, blended_scores)
+        return AllocationResult(targets, contributions, blended_scores, trim_reasons)

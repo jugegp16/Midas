@@ -108,14 +108,25 @@ class LiveEngine:
         # and the allocator operate on np.ndarray for performance.
         price_arrays: dict[str, np.ndarray] = {t: np.asarray(price_data[t]) for t in active_tickers}
 
-        # Phase 1-3: Allocate
-        allocation = self._allocator.allocate(active_tickers, price_arrays, context)
-
-        # Phase 4: Rebalance
+        # Current positions + weights (weights feed Option A: neutral=hold).
         positions = {}
         for t in active_tickers:
             holding = self._portfolio.get_holding(t)
             positions[t] = holding.shares if holding else 0.0
+
+        total_value = self._portfolio.available_cash + sum(positions[t] * current_prices[t] for t in active_tickers)
+        current_weights: dict[str, float] = {}
+        if total_value > 0:
+            for t in active_tickers:
+                current_weights[t] = (positions[t] * current_prices[t]) / total_value
+
+        # Phase 1-3: Allocate
+        allocation = self._allocator.allocate(
+            active_tickers,
+            price_arrays,
+            context,
+            current_weights=current_weights,
+        )
 
         rebalance_orders = self._rebalancer.generate_orders(
             allocation,

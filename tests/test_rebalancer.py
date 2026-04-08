@@ -15,10 +15,12 @@ def _alloc_result(
     targets: dict[str, float],
     blended: dict[str, float] | None = None,
     contribs: dict[str, dict[str, float]] | None = None,
+    trim_reasons: dict[str, str] | None = None,
 ) -> AllocationResult:
     blended = blended or {t: 0.0 for t in targets}
     contribs = contribs or {t: {} for t in targets}
-    return AllocationResult(targets, contribs, blended)
+    trim_reasons = trim_reasons or {}
+    return AllocationResult(targets, contribs, blended, trim_reasons)
 
 
 class TestRebalancer:
@@ -118,6 +120,51 @@ class TestRebalancer:
         assert len(orders) >= 1
         buy = orders[0]
         assert buy.price > 100.0  # slippage raises buy price
+
+    def test_fallback_source_tagged_with_cap(self):
+        """When no strategy drove the trade and trim_reason=cap, source = Rebalancer (cap)."""
+        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
+        # No contribs → fallback path. Cap trim recorded.
+        allocation = _alloc_result(
+            {"A": 0.10},
+            contribs={"A": {}},
+            trim_reasons={"A": "cap"},
+        )
+        positions = {"A": 50.0}  # currently 50%
+        prices = {"A": 100.0}
+        cash = 5000.0  # total = 10000
+        constraints = AllocationConstraints(rebalance_threshold=0.02)
+        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
+        assert len(orders) == 1
+        assert orders[0].context.source == "Rebalancer (cap)"
+
+    def test_fallback_source_tagged_with_normalize(self):
+        """Normalize trim produces Rebalancer (normalize) source."""
+        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
+        allocation = _alloc_result(
+            {"A": 0.30},
+            contribs={"A": {}},
+            trim_reasons={"A": "normalize"},
+        )
+        positions = {"A": 50.0}
+        prices = {"A": 100.0}
+        cash = 5000.0
+        constraints = AllocationConstraints(rebalance_threshold=0.02)
+        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
+        assert len(orders) == 1
+        assert orders[0].context.source == "Rebalancer (normalize)"
+
+    def test_fallback_source_untagged_when_no_trim(self):
+        """No trim reason → plain Rebalancer source."""
+        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
+        allocation = _alloc_result({"A": 0.30}, contribs={"A": {}})
+        positions = {"A": 50.0}
+        prices = {"A": 100.0}
+        cash = 5000.0
+        constraints = AllocationConstraints(rebalance_threshold=0.02)
+        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
+        assert len(orders) == 1
+        assert orders[0].context.source == "Rebalancer"
 
     def test_order_context_populated(self):
         """Orders carry proper OrderContext."""

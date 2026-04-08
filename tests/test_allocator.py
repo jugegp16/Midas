@@ -137,6 +137,81 @@ class TestAllocator:
         result = allocator.allocate([], {})
         assert result.targets == {}
 
+    def test_neutral_holds_current_weight(self):
+        """When no conviction strategy scores, target = current weight (Option A)."""
+        # window too large to score
+        mr = MeanReversion(window=100, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices = {
+            "A": _prices([100.0] * 10),
+            "B": _prices([100.0] * 10),
+        }
+        # A is overweight, B is underweight — neither should move.
+        result = allocator.allocate(
+            ["A", "B"],
+            prices,
+            current_weights={"A": 0.70, "B": 0.10},
+        )
+        assert abs(result.targets["A"] - 0.70) < 1e-9
+        assert abs(result.targets["B"] - 0.10) < 1e-9
+
+    def test_neutral_without_current_weights_falls_back_to_base(self):
+        """Back-compat: omitting current_weights keeps legacy drift-correct behavior."""
+        mr = MeanReversion(window=100, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}
+        result = allocator.allocate(["A", "B"], prices)
+        base = (1 - 0.05) / 2
+        assert abs(result.targets["A"] - base) < 1e-9
+
+    def test_trim_reason_cap_recorded(self):
+        """Target clamped by max_position_pct gets trim_reasons['cap']."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(max_position_pct=0.10, min_cash_pct=0.05)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices_a = _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0])
+        prices_b = _prices([100.0] * 7)
+        result = allocator.allocate(["A", "B"], {"A": prices_a, "B": prices_b})
+        assert result.trim_reasons.get("A") == "cap"
+
+    def test_trim_reason_normalize_recorded(self):
+        """When normalization scales sum down, trim_reasons['normalize'] recorded."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        # High sigmoid steepness pushes targets near base_weight * 2 each, so
+        # their sum exceeds (1 - min_cash_pct) and triggers normalize. Large
+        # max_position_pct so cap doesn't fire first.
+        constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        prices = {
+            "A": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+            "B": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+            "C": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+        }
+        result = allocator.allocate(["A", "B", "C"], prices)
+        assert all(result.trim_reasons.get(t) == "normalize" for t in ["A", "B", "C"])
+
     def test_sigmoid_symmetry(self):
         """Verify sigmoid transform is symmetric around 0."""
         k = 2.0
