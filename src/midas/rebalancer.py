@@ -268,8 +268,8 @@ class Rebalancer:
             aligned = {k: v for k, v in contribs.items() if v < 0}
             source = min(aligned, key=lambda k: aligned[k]) if aligned else ""
         # No aligned conviction contributor -> must be a Phase 4 constraint
-        # trim (cap or normalize). _has_justification guarantees one of these
-        # holds, so the empty-source branch should always find a trim reason.
+        # trim (currently only ``cap``). _has_justification guarantees a trim
+        # reason is present when this branch is reached.
         if not source:
             trim = allocation.trim_reasons.get(ticker, "unknown")
             source = f"Rebalancer ({trim})"

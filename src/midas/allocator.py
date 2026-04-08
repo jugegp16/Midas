@@ -40,9 +40,9 @@ class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
-    # ticker -> "cap" | "normalize" when Phase 4 constraints trimmed the target.
-    # Used by the Rebalancer to label fallback attribution when no conviction
-    # strategy drove the trade.
+    # ticker -> "cap" when Phase 4 constraints trimmed the target. Used by the
+    # Rebalancer to label fallback attribution when no conviction strategy drove
+    # the trade.
     trim_reasons: dict[str, str]
 
 

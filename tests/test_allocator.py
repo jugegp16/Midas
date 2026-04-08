@@ -247,3 +247,43 @@ class TestAllocator:
         # Freed budget went to B, not to cash — sum stays at investable.
         assert abs(sum(result.targets.values()) - 0.95) < 1e-9
         assert result.targets["B"] > 0.40  # got the freed 0.45-ish
+
+    def test_cap_redistribution_multi_iteration(self):
+        """Capping one ticker can push another over the cap → second loop pass.
+
+        Regression test for the ``_apply_cap_with_redistribution`` iteration:
+        with very concentrated softmax (low T) and a tight cap, pinning the
+        top ticker frees enough budget to push the second-place ticker above
+        the cap as well, forcing the loop to run another iteration.
+        """
+        # threshold=0.20 yields non-saturated MeanReversion scores.
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.1,  # very concentrated
+            max_position_pct=0.35,
+        )
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        # A: 20% drop → score saturates high
+        # B: 15% drop → score mid-high (would exceed cap on pass 2)
+        # C: ~5% drop → score low
+        prices_a = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 80.0])
+        prices_b = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 85.0])
+        prices_c = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 95.0])
+        result = allocator.allocate(
+            ["A", "B", "C"],
+            {"A": prices_a, "B": prices_b, "C": prices_c},
+        )
+        # Both A and B pinned at the cap — the second pin only happens if the
+        # redistribution loop runs twice.
+        assert abs(result.targets["A"] - 0.35) < 1e-9
+        assert abs(result.targets["B"] - 0.35) < 1e-9
+        assert result.trim_reasons["A"] == "cap"
+        assert result.trim_reasons["B"] == "cap"
+        # Survivors absorb the rest; sum stays at investable.
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9

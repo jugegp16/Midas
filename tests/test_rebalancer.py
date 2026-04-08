@@ -141,22 +141,6 @@ class TestRebalancer:
         assert len(orders) == 1
         assert orders[0].context.source == "Rebalancer (cap)"
 
-    def test_fallback_source_tagged_with_normalize(self):
-        """Normalize trim produces Rebalancer (normalize) source."""
-        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result(
-            {"A": 0.30},
-            contribs={"A": {}},
-            trim_reasons={"A": "normalize"},
-        )
-        positions = {"A": 50.0}
-        prices = {"A": 100.0}
-        cash = 5000.0
-        constraints = AllocationConstraints(rebalance_threshold=0.02)
-        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
-        assert len(orders) == 1
-        assert orders[0].context.source == "Rebalancer (normalize)"
-
     def test_unjustified_trade_skipped(self):
         """No aligned contrib AND no trim reason → order is suppressed entirely.
 

@@ -90,6 +90,14 @@ class LiveEngine:
         if not price_data:
             return
 
+        # If any held position is missing from price_data, we can't compute an
+        # accurate portfolio denominator for current_weights — skip the tick
+        # rather than let Option A hold inflated weights based on partial info.
+        missing_held = [h.ticker for h in self._portfolio.holdings if h.shares > 0 and h.ticker not in price_data]
+        if missing_held:
+            print_status(f"Skipping tick: missing price data for held positions {missing_held}. Will retry next poll.")
+            return
+
         # Build context (cost_basis from portfolio config)
         context: dict[str, dict[str, object]] = {}
         current_prices: dict[str, float] = {}
