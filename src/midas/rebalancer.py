@@ -72,6 +72,14 @@ class Rebalancer:
             if abs(delta) < constraints.rebalance_threshold:
                 continue
 
+            # Skip unsupported drift-to-base trades: no conviction strategy
+            # is directionally aligned with this trade AND no Phase 4 trim
+            # forced it. These are pure artifacts of the sigmoid centering
+            # on base_weight and serve no purpose.
+            direction = Direction.SELL if delta < 0 else Direction.BUY
+            if not self._has_justification(allocation, ticker, direction):
+                continue
+
             px = prices.get(ticker, 0.0)
             if px <= 0:
                 continue
@@ -220,6 +228,20 @@ class Rebalancer:
         return orders
 
     @staticmethod
+    def _has_justification(
+        allocation: AllocationResult,
+        ticker: str,
+        direction: Direction,
+    ) -> bool:
+        """Is there a conviction contributor aligned with this trade, or a trim reason?"""
+        if allocation.trim_reasons.get(ticker):
+            return True
+        contribs = allocation.contributions.get(ticker, {})
+        if direction == Direction.BUY:
+            return any(v > 0 for v in contribs.values())
+        return any(v < 0 for v in contribs.values())
+
+    @staticmethod
     def _build_context(
         ticker: str,
         allocation: AllocationResult,
@@ -241,17 +263,16 @@ class Rebalancer:
         # strategy truly drove the order — the allocator just rebalanced.
         if direction == Direction.BUY:
             aligned = {k: v for k, v in contribs.items() if v > 0}
-            source = max(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
+            source = max(aligned, key=lambda k: aligned[k]) if aligned else ""
         else:
             aligned = {k: v for k, v in contribs.items() if v < 0}
-            source = min(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
-        # Tag fallback "Rebalancer" source with the Phase 4 constraint that
-        # caused the trim (cap or normalize), so attribution reports can
-        # distinguish structural rebalances from mystery drift.
-        if source == "Rebalancer":
-            trim = allocation.trim_reasons.get(ticker)
-            if trim:
-                source = f"Rebalancer ({trim})"
+            source = min(aligned, key=lambda k: aligned[k]) if aligned else ""
+        # No aligned conviction contributor -> must be a Phase 4 constraint
+        # trim (cap or normalize). _has_justification guarantees one of these
+        # holds, so the empty-source branch should always find a trim reason.
+        if not source:
+            trim = allocation.trim_reasons.get(ticker, "unknown")
+            source = f"Rebalancer ({trim})"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,

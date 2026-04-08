@@ -39,7 +39,7 @@ class TestRebalancer:
     def test_sell_generated_when_overweight(self):
         """Should generate SELL when current > target by more than threshold."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.30})
+        allocation = _alloc_result({"A": 0.30}, contribs={"A": {"ProfitTaking": -0.5}})
         # A is 50% of portfolio, target is 30% -> need to sell
         positions = {"A": 50.0}
         prices = {"A": 100.0}
@@ -55,7 +55,7 @@ class TestRebalancer:
     def test_buy_generated_when_underweight(self):
         """Should generate BUY when current < target by more than threshold."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.50})
+        allocation = _alloc_result({"A": 0.50}, contribs={"A": {"Momentum": 0.5}})
         # A is 30% of portfolio, target is 50% -> need to buy
         positions = {"A": 30.0}
         prices = {"A": 100.0}
@@ -71,7 +71,10 @@ class TestRebalancer:
     def test_sells_before_buys(self):
         """Sells should appear before buys in the order list."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.20, "B": 0.60})
+        allocation = _alloc_result(
+            {"A": 0.20, "B": 0.60},
+            contribs={"A": {"ProfitTaking": -0.5}, "B": {"Momentum": 0.5}},
+        )
         # A overweight (50%), B underweight (20%)
         positions = {"A": 50.0, "B": 20.0}
         prices = {"A": 100.0, "B": 100.0}
@@ -86,7 +89,7 @@ class TestRebalancer:
     def test_cash_constraint_limits_buys(self):
         """Buy orders are reduced when cash is insufficient."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.90})
+        allocation = _alloc_result({"A": 0.90}, contribs={"A": {"Momentum": 0.9}})
         positions = {"A": 0.0}
         prices = {"A": 100.0}
         cash = 500.0  # total = 500, want to buy 90% = $450 = 4 shares
@@ -98,7 +101,7 @@ class TestRebalancer:
     def test_circuit_breaker_limits_deployment(self):
         """Circuit breaker caps total buy deployment per day."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0, circuit_breaker_pct=0.10))
-        allocation = _alloc_result({"A": 0.90})
+        allocation = _alloc_result({"A": 0.90}, contribs={"A": {"Momentum": 0.9}})
         positions = {"A": 0.0}
         prices = {"A": 10.0}
         cash = 10000.0  # total = 10000
@@ -111,7 +114,7 @@ class TestRebalancer:
     def test_slippage_applied(self):
         """Slippage adjusts execution prices."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.01))
-        allocation = _alloc_result({"A": 0.80})
+        allocation = _alloc_result({"A": 0.80}, contribs={"A": {"Momentum": 0.8}})
         positions = {"A": 0.0}
         prices = {"A": 100.0}
         cash = 10000.0
@@ -154,8 +157,13 @@ class TestRebalancer:
         assert len(orders) == 1
         assert orders[0].context.source == "Rebalancer (normalize)"
 
-    def test_fallback_source_untagged_when_no_trim(self):
-        """No trim reason → plain Rebalancer source."""
+    def test_unjustified_trade_skipped(self):
+        """No aligned contrib AND no trim reason → order is suppressed entirely.
+
+        Pure drift-to-base trades are artifacts of the sigmoid centering on
+        base_weight. They serve no purpose and should not appear in the order
+        book.
+        """
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
         allocation = _alloc_result({"A": 0.30}, contribs={"A": {}})
         positions = {"A": 50.0}
@@ -163,8 +171,7 @@ class TestRebalancer:
         cash = 5000.0
         constraints = AllocationConstraints(rebalance_threshold=0.02)
         orders = r.generate_orders(allocation, positions, prices, cash, constraints)
-        assert len(orders) == 1
-        assert orders[0].context.source == "Rebalancer"
+        assert orders == []
 
     def test_order_context_populated(self):
         """Orders carry proper OrderContext."""
