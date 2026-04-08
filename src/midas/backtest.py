@@ -347,15 +347,47 @@ class BacktestEngine:
         start: date,
         end: date,
     ) -> dict[str, _TickerIndex]:
+        """Build per-ticker arrays keeping the warmup prefix intact.
+
+        The returned array spans ``[max(first_available, start - warmup_bars), end]``
+        so ``precompute_signals`` and the per-day pointer advance see a prefix
+        of history before the user's ``start``. The simulation loop iterates
+        over ``trading_days`` (which are already filtered to ``start..end``),
+        so the pointer walks through warmup dates on day one of the sim.
+        """
+        warmup_bars = self._warmup_bars()
         index: dict[str, _TickerIndex] = {}
         for ticker, series in price_data.items():
-            in_range = series[(series.index >= start) & (series.index <= end)]
-            if len(in_range) > 0:
-                index[ticker] = _TickerIndex(
-                    dates=list(in_range.index),
-                    values=np.asarray(in_range.values),
+            bounded = series[series.index <= end]
+            if len(bounded) == 0:
+                continue
+            # Identify the first trading day inside the sim window.
+            sim_mask = np.asarray(bounded.index >= start)
+            if not sim_mask.any():
+                continue
+            sim_first_idx = int(np.argmax(sim_mask))
+            # Keep up to ``warmup_bars`` prior bars for precompute.
+            warmup_first_idx = max(0, sim_first_idx - warmup_bars)
+            available_warmup = sim_first_idx - warmup_first_idx
+            if warmup_bars > 0 and available_warmup < warmup_bars:
+                self._log(
+                    f"{ticker}: only {available_warmup} warmup bars available "
+                    f"(requested {warmup_bars}) — strategies will score on "
+                    f"partial history until enough bars accumulate"
                 )
+            sliced = bounded.iloc[warmup_first_idx:]
+            index[ticker] = _TickerIndex(
+                dates=list(sliced.index),
+                values=np.asarray(sliced.values),
+            )
         return index
+
+    def _warmup_bars(self) -> int:
+        """Max warmup required across allocator + mechanical strategies."""
+        return max(
+            self._allocator.max_warmup_period(),
+            max((s.warmup_period for s in self._mechanical), default=0),
+        )
 
     def _first_data_dates(
         self,

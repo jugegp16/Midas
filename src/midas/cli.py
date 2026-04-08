@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -21,6 +21,7 @@ from midas.models import (
 from midas.output import print_backtest_summary, print_status, print_strategy_table
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
+from midas.strategies.base import warmup_bars_to_calendar_days
 
 
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
@@ -68,14 +69,29 @@ def _fetch_prices(
     portfolio: PortfolioConfig,
     start: date,
     end: date,
+    warmup_bars: int = 0,
 ) -> dict[str, pd.Series]:
+    """Fetch price history from ``start - warmup_buffer`` through ``end``.
+
+    ``warmup_bars`` is the maximum number of trading days any configured
+    strategy needs before it can emit valid scores. The fetch start is
+    shifted backward by an equivalent calendar-day buffer so strategies
+    have history available on day one of the simulation.
+    """
     provider = CachedYFinanceProvider()
     price_data: dict[str, pd.Series] = {}
     tickers = [h.ticker for h in portfolio.holdings]
-    print_status(f"Fetching data for {', '.join(tickers)}...")
+    buffer_days = warmup_bars_to_calendar_days(warmup_bars)
+    fetch_start = start - timedelta(days=buffer_days) if buffer_days else start
+    if buffer_days:
+        print_status(
+            f"Fetching data for {', '.join(tickers)} (with {buffer_days}-day warmup buffer from {fetch_start})..."
+        )
+    else:
+        print_status(f"Fetching data for {', '.join(tickers)}...")
     for ticker in tickers:
         try:
-            price_data[ticker] = provider.get_history(ticker, start, end)
+            price_data[ticker] = provider.get_history(ticker, fetch_start, end)
         except Exception as e:
             print_status(f"Skipping {ticker}: {e}")
     return price_data
@@ -129,7 +145,6 @@ def backtest(
     strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
 
     start_d, end_d = _to_date(start), _to_date(end)
-    price_data = _fetch_prices(port, start_d, end_d)
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
     allocator, rebalancer, mechanical = _build_components(
@@ -137,6 +152,12 @@ def backtest(
         constraints,
         n_tickers,
     )
+
+    warmup_bars = max(
+        allocator.max_warmup_period(),
+        max((s.warmup_period for s in mechanical), default=0),
+    )
+    price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
     engine = BacktestEngine(
         allocator=allocator,
@@ -278,6 +299,7 @@ def optimize(
         ALLOCATION_KEY,
         WF_MIN_TEST_DAYS,
         WF_MIN_TRAIN_PCT,
+        max_warmup_for_search,
         walk_forward_optimize,
         write_strategies_yaml,
     )
@@ -307,7 +329,9 @@ def optimize(
         min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
-    price_data = _fetch_prices(port, start_d, end_d)
+    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, n_tickers)
+    price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
     from midas.output import (
         color_signed,

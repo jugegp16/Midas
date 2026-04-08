@@ -14,6 +14,10 @@ class MovingAverageCrossover(Strategy):
         self._long_window = long_window
         self._spread_scale = spread_scale
 
+    @property
+    def warmup_period(self) -> int:
+        return self._long_window
+
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)
         lw = self._long_window

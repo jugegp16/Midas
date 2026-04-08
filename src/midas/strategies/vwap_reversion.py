@@ -18,6 +18,10 @@ class VWAPReversion(Strategy):
         self._window = window
         self._threshold = threshold
 
+    @property
+    def warmup_period(self) -> int:
+        return self._window
+
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)
         w = self._window

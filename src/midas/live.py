@@ -20,7 +20,7 @@ from midas.models import (
 from midas.output import print_alert, print_status
 from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy
+from midas.strategies.base import Strategy, warmup_bars_to_calendar_days
 
 
 class LiveEngine:
@@ -34,7 +34,7 @@ class LiveEngine:
         constraints: AllocationConstraints | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
-        history_days: int = 120,
+        history_days: int | None = None,
     ) -> None:
         self._portfolio = portfolio
         self._allocator = allocator
@@ -44,7 +44,17 @@ class LiveEngine:
         self._provider = provider
         self._poll_interval = poll_interval
         self._dry_run = dry_run
-        self._history_days = history_days
+        # Derive the history window from the largest warmup required across
+        # configured strategies (plus slack for weekends/holidays). An explicit
+        # ``history_days`` override is still honored for tests.
+        if history_days is not None:
+            self._history_days = history_days
+        else:
+            warmup_bars = max(
+                allocator.max_warmup_period(),
+                max((s.warmup_period for s in self._mechanical), default=0),
+            )
+            self._history_days = warmup_bars_to_calendar_days(warmup_bars)
         # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
         self._last_order_keys: set[tuple[str, Direction, float]] = set()
         self._restriction_tracker: RestrictionTracker | None = None

@@ -5,13 +5,19 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, Strategy
 
 
 class RSIOversold(Strategy):
     def __init__(self, window: int = 14, oversold_threshold: float = 30.0) -> None:
         self._window = window
         self._oversold_threshold = oversold_threshold
+
+    @property
+    def warmup_period(self) -> int:
+        # RSI is recursive (Wilder-style smoothing) — strict min of `window`
+        # bars gives a mathematically valid but numerically unstable value.
+        return self._window * RECURSIVE_WARMUP_MULTIPLIER
 
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)

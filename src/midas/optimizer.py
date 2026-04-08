@@ -327,6 +327,42 @@ def _wf_trial_worker(
     return total_ret, bh_ret, train_ret, test_ret, twr
 
 
+def max_warmup_for_search(
+    strategy_names: list[str] | None,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    n_tickers: int = 1,
+) -> int:
+    """Upper bound on warmup bars across the optimizer's search space.
+
+    Walk-forward and standard optimizer trials sample different parameter
+    values, so the prefetched warmup buffer must cover the worst case.
+    For each optimizable strategy, instantiate it with every integer
+    parameter pinned to its search-range upper bound and take the max
+    ``warmup_period``.
+    """
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
+    max_w = 0
+    for name in names:
+        if name == ALLOCATION_KEY:
+            continue
+        cls = STRATEGY_REGISTRY[name]
+        params: dict[str, Any] = {}
+        for pname, (lo, hi, step) in ranges.get(name, {}).items():
+            if pname in META_PARAMS:
+                continue
+            # Snap hi down the same way _suggest_params does so the upper
+            # bound here matches values the optimizer actually tries.
+            d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
+            snapped_hi = float((d_hi - d_lo) // d_step * d_step + d_lo)
+            params[pname] = int(snapped_hi) if pname in INT_PARAMS else snapped_hi
+        try:
+            instance = cls(**params)
+        except TypeError:
+            instance = cls()
+        max_w = max(max_w, instance.warmup_period)
+    return max_w
+
+
 def _prepare_names_and_ranges(
     strategy_names: list[str] | None,
     min_cash_pct: float,

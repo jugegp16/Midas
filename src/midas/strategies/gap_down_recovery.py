@@ -12,6 +12,10 @@ class GapDownRecovery(Strategy):
     def __init__(self, gap_threshold: float = 0.03) -> None:
         self._gap_threshold = gap_threshold
 
+    @property
+    def warmup_period(self) -> int:
+        return 3
+
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)
         scores = np.full(n, np.nan)

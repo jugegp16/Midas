@@ -32,6 +32,10 @@ Each strategy belongs to one of three tiers that determine how it participates i
 
 For backtest performance, strategies can optionally compute scores for every day of the price series in a single vectorized pass. The allocator caches these results and looks them up by day index during simulation, avoiding per-day function calls. Strategies that need runtime context like cost basis (ProfitTaking, StopLoss, TrailingStop) cannot precompute and fall back to per-day evaluation.
 
+#### Warmup
+
+Each strategy declares a `warmup_period` — the bars of price history it needs before it produces a valid score. The CLI fetches a lookback buffer equal to the maximum warmup across configured strategies (plus slack for weekends/holidays) so signals are valid from day one of the simulation rather than spending the first N days in cold start. For recursive indicators (RSI, MACD), the nominal period is multiplied by a TA-Lib-style unstable-period factor so the indicator has room to converge. Live mode derives the same history window, and the walk-forward optimizer prefetches a single buffer sized for the upper bound of its parameter search space.
+
 See [Strategies](strategies.md) for a reference of all available strategies.
 
 ### Allocator

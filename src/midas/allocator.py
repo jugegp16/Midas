@@ -84,6 +84,11 @@ class Allocator:
                     equal_weight,
                 )
 
+    def max_warmup_period(self) -> int:
+        """Largest ``warmup_period`` across all conviction and protective strategies."""
+        strategies = [s.strategy for s in self._conviction] + [e.strategy for e in self._protective]
+        return max((s.warmup_period for s in strategies), default=0)
+
     def precompute_signals(self, price_data: dict[str, np.ndarray]) -> None:
         """Precompute strategy scores for all tickers over the full price arrays.
 

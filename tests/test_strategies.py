@@ -307,3 +307,35 @@ class TestMovingAverageCrossover:
     def test_name_and_description(self) -> None:
         s = MovingAverageCrossover(short_window=15, long_window=45)
         assert s.name == "MovingAverageCrossover"
+
+
+class TestWarmupPeriod:
+    """Each strategy advertises the history it needs before scoring."""
+
+    def test_rolling_window_strategies_match_their_window(self) -> None:
+        assert Momentum(window=25).warmup_period == 25
+        assert MeanReversion(window=40).warmup_period == 40
+        assert BollingerBand(window=30).warmup_period == 30
+        assert VWAPReversion(window=15).warmup_period == 15
+
+    def test_ma_crossover_uses_long_window(self) -> None:
+        assert MovingAverageCrossover(short_window=10, long_window=60).warmup_period == 60
+
+    def test_rsi_applies_recursive_multiplier(self) -> None:
+        # Recursive indicators need 4x their nominal period to converge
+        # (TA-Lib unstable-period convention).
+        assert RSIOversold(window=14).warmup_period == 56
+        assert RSIOverbought(window=14).warmup_period == 56
+
+    def test_macd_uses_slow_period_times_multiplier_plus_signal(self) -> None:
+        assert MACDCrossover(slow_period=26, signal_period=9).warmup_period == 26 * 4 + 9
+
+    def test_stateless_exit_strategies_need_no_warmup(self) -> None:
+        # StopLoss / ProfitTaking / TrailingStop / DCA inherit the default 0.
+        assert StopLoss().warmup_period == 0
+        assert ProfitTaking().warmup_period == 0
+        assert TrailingStop().warmup_period == 0
+        assert DollarCostAveraging().warmup_period == 0
+
+    def test_gap_down_recovery_needs_three_bars(self) -> None:
+        assert GapDownRecovery().warmup_period == 3
