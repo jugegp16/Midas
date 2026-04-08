@@ -3,6 +3,7 @@
 import numpy as np
 
 from midas.models import StrategyTier
+from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
 from midas.strategies.dca import DollarCostAveraging
 from midas.strategies.gap_down_recovery import GapDownRecovery
@@ -339,3 +340,27 @@ class TestWarmupPeriod:
 
     def test_gap_down_recovery_needs_three_bars(self) -> None:
         assert GapDownRecovery().warmup_period == 3
+
+
+class TestWarmupBarsToCalendarDays:
+    """``warmup_bars_to_calendar_days`` floors at ``MIN_WARMUP_CALENDAR_DAYS``.
+
+    Live mode derives its history-fetch window from this helper. If a
+    mechanical-only setup (StopLoss/TrailingStop/DCA) returned 0, the
+    live engine would request a single-day price history and frequently
+    receive nothing on weekends/holidays. The floor prevents that.
+    """
+
+    def test_zero_bars_floors_to_minimum(self) -> None:
+        assert warmup_bars_to_calendar_days(0) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_negative_bars_floors_to_minimum(self) -> None:
+        assert warmup_bars_to_calendar_days(-5) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_small_warmup_floors_to_minimum(self) -> None:
+        # 3 bars * 1.5 + 10 = 14, still below the 30-day floor.
+        assert warmup_bars_to_calendar_days(3) == MIN_WARMUP_CALENDAR_DAYS
+
+    def test_large_warmup_scales_above_floor(self) -> None:
+        # 100 bars * 1.5 + 10 = 160, well above the floor.
+        assert warmup_bars_to_calendar_days(100) == 160

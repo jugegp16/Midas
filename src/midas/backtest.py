@@ -26,7 +26,7 @@ from midas.models import (
 )
 from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy
+from midas.strategies.base import Strategy, max_warmup
 
 
 @dataclass
@@ -384,10 +384,7 @@ class BacktestEngine:
 
     def _warmup_bars(self) -> int:
         """Max warmup required across allocator + mechanical strategies."""
-        return max(
-            self._allocator.max_warmup_period(),
-            max((s.warmup_period for s in self._mechanical), default=0),
-        )
+        return max_warmup([*self._allocator.strategies, *self._mechanical])
 
     def _first_data_dates(
         self,

@@ -21,7 +21,7 @@ from midas.models import (
 from midas.output import print_backtest_summary, print_status, print_strategy_table
 from midas.rebalancer import Rebalancer
 from midas.strategies import STRATEGY_REGISTRY, Strategy
-from midas.strategies.base import warmup_bars_to_calendar_days
+from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
 
 
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
@@ -82,13 +82,8 @@ def _fetch_prices(
     price_data: dict[str, pd.Series] = {}
     tickers = [h.ticker for h in portfolio.holdings]
     buffer_days = warmup_bars_to_calendar_days(warmup_bars)
-    fetch_start = start - timedelta(days=buffer_days) if buffer_days else start
-    if buffer_days:
-        print_status(
-            f"Fetching data for {', '.join(tickers)} (with {buffer_days}-day warmup buffer from {fetch_start})..."
-        )
-    else:
-        print_status(f"Fetching data for {', '.join(tickers)}...")
+    fetch_start = start - timedelta(days=buffer_days)
+    print_status(f"Fetching data for {', '.join(tickers)} (with {buffer_days}-day warmup buffer from {fetch_start})...")
     for ticker in tickers:
         try:
             price_data[ticker] = provider.get_history(ticker, fetch_start, end)
@@ -153,10 +148,7 @@ def backtest(
         n_tickers,
     )
 
-    warmup_bars = max(
-        allocator.max_warmup_period(),
-        max((s.warmup_period for s in mechanical), default=0),
-    )
+    warmup_bars = max_warmup([*allocator.strategies, *mechanical])
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
     engine = BacktestEngine(

@@ -355,10 +355,9 @@ def max_warmup_for_search(
             d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
             snapped_hi = float((d_hi - d_lo) // d_step * d_step + d_lo)
             params[pname] = int(snapped_hi) if pname in INT_PARAMS else snapped_hi
-        try:
-            instance = cls(**params)
-        except TypeError:
-            instance = cls()
+        # Let TypeError propagate — if a search-range key doesn't match a
+        # constructor param, that's a real configuration bug we want loud.
+        instance = cls(**params)
         max_w = max(max_w, instance.warmup_period)
     return max_w
 

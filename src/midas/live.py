@@ -20,7 +20,7 @@ from midas.models import (
 from midas.output import print_alert, print_status
 from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy, warmup_bars_to_calendar_days
+from midas.strategies.base import Strategy, max_warmup, warmup_bars_to_calendar_days
 
 
 class LiveEngine:
@@ -50,10 +50,7 @@ class LiveEngine:
         if history_days is not None:
             self._history_days = history_days
         else:
-            warmup_bars = max(
-                allocator.max_warmup_period(),
-                max((s.warmup_period for s in self._mechanical), default=0),
-            )
+            warmup_bars = max_warmup([*allocator.strategies, *self._mechanical])
             self._history_days = warmup_bars_to_calendar_days(warmup_bars)
         # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
         self._last_order_keys: set[tuple[str, Direction, float]] = set()

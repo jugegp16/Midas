@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 
 import numpy as np
 
@@ -25,10 +26,19 @@ WARMUP_CALENDAR_SLACK = 10
 MIN_WARMUP_CALENDAR_DAYS = 30
 
 
+def max_warmup(strategies: Iterable[Strategy]) -> int:
+    """Largest ``warmup_period`` across an iterable of strategies (0 if empty)."""
+    return max((s.warmup_period for s in strategies), default=0)
+
+
 def warmup_bars_to_calendar_days(bars: int) -> int:
-    """Convert a trading-day warmup requirement to a calendar-day buffer."""
-    if bars <= 0:
-        return 0
+    """Convert a trading-day warmup requirement to a calendar-day buffer.
+
+    Always returns at least ``MIN_WARMUP_CALENDAR_DAYS`` so callers (notably
+    ``LiveEngine``) get a sensible fetch window even when no configured
+    strategy advertises a warmup requirement.
+    """
+    bars = max(bars, 0)
     calendar = int(bars * TRADING_TO_CALENDAR_RATIO) + WARMUP_CALENDAR_SLACK
     return max(calendar, MIN_WARMUP_CALENDAR_DAYS)
 
