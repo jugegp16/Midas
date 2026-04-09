@@ -4,6 +4,7 @@ import math
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from conftest import make_price_series
 
@@ -11,6 +12,7 @@ from midas.allocator import Allocator
 from midas.backtest import (
     TRADING_DAYS_PER_YEAR,
     BacktestEngine,
+    _SimState,
     compute_cagr,
     compute_max_drawdown,
     compute_sharpe,
@@ -19,8 +21,18 @@ from midas.backtest import (
     compute_trade_stats,
     write_backtest_csv,
 )
-from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig, TradeRecord
+from midas.models import (
+    AllocationConstraints,
+    CashInfusion,
+    Direction,
+    Holding,
+    PortfolioConfig,
+    PositionLot,
+    TradeRecord,
+    TradingRestrictions,
+)
 from midas.order_sizer import OrderSizer
+from midas.restrictions import RestrictionTracker
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
 
@@ -604,3 +616,134 @@ def test_backtest_populates_new_metrics() -> None:
     assert result.max_drawdown >= 0.0
     # Sortino must never be inf — even on a perfect run we cap to 0.
     assert not math.isinf(result.sortino_ratio)
+
+
+# --- _fifo_consumed_basis unit tests ---
+#
+# FIFO basis underpins realized-P&L attribution. These pin the contract
+# directly so regressions surface at the unit level instead of bleeding
+# through end-to-end backtests.
+
+
+def _pl(shares: float, basis: float) -> PositionLot:
+    return PositionLot(
+        shares=shares,
+        purchase_date=date(2024, 1, 1),
+        cost_basis=basis,
+        high_water_mark=basis,
+    )
+
+
+def test_fifo_basis_empty_lots() -> None:
+    assert BacktestEngine._fifo_consumed_basis([], 5) == 0.0
+
+
+def test_fifo_basis_zero_shares() -> None:
+    assert BacktestEngine._fifo_consumed_basis([_pl(10, 100.0)], 0) == 0.0
+
+
+def test_fifo_basis_single_lot_partial() -> None:
+    basis = BacktestEngine._fifo_consumed_basis([_pl(10, 100.0)], 4)
+    assert basis == 100.0
+
+
+def test_fifo_basis_crosses_lot_boundary() -> None:
+    """Consume 8 shares across two lots: 5 @ $100 + 3 @ $80 → $92.50."""
+    lots = [_pl(5, 100.0), _pl(10, 80.0)]
+    basis = BacktestEngine._fifo_consumed_basis(lots, 8)
+    assert basis == (5 * 100.0 + 3 * 80.0) / 8
+
+
+def test_fifo_basis_respects_lot_order() -> None:
+    """Reversing the lot list must change the answer — this is FIFO, not LIFO."""
+    lot_a = _pl(5, 100.0)
+    lot_b = _pl(10, 80.0)
+    fifo = BacktestEngine._fifo_consumed_basis([lot_a, lot_b], 8)
+    lifo = BacktestEngine._fifo_consumed_basis([lot_b, lot_a], 8)
+    assert fifo != lifo
+    assert lifo == 80.0  # first 8 all come from the $80 lot
+
+
+def test_fifo_basis_does_not_mutate_lots() -> None:
+    lots = [_pl(5, 100.0), _pl(10, 80.0)]
+    BacktestEngine._fifo_consumed_basis(lots, 8)
+    assert lots[0].shares == 5
+    assert lots[1].shares == 10
+
+
+# --- restriction-before-sizing regression ---
+
+
+def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
+    """Restriction-before-sizing invariant: blocked sells must not inflate the
+    ``cash`` the buy pass sees.
+
+    The backtest orders Phase 3 as:
+
+        1. size exits from ExitRule intents
+        2. filter restriction-blocked sells
+        3. compute ``post_sell_cash = state.cash + sum(filtered)``
+        4. call ``size_buys(..., cash=post_sell_cash, ...)``
+
+    If step 2 is skipped (or moved after step 3), blocked sell proceeds
+    leak into ``post_sell_cash`` and ``size_buys`` can authorize buys
+    against cash that will never arrive in phase 5.
+
+    This test pins the order by spying on ``size_buys`` and asserting the
+    ``cash`` argument equals ``state.cash + proceeds_of_unblocked_sells``,
+    not ``state.cash + proceeds_of_all_sells``.
+    """
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    mr = MeanReversion(window=10, threshold=0.05)
+    allocator = Allocator([(mr, 1.0)], constraints, n_tickers=1)
+    sizer = OrderSizer(default_slippage=0.0)
+
+    # Spy on size_buys to capture the cash it was called with.
+    captured: dict[str, float] = {}
+    real_size_buys = sizer.size_buys
+
+    def spy_size_buys(*args, **kwargs):
+        # cash is the 4th positional arg in size_buys
+        captured["cash"] = args[3] if len(args) > 3 else kwargs["cash"]
+        return real_size_buys(*args, **kwargs)
+
+    sizer.size_buys = spy_size_buys  # type: ignore[method-assign]
+
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=sizer,
+        exit_rules=[ProfitTaking(gain_threshold=0.10)],
+        constraints=constraints,
+    )
+
+    # A single held ticker in profit → ProfitTaking fires. Round-trip
+    # restriction blocks the sell.
+    a_prices = np.array([100.0] * 15)
+
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 5.0}
+    state.lots = {
+        "A": [
+            PositionLot(
+                shares=5.0,
+                purchase_date=date(2024, 1, 1),
+                cost_basis=80.0,
+                high_water_mark=100.0,
+            )
+        ]
+    }
+    state.restriction_tracker = RestrictionTracker(TradingRestrictions(round_trip_days=30))
+    state.restriction_tracker.record_trade("A", Direction.BUY, date(2024, 1, 15))
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="A", shares=5, cost_basis=80.0)],
+        available_cash=0.0,
+        trading_restrictions=TradingRestrictions(round_trip_days=30),
+    )
+
+    engine._run_day(state, portfolio, {"A": a_prices}, date(2024, 1, 16))
+
+    # post_sell_cash should equal state.cash ($0) because the single sell
+    # was blocked. If blocked proceeds leaked in, cash would be ~$500.
+    assert "cash" in captured, "size_buys was not called"
+    assert captured["cash"] == 0.0, f"blocked sell proceeds leaked into size_buys cash: {captured['cash']}"

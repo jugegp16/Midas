@@ -15,7 +15,6 @@ from midas.models import (
     AllocationConstraints,
     Direction,
     ExitIntent,
-    Order,
     PortfolioConfig,
     PositionLot,
 )
@@ -177,7 +176,14 @@ class LiveEngine:
                 ]
                 exit_intents.extend(rule.evaluate_exit(ticker, lots, price_arrays[ticker]))
 
+        # Size sells and filter restriction-blocked sells *before* computing
+        # post-sell cash. Otherwise a blocked sell would leak phantom proceeds
+        # into the buy pass, sizing buys against cash that will never arrive.
         exit_orders = self._order_sizer.size_exits(exit_intents, positions, current_prices)
+        if self._restriction_tracker:
+            exit_orders = [
+                o for o in exit_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+            ]
         sell_proceeds = sum(o.estimated_value for o in exit_orders)
         post_sell_cash = self._portfolio.available_cash + sell_proceeds
 
@@ -189,19 +195,12 @@ class LiveEngine:
             self._constraints,
             total_value=total_value,
         )
+        if self._restriction_tracker:
+            buy_orders = [
+                o for o in buy_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+            ]
 
-        all_orders = exit_orders + buy_orders
-
-        # Filter restricted orders
-        filtered: list[Order] = []
-        for order in all_orders:
-            if self._restriction_tracker and self._restriction_tracker.is_blocked(
-                order.ticker,
-                order.direction,
-                today,
-            ):
-                continue
-            filtered.append(order)
+        filtered = exit_orders + buy_orders
 
         # Emit alerts only when the order set changes
         current_keys = {(o.ticker, o.direction, o.shares) for o in filtered if o.shares > 0}

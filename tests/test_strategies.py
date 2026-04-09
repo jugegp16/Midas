@@ -218,6 +218,42 @@ class TestTrailingStop:
         assert s.name == "TrailingStop"
         assert s.description
 
+    def test_multi_lot_only_triggered_lots_sold(self) -> None:
+        """Per-lot HWM: only lots past their own drawdown threshold sell.
+
+        Two lots in the same ticker:
+          - Lot A: 10 shares, basis $80, HWM $120 — drawdown from $120 to
+            current $100 is 16.7% (> 10% threshold) AND still in profit
+            ($100 > $80). Triggers.
+          - Lot B: 5 shares, basis $95, HWM $102 — drawdown from $102 to
+            $100 is 2.0% (< 10% threshold). Does not trigger.
+
+        Expected: one intent for 10 shares (lot A), value $1000. Lot B is
+        untouched — a flat HWM across the position would have sold both.
+        """
+        current = 100.0
+        prices = np.array([80.0, 120.0, 102.0, current])
+        lots = [
+            _lot(shares=10.0, basis=80.0, high_water_mark=120.0),
+            _lot(shares=5.0, basis=95.0, high_water_mark=102.0),
+        ]
+        strategy = TrailingStop(trail_pct=0.10)
+        intents = strategy.evaluate_exit("X", lots, prices)
+        assert len(intents) == 1
+        assert intents[0].target_value == 10.0 * current
+
+    def test_multi_lot_losing_lot_skipped(self) -> None:
+        """A lot that's underwater must not fire trailing-stop even if its
+        HWM drawdown crosses the threshold — TrailingStop is gain-protection,
+        StopLoss handles losses."""
+        current = 70.0
+        prices = np.array([80.0, 100.0, current])
+        # Lot is underwater (basis 80 > current 70) but drawdown from HWM
+        # 100 → 70 is 30%, well past 10% threshold.
+        lots = [_lot(shares=10.0, basis=80.0, high_water_mark=100.0)]
+        strategy = TrailingStop(trail_pct=0.10)
+        assert strategy.evaluate_exit("X", lots, prices) == []
+
 
 class TestStopLoss:
     def test_fires_on_loss(self, dropping_prices: np.ndarray) -> None:
