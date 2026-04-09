@@ -187,6 +187,15 @@ class TestDollarCostAveraging:
         intents = strategy.generate_intents("FLAT", flat_prices[:11])
         assert intents == []
 
+    def test_multi_ticker_all_trigger(self, flat_prices: np.ndarray) -> None:
+        # One strategy instance shared across tickers (as the backtest engine does).
+        # All tickers must trigger on the same day, not just the first in iteration order.
+        strategy = DollarCostAveraging(frequency_days=10)
+        prices = flat_prices[:10]
+        for ticker in ("AAPL", "VOO", "MSFT"):
+            intents = strategy.generate_intents(ticker, prices)
+            assert len(intents) == 1, f"{ticker} did not trigger"
+
     def test_name_and_description(self) -> None:
         s = DollarCostAveraging(frequency_days=7)
         assert s.name == "DollarCostAveraging"
@@ -322,11 +331,11 @@ class TestWarmupPeriod:
     def test_ma_crossover_uses_long_window(self) -> None:
         assert MovingAverageCrossover(short_window=10, long_window=60).warmup_period == 60
 
-    def test_rsi_applies_recursive_multiplier(self) -> None:
-        # Recursive indicators need 4x their nominal period to converge
-        # (TA-Lib unstable-period convention).
-        assert RSIOversold(window=14).warmup_period == 56
-        assert RSIOverbought(window=14).warmup_period == 56
+    def test_rsi_warmup_is_window_plus_one(self) -> None:
+        # RSI uses SMA (not Wilder EMA), so only window+1 bars are needed —
+        # window bars produce window deltas, which is exactly one SMA period.
+        assert RSIOversold(window=14).warmup_period == 15
+        assert RSIOverbought(window=14).warmup_period == 15
 
     def test_macd_uses_slow_period_times_multiplier_plus_signal(self) -> None:
         assert MACDCrossover(slow_period=26, signal_period=9).warmup_period == 26 * 4 + 9

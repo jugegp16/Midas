@@ -215,7 +215,11 @@ def _run_trial(
     """
     # Suppress allocator warnings during optimization — the optimizer explores
     # boundary values that trigger heuristic warnings but are fine to evaluate.
-    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
+    # Restore the level afterward so callers in the main process (e.g. the
+    # best-trial re-run) aren't permanently silenced.
+    allocator_logger = logging.getLogger("midas.allocator")
+    saved_level = allocator_logger.level
+    allocator_logger.setLevel(logging.ERROR)
 
     # Extract global allocation knobs
     global_params = strategy_params.get(ALLOCATION_KEY, {})
@@ -261,6 +265,8 @@ def _run_trial(
         enable_split=enable_split,
     )
     result = engine.run(portfolio, price_data, start, end)
+
+    allocator_logger.setLevel(saved_level)
 
     if result.starting_value <= 0:
         return 0.0, 0.0, 0.0, 0.0, 0.0, result

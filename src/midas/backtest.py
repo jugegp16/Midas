@@ -225,7 +225,9 @@ def compute_strategy_stats(
     basis_per_sell: list[float],
 ) -> list[StrategyStats]:
     """Compute per-strategy trade breakdown."""
-    sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
+    # Key by the TradeRecord object itself (not id()) so the lookup is safe
+    # even if objects are ever reconstructed or the list is reordered.
+    sell_basis: dict[TradeRecord, float] = {t: b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
 
     by_strategy: dict[str, list[TradeRecord]] = defaultdict(list)
     for t in trades:
@@ -238,7 +240,7 @@ def compute_strategy_stats(
         winning_sells = 0
         total_pnl = 0.0
         for t in sells:
-            basis = sell_basis.get(id(t), t.price)
+            basis = sell_basis.get(t, t.price)
             pnl = (t.price - basis) * t.shares
             total_pnl += pnl
             if pnl >= 0:
