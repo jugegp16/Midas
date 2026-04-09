@@ -322,11 +322,11 @@ class TestWarmupPeriod:
     def test_ma_crossover_uses_long_window(self) -> None:
         assert MovingAverageCrossover(short_window=10, long_window=60).warmup_period == 60
 
-    def test_rsi_applies_recursive_multiplier(self) -> None:
-        # Recursive indicators need 4x their nominal period to converge
-        # (TA-Lib unstable-period convention).
-        assert RSIOversold(window=14).warmup_period == 56
-        assert RSIOverbought(window=14).warmup_period == 56
+    def test_rsi_warmup_is_window_plus_one(self) -> None:
+        # RSI uses SMA (not Wilder EMA), so only window+1 bars are needed —
+        # window bars produce window deltas, which is exactly one SMA period.
+        assert RSIOversold(window=14).warmup_period == 15
+        assert RSIOverbought(window=14).warmup_period == 15
 
     def test_macd_uses_slow_period_times_multiplier_plus_signal(self) -> None:
         assert MACDCrossover(slow_period=26, signal_period=9).warmup_period == 26 * 4 + 9

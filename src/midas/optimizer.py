@@ -215,59 +215,65 @@ def _run_trial(
     """
     # Suppress allocator warnings during optimization — the optimizer explores
     # boundary values that trigger heuristic warnings but are fine to evaluate.
-    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
+    # Restore the level afterward so callers in the main process (e.g. the
+    # best-trial re-run) aren't permanently silenced.
+    _allocator_logger = logging.getLogger("midas.allocator")
+    _saved_level = _allocator_logger.level
+    _allocator_logger.setLevel(logging.ERROR)
+    try:
+        # Extract global allocation knobs
+        global_params = strategy_params.get(ALLOCATION_KEY, {})
+        conviction: list[tuple[Strategy, float]] = []
+        protective: list[tuple[Strategy, float]] = []
+        mechanical: list[Strategy] = []
 
-    # Extract global allocation knobs
-    global_params = strategy_params.get(ALLOCATION_KEY, {})
-    conviction: list[tuple[Strategy, float]] = []
-    protective: list[tuple[Strategy, float]] = []
-    mechanical: list[Strategy] = []
+        for name, params in strategy_params.items():
+            if name == ALLOCATION_KEY:
+                continue
+            cls = STRATEGY_REGISTRY[name]
+            # Separate meta-params from constructor params
+            weight = params.get("_weight", 1.0)
+            veto_threshold = params.get("_veto_threshold", -0.5)
+            clean_params = {k: int(v) if k in INT_PARAMS else v for k, v in params.items() if k not in META_PARAMS}
+            strategy = cls(**clean_params)
 
-    for name, params in strategy_params.items():
-        if name == ALLOCATION_KEY:
-            continue
-        cls = STRATEGY_REGISTRY[name]
-        # Separate meta-params from constructor params
-        weight = params.get("_weight", 1.0)
-        veto_threshold = params.get("_veto_threshold", -0.5)
-        clean_params = {k: int(v) if k in INT_PARAMS else v for k, v in params.items() if k not in META_PARAMS}
-        strategy = cls(**clean_params)
+            if strategy.tier == StrategyTier.PROTECTIVE:
+                protective.append((strategy, veto_threshold))
+            elif strategy.tier == StrategyTier.MECHANICAL:
+                mechanical.append(strategy)
+            else:
+                conviction.append((strategy, weight))
 
-        if strategy.tier == StrategyTier.PROTECTIVE:
-            protective.append((strategy, veto_threshold))
-        elif strategy.tier == StrategyTier.MECHANICAL:
-            mechanical.append(strategy)
-        else:
-            conviction.append((strategy, weight))
+        # Count tickers in portfolio
+        n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+        constraints = AllocationConstraints(
+            max_position_pct=global_params.get("max_position_pct"),
+            min_cash_pct=min_cash_pct,
+            softmax_temperature=global_params.get("softmax_temperature", 0.5),
+            rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
+        )
 
-    # Count tickers in portfolio
-    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
-    constraints = AllocationConstraints(
-        max_position_pct=global_params.get("max_position_pct"),
-        min_cash_pct=min_cash_pct,
-        softmax_temperature=global_params.get("softmax_temperature", 0.5),
-        rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
-    )
+        allocator = Allocator(conviction, protective, constraints, n_tickers)
+        rebalancer = Rebalancer()
 
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+        engine = BacktestEngine(
+            allocator=allocator,
+            rebalancer=rebalancer,
+            mechanical_strategies=mechanical,
+            constraints=constraints,
+            train_pct=train_pct,
+            enable_split=enable_split,
+        )
+        result = engine.run(portfolio, price_data, start, end)
 
-    engine = BacktestEngine(
-        allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical,
-        constraints=constraints,
-        train_pct=train_pct,
-        enable_split=enable_split,
-    )
-    result = engine.run(portfolio, price_data, start, end)
+        if result.starting_value <= 0:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, result
 
-    if result.starting_value <= 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, result
-
-    total_return = (result.final_value - result.starting_value) / result.starting_value
-    bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
-    return total_return, bh_return, result.train_return, result.test_return, result.twr, result
+        total_return = (result.final_value - result.starting_value) / result.starting_value
+        bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
+        return total_return, bh_return, result.train_return, result.test_return, result.twr, result
+    finally:
+        _allocator_logger.setLevel(_saved_level)
 
 
 _worker_state: dict[str, Any] = {}

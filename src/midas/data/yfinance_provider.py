@@ -21,8 +21,12 @@ class CachedYFinanceProvider(DataProvider):
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_history(self, ticker: str, start: date, end: date) -> pd.Series:
+        # Never serve cached data when the requested end date is today — the
+        # live engine polls repeatedly with end=today and would otherwise
+        # receive stale prices for the entire session.
+        is_live = end >= date.today()
         cache_key = self._cache_path(ticker, start, end)
-        if cache_key.exists():
+        if not is_live and cache_key.exists():
             with open(cache_key, "rb") as f:
                 return pickle.load(f)  # type: ignore[no-any-return]
 
@@ -42,8 +46,9 @@ class CachedYFinanceProvider(DataProvider):
         series.index = pd.to_datetime(series.index).date
         series.name = ticker
 
-        with open(cache_key, "wb") as f:
-            pickle.dump(series, f)
+        if not is_live:
+            with open(cache_key, "wb") as f:
+                pickle.dump(series, f)
 
         return series
 

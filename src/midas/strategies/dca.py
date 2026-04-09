@@ -17,6 +17,7 @@ class DollarCostAveraging(Strategy):
     def __init__(self, frequency_days: int = 14, amount: float = 500.0) -> None:
         self._frequency_days = frequency_days
         self._amount = amount
+        self._last_trigger_len: int = 0
 
     @property
     def tier(self) -> StrategyTier:
@@ -36,10 +37,17 @@ class DollarCostAveraging(Strategy):
         price_history: np.ndarray,
         **kwargs: object,
     ) -> list[MechanicalIntent]:
-        if len(price_history) < self._frequency_days:
+        n = len(price_history)
+        if n < self._frequency_days:
             return []
 
-        if len(price_history) % self._frequency_days == 0:
+        if self._last_trigger_len == 0:
+            # Align the first trigger to the end of the first full window so
+            # behaviour is deterministic regardless of warmup buffer size.
+            self._last_trigger_len = n - (n % self._frequency_days or self._frequency_days)
+
+        if n - self._last_trigger_len >= self._frequency_days:
+            self._last_trigger_len = n
             current = float(price_history[-1])
             return [
                 MechanicalIntent(

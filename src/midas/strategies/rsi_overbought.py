@@ -15,8 +15,9 @@ class RSIOverbought(Strategy):
 
     @property
     def warmup_period(self) -> int:
-        # RSI is recursive — see RSIOversold for rationale.
-        return self._window * RECURSIVE_WARMUP_MULTIPLIER
+        # Both score() and precompute() use SMA (not Wilder EMA), so the true
+        # minimum is window + 1 bars (window deltas). No stability multiplier needed.
+        return self._window + 1
 
     def precompute(self, prices: np.ndarray) -> np.ndarray | None:
         n = len(prices)

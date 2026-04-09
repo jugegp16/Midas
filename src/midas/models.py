@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
@@ -48,7 +49,6 @@ class Holding:
 FREQUENCY_DAYS: dict[str, int] = {
     "weekly": 7,
     "biweekly": 14,
-    "monthly": 30,
 }
 
 
@@ -61,6 +61,15 @@ class CashInfusion:
     def advance(self) -> None:
         """Advance next_date by frequency. No-op if frequency is None."""
         if self.frequency is None:
+            return
+        if self.frequency == "monthly":
+            # Advance by exactly one calendar month, preserving day-of-month
+            # (clamped to the last valid day, e.g. Jan 31 → Feb 28/29).
+            # A fixed 30-day offset would drift ~5 days per year.
+            month = self.next_date.month % 12 + 1
+            year = self.next_date.year + (1 if self.next_date.month == 12 else 0)
+            day = min(self.next_date.day, calendar.monthrange(year, month)[1])
+            self.next_date = self.next_date.replace(year=year, month=month, day=day)
             return
         days = FREQUENCY_DAYS.get(self.frequency)
         if days is None:

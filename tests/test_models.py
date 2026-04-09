@@ -118,7 +118,15 @@ class TestCashInfusion:
     def test_advance_monthly(self) -> None:
         infusion = CashInfusion(amount=2000.0, next_date=date(2025, 1, 3), frequency="monthly")
         infusion.advance()
-        assert infusion.next_date == date(2025, 2, 2)
+        # Should advance by exactly one calendar month (Jan 3 → Feb 3),
+        # not a fixed 30 days (which would give Feb 2 and drift ~5 days/year).
+        assert infusion.next_date == date(2025, 2, 3)
+
+    def test_advance_monthly_end_of_month_clamped(self) -> None:
+        # Jan 31 + 1 month → Feb 28 (no Feb 31)
+        infusion = CashInfusion(amount=500.0, next_date=date(2025, 1, 31), frequency="monthly")
+        infusion.advance()
+        assert infusion.next_date == date(2025, 2, 28)
 
     def test_advance_no_frequency_is_noop(self) -> None:
         infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3))
