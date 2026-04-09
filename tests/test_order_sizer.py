@@ -30,7 +30,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 5000.0  # total = 10000, A weight = 0.50, delta = 0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
         assert orders == []
 
     def test_no_sells_on_negative_delta(self):
@@ -41,7 +41,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 5000.0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
         assert orders == []
 
     def test_buy_generated_when_underweight(self):
@@ -52,7 +52,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 7000.0  # total = 10000, A weight = 0.30
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
         assert len(orders) == 1
         assert orders[0].direction == Direction.BUY
         assert orders[0].ticker == "A"
@@ -67,7 +67,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 500.0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=500.0)
         assert len(orders) == 1
         assert orders[0].shares <= 5
 
@@ -79,7 +79,7 @@ class TestSizeBuys:
         prices = {"A": 10.0}
         cash = 10000.0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
         total_deployed = sum(o.estimated_value for o in orders if o.direction == Direction.BUY)
         assert total_deployed <= 1000.0 + 1.0
 
@@ -91,7 +91,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 10000.0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
         assert len(orders) >= 1
         assert orders[0].price > 100.0
 
@@ -149,7 +149,7 @@ class TestSizeBuys:
         prices = {"A": 100.0}
         cash = 5000.0
         constraints = AllocationConstraints(min_buy_delta=0.02)
-        orders = sizer.size_buys(allocation, positions, prices, cash, constraints)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=6000.0)
         assert len(orders) == 1
         assert orders[0].context.source == "Momentum"
 

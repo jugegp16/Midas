@@ -50,7 +50,7 @@ class OrderSizer:
         prices: dict[str, float],
         cash: float,
         constraints: AllocationConstraints,
-        total_value: float | None = None,
+        total_value: float,
     ) -> list[Order]:
         """Size buy orders from positive target-vs-current deltas.
 
@@ -58,16 +58,13 @@ class OrderSizer:
         soft cap only blocks further buys. Any required sells come from
         ``size_exits``.
 
-        ``total_value`` is the portfolio basis the allocator used to compute
-        ``allocation.targets``. The caller should pass the same value here so
-        that the per-ticker current weights computed inside ``size_buys`` line
-        up with the allocator's view; otherwise held tickers can fire phantom
-        buys when sells in the same tick free cash and shift the denominator.
-        When omitted, ``total_value`` falls back to ``cash + held positions``,
-        which matches the allocator only if no sells happened first.
+        ``total_value`` must be the same portfolio basis the allocator used to
+        compute ``allocation.targets``. The caller is responsible for passing a
+        consistent value so that the per-ticker current weights computed inside
+        ``size_buys`` line up with the allocator's view; otherwise held tickers
+        can fire phantom buys when sells in the same tick free cash and shift
+        the denominator.
         """
-        if total_value is None:
-            total_value = cash + sum(positions.get(t, 0.0) * prices.get(t, 0.0) for t in allocation.targets)
         if total_value <= 0:
             return []
 
@@ -77,7 +74,7 @@ class OrderSizer:
         for ticker in allocation.targets:
             pos = positions.get(ticker, 0.0)
             px = prices.get(ticker, 0.0)
-            current_weights[ticker] = (pos * px) / total_value if total_value > 0 else 0.0
+            current_weights[ticker] = (pos * px) / total_value
 
         # Circuit breaker: cap daily deployment.
         max_deploy = total_value * self._circuit_breaker_pct

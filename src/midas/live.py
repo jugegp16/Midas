@@ -187,7 +187,7 @@ class LiveEngine:
             current_prices,
             post_sell_cash,
             self._constraints,
-            total_value=total_value if total_value > 0 else None,
+            total_value=total_value,
         )
 
         all_orders = exit_orders + buy_orders
