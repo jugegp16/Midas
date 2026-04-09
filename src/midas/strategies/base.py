@@ -7,7 +7,7 @@ Two distinct strategy roles, enforced by the type system:
   the only thing that drives buys.
 
 - ``ExitRule`` evaluates the lots of an open position and emits direct
-  ``ExitIntent`` objects (analogous to "sell $X of TICKER, because Y").
+  ``ExitIntent`` objects (one per triggered lot, analogous to "sell lot N because Y").
   Exits never participate in score blending and never go through the
   target-weight path; the OrderSizer converts intents to sized sell orders.
 
@@ -137,9 +137,10 @@ class ExitRule(Strategy):
     """Strategy that emits direct exit intents based on lot state.
 
     Receives the FIFO lot list for one open position plus the current price
-    history and returns zero or more ``ExitIntent`` objects describing how
-    much (in dollars) to sell and why. Exit intents bypass the target-weight
-    blend entirely — the OrderSizer converts them straight into sell Orders.
+    history and returns zero or more ``ExitIntent`` objects (one per
+    triggered lot) describing which lot to sell and why. Exit intents bypass
+    the target-weight blend entirely — the OrderSizer dedupes per-lot
+    intents across all rules and converts them into sell Orders.
     """
 
     tier_label: ClassVar[str] = "Exit Rule"
@@ -161,35 +162,29 @@ class ExitRule(Strategy):
         lots: list[PositionLot],
         current: float,
         predicate: Callable[[PositionLot], bool],
-        reason: Callable[[float, float], str],
+        reason: Callable[[PositionLot], str],
     ) -> list[ExitIntent]:
-        """Build an ExitIntent over every lot matching ``predicate``.
+        """Build one ExitIntent per lot matching ``predicate``.
 
         Lots with non-positive shares or non-positive cost basis are skipped.
-        ``reason(avg_basis, triggered_shares)`` produces the human-readable
-        log string. Returns an empty list when no lot triggers.
+        ``reason(lot)`` produces the human-readable log string for a single
+        triggered lot. Returns an empty list when no lot triggers.
         """
-        triggered_shares = 0.0
-        triggered_cost = 0.0
-        for lot in lots:
+        intents: list[ExitIntent] = []
+        for i, lot in enumerate(lots):
             if lot.cost_basis <= 0 or lot.shares <= 0:
                 continue
             if predicate(lot):
-                triggered_shares += lot.shares
-                triggered_cost += lot.cost_basis * lot.shares
-
-        if triggered_shares <= 0:
-            return []
-
-        avg_basis = triggered_cost / triggered_shares
-        return [
-            ExitIntent(
-                ticker=ticker,
-                target_value=triggered_shares * current,
-                source=self.name,
-                reason=reason(avg_basis, triggered_shares),
-            )
-        ]
+                intents.append(
+                    ExitIntent(
+                        ticker=ticker,
+                        lot_index=i,
+                        lot_shares=lot.shares,
+                        source=self.name,
+                        reason=reason(lot),
+                    )
+                )
+        return intents
 
     def sell_all(
         self,
@@ -198,15 +193,15 @@ class ExitRule(Strategy):
         current: float,
         reason: str,
     ) -> list[ExitIntent]:
-        """Build a single ExitIntent that liquidates the entire open position."""
-        total_shares = sum(lot.shares for lot in lots if lot.shares > 0)
-        if total_shares <= 0:
-            return []
+        """Build one ExitIntent per lot to liquidate the entire open position."""
         return [
             ExitIntent(
                 ticker=ticker,
-                target_value=total_shares * current,
+                lot_index=i,
+                lot_shares=lot.shares,
                 source=self.name,
                 reason=reason,
             )
+            for i, lot in enumerate(lots)
+            if lot.shares > 0
         ]

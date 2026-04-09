@@ -27,11 +27,11 @@ class StopLoss(ExitRule):
         def triggered(lot: PositionLot) -> bool:
             return (lot.cost_basis - current) / lot.cost_basis >= self._loss_threshold
 
-        def reason(avg_basis: float, shares: float) -> str:
-            loss_pct = (avg_basis - current) / avg_basis
+        def reason(lot: PositionLot) -> str:
+            loss_pct = (lot.cost_basis - current) / lot.cost_basis
             return (
-                f"{shares:g} shares at {loss_pct:.1%} loss "
-                f"vs cost basis ${avg_basis:.2f} (threshold {self._loss_threshold:.0%})"
+                f"{lot.shares:g} shares at {loss_pct:.1%} loss "
+                f"vs cost basis ${lot.cost_basis:.2f} (threshold {self._loss_threshold:.0%})"
             )
 
         return self.fire_on_lots(ticker, lots, current, triggered, reason)

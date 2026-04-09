@@ -62,7 +62,7 @@ class TestProfitTaking:
         # rising_prices ramps from 100 to ~150 — well above 15% gain.
         intents = strategy.evaluate_exit("X", [_lot(basis=100.0)], rising_prices)
         assert len(intents) == 1
-        assert intents[0].target_value > 0
+        assert intents[0].lot_shares > 0
 
     def test_no_fire_below_threshold(self, flat_prices: np.ndarray) -> None:
         strategy = ProfitTaking(gain_threshold=0.20)
@@ -228,7 +228,7 @@ class TestTrailingStop:
           - Lot B: 5 shares, basis $95, HWM $102 — drawdown from $102 to
             $100 is 2.0% (< 10% threshold). Does not trigger.
 
-        Expected: one intent for 10 shares (lot A), value $1000. Lot B is
+        Expected: one intent for lot A (10 shares at index 0). Lot B is
         untouched — a flat HWM across the position would have sold both.
         """
         current = 100.0
@@ -240,7 +240,8 @@ class TestTrailingStop:
         strategy = TrailingStop(trail_pct=0.10)
         intents = strategy.evaluate_exit("X", lots, prices)
         assert len(intents) == 1
-        assert intents[0].target_value == 10.0 * current
+        assert intents[0].lot_shares == 10.0
+        assert intents[0].lot_index == 0
 
     def test_multi_lot_losing_lot_skipped(self) -> None:
         """A lot that's underwater must not fire trailing-stop even if its

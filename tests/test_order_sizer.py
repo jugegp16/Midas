@@ -156,11 +156,12 @@ class TestSizeBuys:
 
 class TestSizeExits:
     def test_exit_intent_becomes_sell_order(self):
-        """ExitIntent's target_value is converted to a whole-share sell."""
+        """Per-lot ExitIntent is converted to a whole-share sell."""
         sizer = OrderSizer(default_slippage=0.0)
         intent = ExitIntent(
             ticker="VOO",
-            target_value=500.0,
+            lot_index=0,
+            lot_shares=5.0,
             source="StopLoss",
             reason="loss exceeded",
         )
@@ -176,7 +177,8 @@ class TestSizeExits:
         sizer = OrderSizer(default_slippage=0.0)
         intent = ExitIntent(
             ticker="VOO",
-            target_value=10000.0,  # asks for 100 shares
+            lot_index=0,
+            lot_shares=100.0,  # asks for 100 shares
             source="StopLoss",
             reason="full liquidation",
         )
@@ -184,31 +186,60 @@ class TestSizeExits:
         assert len(orders) == 1
         assert orders[0].shares == 7
 
-    def test_competing_intents_collapse_to_largest(self):
-        """Two rules firing on the same ticker collapse to one sell.
+    def test_same_lot_dedupes_to_one_sell(self):
+        """Two rules targeting the same lot collapse to one sell.
 
-        Regression: ProfitTaking and TrailingStop firing on the same ticker
-        in the same tick used to produce two independent sell orders, each
-        sized against the full position — selling 2x what was held and
-        breaking realized-P&L reconciliation. The intent with the largest
-        ``target_value`` should win and be credited with the trade.
+        Regression: ProfitTaking and TrailingStop both triggering lot 0
+        used to produce two sell orders each sized against the full
+        position. Per-lot dedupe ensures exactly one sell per lot — the
+        first claimer wins.
         """
         sizer = OrderSizer(default_slippage=0.0)
         intents = [
-            ExitIntent(ticker="VOO", target_value=300.0, source="ProfitTaking", reason="up 20%"),
-            ExitIntent(ticker="VOO", target_value=1000.0, source="TrailingStop", reason="trail hit"),
+            ExitIntent(ticker="VOO", lot_index=0, lot_shares=10.0, source="ProfitTaking", reason="up 20%"),
+            ExitIntent(ticker="VOO", lot_index=0, lot_shares=10.0, source="TrailingStop", reason="trail hit"),
         ]
         orders = sizer.size_exits(intents, positions={"VOO": 10.0}, prices={"VOO": 100.0})
         assert len(orders) == 1
         assert orders[0].shares == 10  # full position, not 20
-        assert orders[0].context.source == "TrailingStop"
+        assert orders[0].context.source == "ProfitTaking"  # first claimer wins
 
-    def test_competing_intents_distinct_tickers_both_fire(self):
-        """Collapse is per-ticker — different tickers still produce both sells."""
+    def test_disjoint_lots_sell_union(self):
+        """Two rules targeting disjoint lots sell the union of both."""
         sizer = OrderSizer(default_slippage=0.0)
         intents = [
-            ExitIntent(ticker="A", target_value=500.0, source="StopLoss", reason="a"),
-            ExitIntent(ticker="B", target_value=500.0, source="StopLoss", reason="b"),
+            ExitIntent(ticker="VOO", lot_index=0, lot_shares=5.0, source="ProfitTaking", reason="up 20%"),
+            ExitIntent(ticker="VOO", lot_index=1, lot_shares=3.0, source="TrailingStop", reason="trail hit"),
+        ]
+        orders = sizer.size_exits(intents, positions={"VOO": 10.0}, prices={"VOO": 100.0})
+        assert len(orders) == 1
+        assert orders[0].shares == 8  # 5 + 3 = union
+        # PT contributed 5 shares, TS contributed 3 → PT wins attribution
+        assert orders[0].context.source == "ProfitTaking"
+
+    def test_partial_overlap_sells_union(self):
+        """Partial overlap: shared lot dedupes, disjoint lots contribute."""
+        sizer = OrderSizer(default_slippage=0.0)
+        intents = [
+            # PT claims lots 0 and 1
+            ExitIntent(ticker="VOO", lot_index=0, lot_shares=5.0, source="ProfitTaking", reason="a"),
+            ExitIntent(ticker="VOO", lot_index=1, lot_shares=5.0, source="ProfitTaking", reason="b"),
+            # TS claims lots 1 and 2 (lot 1 overlaps with PT)
+            ExitIntent(ticker="VOO", lot_index=1, lot_shares=5.0, source="TrailingStop", reason="c"),
+            ExitIntent(ticker="VOO", lot_index=2, lot_shares=3.0, source="TrailingStop", reason="d"),
+        ]
+        orders = sizer.size_exits(intents, positions={"VOO": 20.0}, prices={"VOO": 100.0})
+        assert len(orders) == 1
+        assert orders[0].shares == 13  # lots 0(5) + 1(5) + 2(3) = 13
+        # PT: lots 0+1 = 10 shares; TS: lot 2 = 3 shares → PT wins
+        assert orders[0].context.source == "ProfitTaking"
+
+    def test_distinct_tickers_both_fire(self):
+        """Dedupe is per-ticker — different tickers still produce both sells."""
+        sizer = OrderSizer(default_slippage=0.0)
+        intents = [
+            ExitIntent(ticker="A", lot_index=0, lot_shares=5.0, source="StopLoss", reason="a"),
+            ExitIntent(ticker="B", lot_index=0, lot_shares=5.0, source="StopLoss", reason="b"),
         ]
         orders = sizer.size_exits(
             intents,

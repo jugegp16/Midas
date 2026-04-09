@@ -84,11 +84,13 @@ def test_allocation_constraints_defaults() -> None:
 def test_exit_intent() -> None:
     intent = ExitIntent(
         ticker="VOO",
-        target_value=500.0,
+        lot_index=0,
+        lot_shares=5.0,
         source="StopLoss",
         reason="loss exceeded threshold",
     )
-    assert intent.target_value == 500.0
+    assert intent.lot_shares == 5.0
+    assert intent.lot_index == 0
     assert intent.source == "StopLoss"
 
 

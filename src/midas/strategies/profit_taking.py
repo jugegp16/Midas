@@ -27,11 +27,11 @@ class ProfitTaking(ExitRule):
         def triggered(lot: PositionLot) -> bool:
             return (current - lot.cost_basis) / lot.cost_basis >= self._gain_threshold
 
-        def reason(avg_basis: float, shares: float) -> str:
-            gain_pct = (current - avg_basis) / avg_basis
+        def reason(lot: PositionLot) -> str:
+            gain_pct = (current - lot.cost_basis) / lot.cost_basis
             return (
-                f"{shares:g} shares at {gain_pct:.1%} gain "
-                f"vs cost basis ${avg_basis:.2f} (threshold {self._gain_threshold:.0%})"
+                f"{lot.shares:g} shares at {gain_pct:.1%} gain "
+                f"vs cost basis ${lot.cost_basis:.2f} (threshold {self._gain_threshold:.0%})"
             )
 
         return self.fire_on_lots(ticker, lots, current, triggered, reason)

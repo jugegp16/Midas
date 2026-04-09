@@ -39,23 +39,12 @@ class TrailingStop(ExitRule):
             drawdown = (high_water - current) / high_water
             return drawdown >= self._trail_pct and current > lot.cost_basis
 
-        def reason(avg_basis: float, shares: float) -> str:
-            # Average the per-lot high-water marks across the triggered lots
-            # for the log message. Each lot drew down past its own threshold;
-            # this is just the human-readable summary.
-            triggered_lots = [lot for lot in lots if lot.cost_basis > 0 and lot.shares > 0 and triggered(lot)]
-            total_shares = sum(lot.shares for lot in triggered_lots)
-            avg_high = (
-                sum(
-                    (lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis) * lot.shares
-                    for lot in triggered_lots
-                )
-                / total_shares
-            )
-            drawdown_pct = (avg_high - current) / avg_high if avg_high else 0.0
+        def reason(lot: PositionLot) -> str:
+            high_water = lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis
+            drawdown_pct = (high_water - current) / high_water if high_water else 0.0
             return (
-                f"{shares:g} shares: drawdown {drawdown_pct:.1%} from high "
-                f"${avg_high:.2f} (threshold {self._trail_pct:.0%}, avg basis ${avg_basis:.2f})"
+                f"{lot.shares:g} shares: drawdown {drawdown_pct:.1%} from high "
+                f"${high_water:.2f} (threshold {self._trail_pct:.0%}, basis ${lot.cost_basis:.2f})"
             )
 
         return self.fire_on_lots(ticker, lots, current, triggered, reason)

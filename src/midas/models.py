@@ -100,13 +100,16 @@ class Order:
 class ExitIntent:
     """Direct sell intent emitted by an ExitRule.
 
-    Exits are always sells, so there is no ``direction`` field. ``target_value``
-    is positive dollars to liquidate. The Order sizer converts dollars to a
-    share count using the current price and validates against held shares.
+    Each intent targets a single lot by positional index in the position's
+    lot list at evaluation time. ``lot_shares`` is denormalized from the
+    lot for convenience — ``OrderSizer.size_exits`` dedupes by
+    ``(ticker, lot_index)`` and sums ``lot_shares`` over the unique union
+    to compute the order's share count.
     """
 
     ticker: str
-    target_value: float  # positive dollars to liquidate
+    lot_index: int  # positional index in state.lots[ticker]
+    lot_shares: float  # shares in this lot (denormalized for sizing)
     source: str  # strategy class name, used for stats aggregation
     reason: str  # human explanation of this firing
 

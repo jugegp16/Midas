@@ -7,9 +7,9 @@ Two stateless methods, no shared logic between them:
   drift above target is allowed (winners run; the soft position cap blocks
   further buys but never trims).
 
-- ``size_exits`` takes ``ExitIntent`` objects from ExitRule strategies and
-  produces sell Orders, validating that the portfolio actually holds enough
-  shares.
+- ``size_exits`` takes per-lot ``ExitIntent`` objects from ExitRule
+  strategies, deduplicates by ``(ticker, lot_index)`` to form the union of
+  triggered lots, and produces one sell Order per ticker.
 
 Sells and buys come from different sources and have honest, separate
 attribution paths. There is no diff-based "rebalance trim" anymore.
@@ -132,45 +132,59 @@ class OrderSizer:
         positions: dict[str, float],
         prices: dict[str, float],
     ) -> list[Order]:
-        """Convert exit intents into sized sell orders.
+        """Convert per-lot exit intents into sized sell orders.
 
-        ``intent.target_value`` is the requested dollar amount to liquidate.
-        We size to the largest whole-share count that doesn't exceed both the
-        intent and the actual position.
+        Multiple exit rules may target the same lot on the same tick (e.g.
+        ProfitTaking and TrailingStop both fire on lot 0). Intents are
+        deduplicated by ``(ticker, lot_index)`` — the first intent to claim
+        a lot wins — and the unique union is summed to get the total shares
+        to sell. This is the exit-side analog of the allocator's softmax:
+        one decision per ticker per tick, but computed as the union of
+        independently triggered lots rather than a dollar-amount maximum.
 
-        When multiple exit rules emit intents on the same ticker in the same
-        tick (e.g. ProfitTaking *and* TrailingStop both fire), they collapse
-        to a single sell: the intent with the largest ``target_value`` wins
-        and is credited with the trade. This mirrors the entry side, where
-        the allocator's softmax collapses competing buy signals into one
-        target weight per ticker — and prevents two rules from each
-        liquidating the full position, which would over-sell the ticker and
-        break the realized-P&L reconciliation.
+        Attribution goes to the source whose claimed lots contribute the
+        most shares. The reason string comes from that source's first
+        claimed intent.
         """
-        winning: dict[str, ExitIntent] = {}
+        # Group by ticker.
+        by_ticker: dict[str, list[ExitIntent]] = {}
         for intent in intents:
-            current = winning.get(intent.ticker)
-            if current is None or intent.target_value > current.target_value:
-                winning[intent.ticker] = intent
+            by_ticker.setdefault(intent.ticker, []).append(intent)
 
         orders: list[Order] = []
-        for intent in winning.values():
-            px = prices.get(intent.ticker, 0.0)
+        for ticker, ticker_intents in by_ticker.items():
+            px = prices.get(ticker, 0.0)
             if px <= 0:
                 continue
-            if intent.target_value <= 0:
+
+            # Dedupe by lot_index: first claimer wins.
+            claimed: dict[int, ExitIntent] = {}
+            for intent in ticker_intents:
+                if intent.lot_shares <= 0:
+                    continue
+                if intent.lot_index not in claimed:
+                    claimed[intent.lot_index] = intent
+
+            if not claimed:
                 continue
 
+            # Total shares from union of triggered lots, capped at held.
+            total_shares = sum(i.lot_shares for i in claimed.values())
             slip_price = px * (1 - self._default_slippage)
-            target_shares = math.floor(intent.target_value / slip_price)
-            held_shares = math.floor(positions.get(intent.ticker, 0.0))
-            shares = min(target_shares, held_shares)
+            shares = min(math.floor(total_shares), math.floor(positions.get(ticker, 0.0)))
             if shares <= 0:
                 continue
 
+            # Attribution: source that contributed the most shares.
+            by_source: dict[str, float] = {}
+            for intent in claimed.values():
+                by_source[intent.source] = by_source.get(intent.source, 0.0) + intent.lot_shares
+            winning_source = max(by_source, key=lambda s: by_source[s])
+            winning_reason = next(i.reason for i in claimed.values() if i.source == winning_source)
+
             orders.append(
                 Order(
-                    ticker=intent.ticker,
+                    ticker=ticker,
                     direction=Direction.SELL,
                     shares=shares,
                     price=round(slip_price, 4),
@@ -180,8 +194,8 @@ class OrderSizer:
                         blended_score=0.0,
                         target_weight=0.0,
                         current_weight=0.0,
-                        reason=intent.reason,
-                        source=intent.source,
+                        reason=winning_reason,
+                        source=winning_source,
                     ),
                 )
             )
