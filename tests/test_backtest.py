@@ -35,6 +35,7 @@ from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
+from midas.strategies.trailing_stop import TrailingStop
 
 
 def _build_engine(
@@ -747,3 +748,85 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
     # was blocked. If blocked proceeds leaked in, cash would be ~$500.
     assert "cash" in captured, "size_buys was not called"
     assert captured["cash"] == 0.0, f"blocked sell proceeds leaked into size_buys cash: {captured['cash']}"
+
+
+# --- competing exit rules: realized + unrealized reconciliation ---
+
+
+def test_competing_exit_rules_collapse_to_one_sell() -> None:
+    """Regression: ProfitTaking + TrailingStop firing the same tick over-sold.
+
+    When a held lot is in deep profit *and* its HWM has already drifted
+    below the trail threshold, both rules independently want to liquidate
+    the entire position. Pre-fix, ``size_exits`` produced two sell orders
+    each sized against the full position — the second sell drained shares
+    that no longer existed, fabricated cash, and broke the realized-P&L
+    reconciliation against ``final - start``.
+
+    Drive ``_run_day`` directly with a hand-crafted state so we can pin
+    exactly the lot/HWM/price configuration that triggers the double-fire,
+    then assert: (a) only one sell fires, (b) it's credited to the more
+    aggressive rule, and (c) ``final - start == realized + unrealized``.
+    """
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator([], constraints, n_tickers=1)
+    sizer = OrderSizer(default_slippage=0.0)
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=sizer,
+        exit_rules=[ProfitTaking(gain_threshold=0.10), TrailingStop(trail_pct=0.05)],
+        constraints=constraints,
+    )
+
+    # Lot @ $80 basis with HWM=$130 (the peak the position has seen).
+    # Today's price is $115:
+    #   PT: gain = (115-80)/80 = 43.75% > 10% → wants full liquidation
+    #   TS: drawdown = (130-115)/130 = 11.5% > 5% → wants full liquidation
+    # Both rules fire on the entire 10-share position the same tick.
+    state = _SimState(cash=0.0)
+    state.cash = 0.0
+    state.positions = {"A": 10.0}
+    state.lots = {
+        "A": [
+            PositionLot(
+                shares=10.0,
+                purchase_date=date(2024, 1, 1),
+                cost_basis=80.0,
+                high_water_mark=130.0,
+            )
+        ]
+    }
+    state.starting_value = 800.0  # 10 shares at $80 basis
+    state.twr_base_value = 800.0
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="A", shares=10, cost_basis=80.0)],
+        available_cash=0.0,
+    )
+
+    # Price array with current=$115; backstop history gives the rules
+    # something to read but the only price they act on is the last bar.
+    prices = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    engine._run_day(state, portfolio, {"A": prices}, date(2024, 2, 1))
+
+    sells = [t for t in state.trades if t.direction == Direction.SELL]
+    assert len(sells) == 1, f"expected 1 sell after collapse, got {len(sells)}: {sells}"
+    assert sells[0].shares == 10  # the full position, not 20
+    # TrailingStop's intent (full liquidation at current price) ties with
+    # ProfitTaking's. Either is acceptable; what matters is one wins, not
+    # both. We assert it's one of the two configured sources.
+    assert sells[0].strategy_name in {"ProfitTaking", "TrailingStop"}
+
+    # Reconciliation: with one sell, FIFO consumed basis = real basis,
+    # state.cash exactly reflects sell proceeds, and the position is empty.
+    final_price = float(prices[-1])
+    final_value = state.cash + sum(sum(lot.shares for lot in lots) * final_price for lots in state.lots.values())
+    realized = sum(
+        (t.price - state.basis_per_sell[i]) * t.shares
+        for i, t in enumerate(t for t in state.trades if t.direction == Direction.SELL)
+    )
+    unrealized = sum(sum(lot.shares * (final_price - lot.cost_basis) for lot in lots) for lots in state.lots.values())
+    delta = final_value - state.starting_value
+    assert math.isclose(delta, realized + unrealized, abs_tol=1.0), (
+        f"reconciliation broken: final-start=${delta:,.2f} but realized+unrealized=${realized + unrealized:,.2f}"
+    )

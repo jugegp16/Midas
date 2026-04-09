@@ -137,9 +137,24 @@ class OrderSizer:
         ``intent.target_value`` is the requested dollar amount to liquidate.
         We size to the largest whole-share count that doesn't exceed both the
         intent and the actual position.
+
+        When multiple exit rules emit intents on the same ticker in the same
+        tick (e.g. ProfitTaking *and* TrailingStop both fire), they collapse
+        to a single sell: the intent with the largest ``target_value`` wins
+        and is credited with the trade. This mirrors the entry side, where
+        the allocator's softmax collapses competing buy signals into one
+        target weight per ticker — and prevents two rules from each
+        liquidating the full position, which would over-sell the ticker and
+        break the realized-P&L reconciliation.
         """
-        orders: list[Order] = []
+        winning: dict[str, ExitIntent] = {}
         for intent in intents:
+            current = winning.get(intent.ticker)
+            if current is None or intent.target_value > current.target_value:
+                winning[intent.ticker] = intent
+
+        orders: list[Order] = []
+        for intent in winning.values():
             px = prices.get(intent.ticker, 0.0)
             if px <= 0:
                 continue

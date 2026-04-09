@@ -183,3 +183,36 @@ class TestSizeExits:
         orders = sizer.size_exits([intent], positions={"VOO": 7.0}, prices={"VOO": 100.0})
         assert len(orders) == 1
         assert orders[0].shares == 7
+
+    def test_competing_intents_collapse_to_largest(self):
+        """Two rules firing on the same ticker collapse to one sell.
+
+        Regression: ProfitTaking and TrailingStop firing on the same ticker
+        in the same tick used to produce two independent sell orders, each
+        sized against the full position — selling 2x what was held and
+        breaking realized-P&L reconciliation. The intent with the largest
+        ``target_value`` should win and be credited with the trade.
+        """
+        sizer = OrderSizer(default_slippage=0.0)
+        intents = [
+            ExitIntent(ticker="VOO", target_value=300.0, source="ProfitTaking", reason="up 20%"),
+            ExitIntent(ticker="VOO", target_value=1000.0, source="TrailingStop", reason="trail hit"),
+        ]
+        orders = sizer.size_exits(intents, positions={"VOO": 10.0}, prices={"VOO": 100.0})
+        assert len(orders) == 1
+        assert orders[0].shares == 10  # full position, not 20
+        assert orders[0].context.source == "TrailingStop"
+
+    def test_competing_intents_distinct_tickers_both_fire(self):
+        """Collapse is per-ticker — different tickers still produce both sells."""
+        sizer = OrderSizer(default_slippage=0.0)
+        intents = [
+            ExitIntent(ticker="A", target_value=500.0, source="StopLoss", reason="a"),
+            ExitIntent(ticker="B", target_value=500.0, source="StopLoss", reason="b"),
+        ]
+        orders = sizer.size_exits(
+            intents,
+            positions={"A": 10.0, "B": 10.0},
+            prices={"A": 100.0, "B": 100.0},
+        )
+        assert sorted(o.ticker for o in orders) == ["A", "B"]
