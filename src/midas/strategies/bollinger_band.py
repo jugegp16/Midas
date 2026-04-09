@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 
-class BollingerBand(Strategy):
+class BollingerBand(EntrySignal):
     def __init__(self, window: int = 20, num_std: float = 2.0) -> None:
         self._window = window
         self._num_std = num_std
@@ -36,7 +36,7 @@ class BollingerBand(Strategy):
         std = np.sqrt(np.maximum(variance, 0.0))
         current = prices[w - 1 :]
         z = np.where(std != 0, (current - ma) / std, 0.0)
-        scores[w - 1 :] = np.clip(-z / self._num_std, -1.0, 1.0)
+        scores[w - 1 :] = np.clip(-z / self._num_std, 0.0, 1.0)
         return scores
 
     def score(
@@ -55,12 +55,12 @@ class BollingerBand(Strategy):
             return 0.0
 
         current = float(price_history[-1])
-        # Z-score: how many std devs from the mean.
-        # Negative z = below MA = bullish (buy the dip).
-        # Positive z = above MA = bearish (stretched up).
+        # Z-score: how many std devs from the mean. Buy-only entry signal:
+        # negative z (below MA) ramps from 0 at the MA to 1 at the lower band.
+        # The bearish "above upper band" half is dropped — exits are handled
+        # by ExitRule strategies.
         z = (current - ma) / std
-        # Scale so that ±num_std maps to ∓1.
-        return self.clamp(-z / self._num_std, -1.0, 1.0)
+        return self.clamp(-z / self._num_std, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -68,4 +68,4 @@ class BollingerBand(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Bullish below / bearish above the {self._window}-day MA, scaled by {self._num_std} std dev bands"
+        return f"Bullish at the lower {self._num_std}-sigma Bollinger band of the {self._window}-day MA"

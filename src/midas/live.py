@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
@@ -13,14 +14,17 @@ from midas.data.provider import DataProvider
 from midas.models import (
     AllocationConstraints,
     Direction,
-    MechanicalIntent,
+    ExitIntent,
     Order,
     PortfolioConfig,
+    PositionLot,
 )
+from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
-from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy, max_warmup, warmup_bars_to_calendar_days
+from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
+
+logger = logging.getLogger(__name__)
 
 
 class LiveEngine:
@@ -28,9 +32,9 @@ class LiveEngine:
         self,
         portfolio: PortfolioConfig,
         allocator: Allocator,
-        rebalancer: Rebalancer,
+        order_sizer: OrderSizer,
         provider: DataProvider,
-        mechanical_strategies: list[Strategy] | None = None,
+        exit_rules: list[ExitRule] | None = None,
         constraints: AllocationConstraints | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
@@ -38,8 +42,8 @@ class LiveEngine:
     ) -> None:
         self._portfolio = portfolio
         self._allocator = allocator
-        self._rebalancer = rebalancer
-        self._mechanical = mechanical_strategies or []
+        self._order_sizer = order_sizer
+        self._exit_rules = exit_rules or []
         self._constraints = constraints or AllocationConstraints()
         self._provider = provider
         self._poll_interval = poll_interval
@@ -50,7 +54,7 @@ class LiveEngine:
         if history_days is not None:
             self._history_days = history_days
         else:
-            warmup_bars = max_warmup([*allocator.strategies, *self._mechanical])
+            warmup_bars = max_warmup([*allocator.strategies, *self._exit_rules])
             self._history_days = warmup_bars_to_calendar_days(warmup_bars)
         # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
         self._last_order_keys: set[tuple[str, Direction, float]] = set()
@@ -98,17 +102,10 @@ class LiveEngine:
             print_status(f"Skipping tick: missing price data for held positions {missing_held}. Will retry next poll.")
             return
 
-        # Build context (cost_basis from portfolio config)
-        context: dict[str, dict[str, object]] = {}
         current_prices: dict[str, float] = {}
         for ticker in tickers:
             if ticker in price_data and len(price_data[ticker]) > 0:
                 current_prices[ticker] = float(price_data[ticker].iloc[-1])
-                holding = self._portfolio.get_holding(ticker)
-                ctx: dict[str, object] = {}
-                if holding and holding.cost_basis:
-                    ctx["cost_basis"] = holding.cost_basis
-                context[ticker] = ctx
 
         active_tickers = [t for t in tickers if t in price_data]
 
@@ -129,45 +126,70 @@ class LiveEngine:
         if total_value > 0:
             current_weights = {t: (positions[t] * current_prices[t]) / total_value for t in active_tickers}
 
-        # Phase 1-3: Allocate
+        # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
             active_tickers,
             price_arrays,
-            context,
             current_weights=current_weights,
         )
 
-        rebalance_orders = self._rebalancer.generate_orders(
+        # Phase 2: Exit rules. Live mode has no per-lot history (the portfolio
+        # config records only an aggregate cost_basis), so each held position
+        # is presented as a single synthetic lot. This is good enough for
+        # stop-loss / trailing-stop / profit-taking which all read from
+        # current price vs cost basis. A future iteration should track lots
+        # across ticks for true FIFO accounting (see follow-up issue).
+        exit_intents: list[ExitIntent] = []
+        for rule in self._exit_rules:
+            for ticker in active_tickers:
+                if positions.get(ticker, 0.0) <= 0:
+                    continue
+                holding = self._portfolio.get_holding(ticker)
+                if holding is None:
+                    continue
+                if holding.cost_basis is None:
+                    # No basis on file — fall back to today's price so the lot
+                    # is "fresh". This silently disables stop-loss / profit-
+                    # taking on the position (gain == 0%, loss == 0%) until a
+                    # real basis is recorded; warn loudly so the operator
+                    # knows their stops aren't actually armed.
+                    logger.warning(
+                        "%s: no cost_basis in portfolio config — using current "
+                        "price as fallback. Stop-loss and profit-taking exits "
+                        "are effectively disabled for this ticker until a real "
+                        "basis is recorded.",
+                        ticker,
+                    )
+                    cost_basis = current_prices[ticker]
+                else:
+                    cost_basis = holding.cost_basis
+                # Synthesize a single lot with HWM = max(basis, current price)
+                # so trailing-stop has a sensible reference until proper
+                # per-lot tracking is added.
+                hwm = max(cost_basis, current_prices[ticker])
+                lots = [
+                    PositionLot(
+                        shares=holding.shares,
+                        purchase_date=None,
+                        cost_basis=cost_basis,
+                        high_water_mark=hwm,
+                    )
+                ]
+                exit_intents.extend(rule.evaluate_exit(ticker, lots, price_arrays[ticker]))
+
+        exit_orders = self._order_sizer.size_exits(exit_intents, positions, current_prices)
+        sell_proceeds = sum(o.estimated_value for o in exit_orders)
+        post_sell_cash = self._portfolio.available_cash + sell_proceeds
+
+        buy_orders = self._order_sizer.size_buys(
             allocation,
             positions,
             current_prices,
-            self._portfolio.available_cash,
+            post_sell_cash,
             self._constraints,
         )
 
-        # Phase 5: Mechanical
-        mechanical_intents: list[MechanicalIntent] = []
-        for strat in self._mechanical:
-            for ticker in active_tickers:
-                if ticker in price_arrays:
-                    ticker_ctx = context.get(ticker, {})
-                    intents = strat.generate_intents(
-                        ticker,
-                        price_arrays[ticker],
-                        **ticker_ctx,
-                    )
-                    mechanical_intents.extend(intents)
-
-        sell_proceeds = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.SELL)
-        buy_cost = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.BUY)
-        post_cash = self._portfolio.available_cash + sell_proceeds - buy_cost
-        mechanical_orders = self._rebalancer.size_mechanical(
-            mechanical_intents,
-            post_cash,
-            current_prices,
-        )
-
-        all_orders = rebalance_orders + mechanical_orders
+        all_orders = exit_orders + buy_orders
 
         # Filter restricted orders
         filtered: list[Order] = []

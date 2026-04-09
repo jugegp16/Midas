@@ -1,9 +1,9 @@
 softmax_temperature: 0.5
-rebalance_threshold: 0.02
+min_buy_delta: 0.02
 min_cash_pct: 0.05
 
 strategies:
-  # -- CONVICTION --
+  # -- Entry signals --
   - name: BollingerBand
     weight: 1.0
     params:
@@ -16,8 +16,7 @@ strategies:
       window: 14
       oversold_threshold: 30.0
 
-  # -- PROTECTIVE --
+  # -- Exit rules --
   - name: StopLoss
-    veto_threshold: -0.5
     params:
       loss_threshold: 0.10

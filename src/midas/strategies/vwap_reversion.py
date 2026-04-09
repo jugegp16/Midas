@@ -10,10 +10,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 
-class VWAPReversion(Strategy):
+class VWAPReversion(EntrySignal):
     def __init__(self, window: int = 20, threshold: float = 0.02) -> None:
         self._window = window
         self._threshold = threshold
@@ -34,7 +34,7 @@ class VWAPReversion(Strategy):
         avg = (cs[w:] - cs[:-w]) / w
         current = prices[w - 1 :]
         deviation = np.where(avg != 0, (current - avg) / avg, 0.0)
-        scores[w - 1 :] = np.clip(-deviation / self._threshold, -1.0, 1.0)
+        scores[w - 1 :] = np.clip(-deviation / self._threshold, 0.0, 1.0)
         return scores
 
     def score(
@@ -53,9 +53,10 @@ class VWAPReversion(Strategy):
 
         deviation = (current - avg_price) / avg_price
 
-        # Continuous: negative deviation (below avg) = bullish, positive = bearish.
-        # Scaled so that ±threshold maps to ∓1.
-        return self.clamp(-deviation / self._threshold, -1.0, 1.0)
+        # Buy-only entry signal: negative deviation (below avg) ramps from 0
+        # to 1. The bearish "above avg" half is dropped — exits are handled
+        # by ExitRule strategies.
+        return self.clamp(-deviation / self._threshold, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -63,4 +64,4 @@ class VWAPReversion(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Buy below / sell above {self._window}-day average price (VWAP proxy) by {self._threshold:.0%}"
+        return f"Bullish below the {self._window}-day average price (VWAP proxy) by {self._threshold:.0%}"

@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, Strategy
+from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal
 
 
-class RSIOversold(Strategy):
+class RSIOversold(EntrySignal):
     def __init__(self, window: int = 14, oversold_threshold: float = 30.0) -> None:
         self._window = window
         self._oversold_threshold = oversold_threshold
@@ -70,8 +70,8 @@ class RSIOversold(Strategy):
         rsi = 100.0 - (100.0 / (1.0 + rs))
 
         # RSIOversold is buy-only: bullish when RSI < 50, neutral when above.
-        # The bearish above-50 signal is RSIOverbought's responsibility —
-        # keeping them one-sided avoids double-counting when both are active.
+        # The entry-signal contract requires scores in [0, 1]; bearish RSI
+        # readings should be expressed via an ExitRule, not a negative score.
         midpoint = 50.0
         if rsi >= midpoint:
             return 0.0

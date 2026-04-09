@@ -20,32 +20,30 @@ from midas.backtest import (
     write_backtest_csv,
 )
 from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig, TradeRecord
-from midas.rebalancer import Rebalancer
+from midas.order_sizer import OrderSizer
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
 
 
 def _build_engine(
-    conviction_strategies=None,
-    protective_strategies=None,
-    mechanical_strategies=None,
+    entries=None,
+    exit_rules=None,
     constraints=None,
     n_tickers=1,
     **kwargs,
 ):
-    """Helper to build a BacktestEngine with the new allocator system."""
-    conviction = conviction_strategies or []
-    protective = protective_strategies or []
+    """Helper to build a BacktestEngine with the new allocator + order_sizer system."""
+    entries = entries or []
     constraints = constraints or AllocationConstraints(
-        rebalance_threshold=0.01,
+        min_buy_delta=0.01,
         max_position_pct=0.95,
     )
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+    allocator = Allocator(entries, constraints, n_tickers)
+    order_sizer = OrderSizer()
     return BacktestEngine(
         allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical_strategies,
+        order_sizer=order_sizer,
+        exit_rules=exit_rules,
         constraints=constraints,
         **kwargs,
     )
@@ -75,7 +73,7 @@ def test_backtest_produces_trades() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -94,7 +92,7 @@ def test_backtest_with_split() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         train_pct=0.7,
     )
 
@@ -110,7 +108,7 @@ def test_backtest_csv_output(tmp_path: Path) -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=True,
     )
 
@@ -139,7 +137,7 @@ def test_backtest_cost_basis_uses_start_price() -> None:
 
     pt = ProfitTaking(gain_threshold=0.20)
     engine = _build_engine(
-        conviction_strategies=[(pt, 1.0)],
+        exit_rules=[pt],
         enable_split=False,
     )
 
@@ -168,7 +166,7 @@ def test_backtest_deferred_ticker() -> None:
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         n_tickers=2,
         enable_split=False,
         log_fn=log_messages.append,
@@ -212,7 +210,7 @@ def test_backtest_consumes_warmup_prefix() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
     result = engine.run(portfolio, {"AAPL": prices}, sim_start, sim_end)
@@ -238,7 +236,7 @@ def test_backtest_logs_insufficient_warmup() -> None:
     mr = MeanReversion(window=50, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
         log_fn=log_messages.append,
     )
@@ -263,7 +261,7 @@ def test_backtest_excluded_ticker() -> None:
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
         log_fn=log_messages.append,
     )
@@ -297,7 +295,7 @@ def test_backtest_cash_infusion_credits_cash() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -329,7 +327,7 @@ def test_backtest_recurring_cash_infusion() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -597,7 +595,7 @@ def test_strategy_stats_empty() -> None:
 def test_backtest_populates_new_metrics() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=10, threshold=-0.05)
-    engine = _build_engine(conviction_strategies=[(mr, 1.0)], enable_split=False)
+    engine = _build_engine(entries=[(mr, 1.0)], enable_split=False)
     idx = list(price_data["AAPL"].index)
     start, end = idx[0], idx[-1]
     result = engine.run(portfolio, price_data, start, end)

@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 
-class MeanReversion(Strategy):
+class MeanReversion(EntrySignal):
     def __init__(self, window: int = 30, threshold: float = 0.10) -> None:
         self._window = window
         self._threshold = threshold
@@ -29,7 +29,7 @@ class MeanReversion(Strategy):
         ma = (cs[w:] - cs[:-w]) / w
         current = prices[w - 1 :]
         pct_below = np.where(ma != 0, (ma - current) / ma, 0.0)
-        scores[w - 1 :] = np.clip(pct_below / self._threshold, -1.0, 1.0)
+        scores[w - 1 :] = np.clip(pct_below / self._threshold, 0.0, 1.0)
         return scores
 
     def score(
@@ -48,9 +48,11 @@ class MeanReversion(Strategy):
 
         # How far below the MA (positive = below = bullish for mean reversion).
         pct_below = (ma - current) / ma
-        # Continuous: ramps from 0 at the MA to 1 at threshold and beyond.
-        # Slightly negative when above MA (price stretched up = less attractive).
-        return self.clamp(pct_below / self._threshold, -1.0, 1.0)
+        # Buy-only entry signal: ramps from 0 at the MA to 1 at threshold and
+        # beyond. The bearish "above MA" half is dropped — exits are handled
+        # by ExitRule strategies (StopLoss, TrailingStop, ProfitTaking), not
+        # by sign-flipping entry scores.
+        return self.clamp(pct_below / self._threshold, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -58,4 +60,4 @@ class MeanReversion(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Bullish below / bearish above the {self._window}-day MA (scaled by {self._threshold:.0%} threshold)"
+        return f"Bullish below the {self._window}-day MA (scaled by {self._threshold:.0%} threshold)"

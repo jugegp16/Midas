@@ -9,9 +9,10 @@ from conftest import make_price_series
 from midas.allocator import Allocator
 from midas.backtest import BacktestEngine, write_backtest_csv
 from midas.config import load_portfolio, load_strategies
-from midas.models import Direction, StrategyTier
-from midas.rebalancer import Rebalancer
+from midas.models import Direction
+from midas.order_sizer import OrderSizer
 from midas.strategies import STRATEGY_REGISTRY
+from midas.strategies.base import EntrySignal, ExitRule
 
 
 def test_full_pipeline(tmp_path: Path) -> None:
@@ -35,7 +36,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # 2. Write strategy config
     strategy_data = {
         "min_cash_pct": 0.05,
-        "rebalance_threshold": 0.01,
+        "min_buy_delta": 0.01,
         "softmax_temperature": 0.5,
         "strategies": [
             {"name": "MeanReversion", "params": {"window": 20, "threshold": 0.05}},
@@ -54,23 +55,20 @@ def test_full_pipeline(tmp_path: Path) -> None:
     strat_configs, constraints = load_strategies(strategy_path)
     assert len(strat_configs) == 3
 
-    # 4. Build allocator + rebalancer
-    conviction = []
-    protective = []
-    mechanical = []
+    # 4. Build allocator + order_sizer + exit rules
+    entries: list[tuple[EntrySignal, float]] = []
+    exits: list[ExitRule] = []
     for cfg in strat_configs:
         cls = STRATEGY_REGISTRY[cfg.name]
         strategy = cls(**cfg.params)
-        if strategy.tier == StrategyTier.PROTECTIVE:
-            protective.append((strategy, cfg.veto_threshold))
-        elif strategy.tier == StrategyTier.MECHANICAL:
-            mechanical.append(strategy)
-        else:
-            conviction.append((strategy, cfg.weight))
+        if isinstance(strategy, ExitRule):
+            exits.append(strategy)
+        elif isinstance(strategy, EntrySignal):
+            entries.append((strategy, cfg.weight))
 
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+    allocator = Allocator(entries, constraints, n_tickers)
+    order_sizer = OrderSizer()
 
     # 5. Generate synthetic price data
     voo_returns = [0.0] * 20 + [-0.006] * 20 + [0.008] * 30 + [0.0] * 30
@@ -84,8 +82,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # 6. Run backtest
     engine = BacktestEngine(
         allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical,
+        order_sizer=order_sizer,
+        exit_rules=exits,
         constraints=constraints,
         train_pct=0.7,
         enable_split=True,
@@ -117,19 +115,21 @@ def test_full_pipeline(tmp_path: Path) -> None:
 def test_strategy_registry_complete() -> None:
     """All strategies should be registered and instantiable."""
     expected = {
+        # entry signals
+        "BollingerBand",
+        "GapDownRecovery",
+        "MACDCrossover",
         "MeanReversion",
         "Momentum",
-        "ProfitTaking",
-        "RSIOversold",
-        "RSIOverbought",
-        "BollingerBand",
-        "MACDCrossover",
-        "DollarCostAveraging",
-        "GapDownRecovery",
-        "TrailingStop",
-        "StopLoss",
-        "VWAPReversion",
         "MovingAverageCrossover",
+        "RSIOversold",
+        "VWAPReversion",
+        # exit rules
+        "MACDExit",
+        "MovingAverageCrossoverExit",
+        "ProfitTaking",
+        "StopLoss",
+        "TrailingStop",
     }
     assert set(STRATEGY_REGISTRY.keys()) == expected
 
@@ -138,8 +138,4 @@ def test_strategy_registry_complete() -> None:
         assert instance.name
         assert instance.description
         assert len(instance.suitability) > 0
-        assert instance.tier in (
-            StrategyTier.CONVICTION,
-            StrategyTier.PROTECTIVE,
-            StrategyTier.MECHANICAL,
-        )
+        assert isinstance(instance, (EntrySignal, ExitRule))

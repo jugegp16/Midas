@@ -16,11 +16,10 @@ from midas.models import (
     AllocationConstraints,
     PortfolioConfig,
     StrategyConfig,
-    StrategyTier,
 )
+from midas.order_sizer import OrderSizer
 from midas.output import print_backtest_summary, print_status, print_strategy_table
-from midas.rebalancer import Rebalancer
-from midas.strategies import STRATEGY_REGISTRY, Strategy
+from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
 
 
@@ -36,28 +35,28 @@ def _build_components(
     strategy_configs: list[StrategyConfig] | None,
     constraints: AllocationConstraints,
     n_tickers: int,
-) -> tuple[Allocator, Rebalancer, list[Strategy]]:
-    """Build allocator, rebalancer, and mechanical strategies from config."""
+) -> tuple[Allocator, OrderSizer, list[ExitRule]]:
+    """Build allocator, order sizer, and exit rules from config."""
     configs = strategy_configs or [StrategyConfig(name=name) for name in STRATEGY_REGISTRY]
 
-    conviction: list[tuple[Strategy, float]] = []
-    protective: list[tuple[Strategy, float]] = []
-    mechanical: list[Strategy] = []
+    entries: list[tuple[EntrySignal, float]] = []
+    exits: list[ExitRule] = []
 
     for cfg in configs:
         strategy = _build_strategy(cfg)
 
-        if strategy.tier == StrategyTier.PROTECTIVE:
-            protective.append((strategy, cfg.veto_threshold))
-        elif strategy.tier == StrategyTier.MECHANICAL:
-            mechanical.append(strategy)
+        if isinstance(strategy, ExitRule):
+            exits.append(strategy)
+        elif isinstance(strategy, EntrySignal):
+            entries.append((strategy, cfg.weight))
         else:
-            conviction.append((strategy, cfg.weight))
+            msg = f"Strategy {cfg.name!r} is neither EntrySignal nor ExitRule"
+            raise click.ClickException(msg)
 
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+    allocator = Allocator(entries, constraints, n_tickers)
+    order_sizer = OrderSizer()
 
-    return allocator, rebalancer, mechanical
+    return allocator, order_sizer, exits
 
 
 def _to_date(dt: date | datetime) -> date:
@@ -142,19 +141,19 @@ def backtest(
     start_d, end_d = _to_date(start), _to_date(end)
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
-    allocator, rebalancer, mechanical = _build_components(
+    allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
         n_tickers,
     )
 
-    warmup_bars = max_warmup([*allocator.strategies, *mechanical])
+    warmup_bars = max_warmup([*allocator.strategies, *exit_rules])
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
     engine = BacktestEngine(
         allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical,
+        order_sizer=order_sizer,
+        exit_rules=exit_rules,
         constraints=constraints,
         train_pct=train_pct,
         enable_split=not no_split,
@@ -201,7 +200,7 @@ def live(
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for h in port.holdings if h.shares > 0)
-    allocator, rebalancer, mechanical = _build_components(
+    allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
         n_tickers,
@@ -210,9 +209,9 @@ def live(
     engine = LiveEngine(
         portfolio=port,
         allocator=allocator,
-        rebalancer=rebalancer,
+        order_sizer=order_sizer,
         provider=provider,
-        mechanical_strategies=mechanical,
+        exit_rules=exit_rules,
         constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,

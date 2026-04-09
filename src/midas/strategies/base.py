@@ -1,13 +1,31 @@
-"""Abstract strategy interface."""
+"""Strategy base classes.
+
+Two distinct strategy roles, enforced by the type system:
+
+- ``EntrySignal`` produces a [0, 1] bullish score per ticker. Scores are
+  blended by the Allocator into target weights via softmax. Entries are
+  the only thing that drives buys.
+
+- ``ExitRule`` evaluates the lots of an open position and emits direct
+  ``ExitIntent`` objects (analogous to "sell $X of TICKER, because Y").
+  Exits never participate in score blending and never go through the
+  target-weight path; the OrderSizer converts intents to sized sell orders.
+
+Both inherit from ``Strategy`` for shared bookkeeping (``name``,
+``warmup_period``, ``suitability``, ``description``, ``tier_label``), but
+the two scoring interfaces (``EntrySignal.score`` and
+``ExitRule.evaluate_exit``) are completely disjoint.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import ClassVar
 
 import numpy as np
 
-from midas.models import AssetSuitability, MechanicalIntent, StrategyTier
+from midas.models import AssetSuitability, ExitIntent, PositionLot
 
 # Recursive indicators (EMA, RSI, MACD) converge to their steady-state value
 # only after ~3-10x their nominal period. Following TA-Lib's "Unstable Period"
@@ -44,43 +62,21 @@ def warmup_bars_to_calendar_days(bars: int) -> int:
 
 
 class Strategy(ABC):
-    """Base class for all signal strategies.
+    """Minimal base for all strategies. Subclass ``EntrySignal`` or ``ExitRule``."""
 
-    Strategies are stateless and ticker-agnostic. They receive price history
-    and return a conviction score.
-    """
-
-    @abstractmethod
-    def score(
-        self,
-        price_history: np.ndarray,
-        *,
-        cost_basis: float | None = None,
-        **kwargs: object,
-    ) -> float | None:
-        """Return conviction score.
-
-        Positive = bullish, negative = bearish, 0 = neutral, None = abstain.
-        Typically in [-1, +1].
-        """
-
-    @property
-    def tier(self) -> StrategyTier:
-        """Strategy tier — override in subclass if not CONVICTION."""
-        return StrategyTier.CONVICTION
+    tier_label: ClassVar[str] = "Strategy"
 
     @property
     def warmup_period(self) -> int:
-        """Bars of price history required before this strategy produces valid scores.
+        """Bars of price history required before this strategy produces valid output.
 
         Backtest/optimize/live use ``max(warmup_period)`` across configured
         strategies to prefetch a lookback buffer before the user's start date,
         so strategies can emit valid signals from day one of the simulation
         rather than spending the first N days in warmup.
 
-        Default is 0 (no warmup — e.g. mechanical or position-only strategies).
-        Override in subclasses that depend on a rolling window. For recursive
-        indicators (EMA/RSI/MACD) multiply the nominal period by
+        Default is 0. Override in subclasses that depend on a rolling window.
+        For recursive indicators (EMA/RSI/MACD) multiply the nominal period by
         ``RECURSIVE_WARMUP_MULTIPLIER`` so the indicator has room to converge
         to its steady-state value.
         """
@@ -90,25 +86,6 @@ class Strategy(ABC):
     def clamp(value: float, lo: float, hi: float) -> float:
         """Clamp *value* into [lo, hi]."""
         return max(lo, min(hi, value))
-
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
-        """Precompute scores for every prefix of *prices* in one pass.
-
-        Returns an array *s* of length ``len(prices)`` where ``s[i]`` equals
-        ``self.score(prices[:i+1])`` (or ``NaN`` when ``score`` would return
-        ``None``).  Returns ``None`` when precomputation is not possible
-        (e.g. the strategy needs runtime context like ``cost_basis``).
-        """
-        return None
-
-    def generate_intents(
-        self,
-        ticker: str,
-        price_history: np.ndarray,
-        **kwargs: object,
-    ) -> list[MechanicalIntent]:
-        """Return mechanical order intents. Override for MECHANICAL strategies."""
-        return []
 
     @property
     def name(self) -> str:
@@ -124,3 +101,112 @@ class Strategy(ABC):
     @abstractmethod
     def description(self) -> str:
         """One-line description of the strategy logic."""
+
+
+class EntrySignal(Strategy):
+    """Strategy that produces a [0, 1] bullish entry score.
+
+    Scores are blended by the Allocator via softmax to produce target
+    portfolio weights. A score of 0 means "no opinion" — the strategy
+    contributes nothing to the budget for this ticker. None means
+    "abstain" — the strategy can't score this ticker yet (insufficient
+    history, missing data, etc.).
+    """
+
+    tier_label: ClassVar[str] = "Entry Signal"
+
+    @abstractmethod
+    def score(
+        self,
+        price_history: np.ndarray,
+        **kwargs: object,
+    ) -> float | None:
+        """Return entry score in ``[0, 1]`` (or ``None`` to abstain)."""
+
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        """Precompute scores for every prefix of *prices* in one pass.
+
+        Returns an array *s* of length ``len(prices)`` where ``s[i]`` equals
+        ``self.score(prices[:i+1])`` (or ``NaN`` when ``score`` would return
+        ``None``). Returns ``None`` when precomputation is not possible.
+        """
+        return None
+
+
+class ExitRule(Strategy):
+    """Strategy that emits direct exit intents based on lot state.
+
+    Receives the FIFO lot list for one open position plus the current price
+    history and returns zero or more ``ExitIntent`` objects describing how
+    much (in dollars) to sell and why. Exit intents bypass the target-weight
+    blend entirely — the OrderSizer converts them straight into sell Orders.
+    """
+
+    tier_label: ClassVar[str] = "Exit Rule"
+
+    @abstractmethod
+    def evaluate_exit(
+        self,
+        ticker: str,
+        lots: list[PositionLot],
+        price_history: np.ndarray,
+    ) -> list[ExitIntent]:
+        """Return a list of exit intents for *ticker* given its open *lots*."""
+
+    # ----- shared helpers used by lot-aware and full-position exit rules -----
+
+    def fire_on_lots(
+        self,
+        ticker: str,
+        lots: list[PositionLot],
+        current: float,
+        predicate: Callable[[PositionLot], bool],
+        reason: Callable[[float, float], str],
+    ) -> list[ExitIntent]:
+        """Build an ExitIntent over every lot matching ``predicate``.
+
+        Lots with non-positive shares or non-positive cost basis are skipped.
+        ``reason(avg_basis, triggered_shares)`` produces the human-readable
+        log string. Returns an empty list when no lot triggers.
+        """
+        triggered_shares = 0.0
+        triggered_cost = 0.0
+        for lot in lots:
+            if lot.cost_basis <= 0 or lot.shares <= 0:
+                continue
+            if predicate(lot):
+                triggered_shares += lot.shares
+                triggered_cost += lot.cost_basis * lot.shares
+
+        if triggered_shares <= 0:
+            return []
+
+        avg_basis = triggered_cost / triggered_shares
+        return [
+            ExitIntent(
+                ticker=ticker,
+                target_value=triggered_shares * current,
+                source=self.name,
+                reason=reason(avg_basis, triggered_shares),
+            )
+        ]
+
+    def sell_all(
+        self,
+        ticker: str,
+        lots: list[PositionLot],
+        current: float,
+        reason: str,
+    ) -> list[ExitIntent]:
+        """Build a single ExitIntent that liquidates the entire open position."""
+        total_shares = sum(lot.shares for lot in lots if lot.shares > 0)
+        if total_shares <= 0:
+            return []
+        return [
+            ExitIntent(
+                ticker=ticker,
+                target_value=total_shares * current,
+                source=self.name,
+                reason=reason,
+            )
+        ]

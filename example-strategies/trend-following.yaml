@@ -1,9 +1,9 @@
 softmax_temperature: 0.5
-rebalance_threshold: 0.02
+min_buy_delta: 0.02
 min_cash_pct: 0.05
 
 strategies:
-  # -- CONVICTION --
+  # -- Entry signals --
   - name: MovingAverageCrossover
     weight: 1.0
     params:
@@ -17,13 +17,18 @@ strategies:
       slow_period: 26
       signal_period: 9
 
-  - name: RSIOverbought
-    weight: 1.0
+  # -- Exit rules --
+  - name: MovingAverageCrossoverExit
     params:
-      window: 14
-      overbought_threshold: 70.0
+      short_window: 20
+      long_window: 50
+
+  - name: MACDExit
+    params:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9
 
   - name: ProfitTaking
-    weight: 1.0
     params:
       gain_threshold: 0.20

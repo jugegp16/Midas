@@ -8,14 +8,14 @@ from midas.models import (
     AllocationConstraints,
     CashInfusion,
     Direction,
+    ExitIntent,
     Holding,
     HoldingPeriod,
-    MechanicalIntent,
     Order,
     OrderContext,
     PortfolioConfig,
+    PositionLot,
     StrategyConfig,
-    StrategyTier,
     TradeRecord,
 )
 
@@ -73,35 +73,34 @@ def test_trade_record() -> None:
     assert tr.holding_period == HoldingPeriod.LONG_TERM
 
 
-def test_strategy_tier_values() -> None:
-    assert StrategyTier.CONVICTION.value == "conviction"
-    assert StrategyTier.PROTECTIVE.value == "protective"
-    assert StrategyTier.MECHANICAL.value == "mechanical"
-
-
 def test_allocation_constraints_defaults() -> None:
     c = AllocationConstraints()
     assert c.max_position_pct is None
     assert c.min_cash_pct == 0.05
-    assert c.rebalance_threshold == 0.02
+    assert c.min_buy_delta == 0.02
     assert c.softmax_temperature == 0.5
 
 
-def test_mechanical_intent() -> None:
-    intent = MechanicalIntent(
+def test_exit_intent() -> None:
+    intent = ExitIntent(
         ticker="VOO",
-        direction=Direction.BUY,
         target_value=500.0,
-        reason="DCA",
-        source="DollarCostAveraging",
+        source="StopLoss",
+        reason="loss exceeded threshold",
     )
     assert intent.target_value == 500.0
+    assert intent.source == "StopLoss"
+
+
+def test_position_lot() -> None:
+    lot = PositionLot(shares=10.0, purchase_date=date(2024, 1, 5), cost_basis=150.0)
+    assert lot.shares == 10.0
+    assert lot.cost_basis == 150.0
 
 
 def test_strategy_config_defaults() -> None:
     cfg = StrategyConfig(name="TestStrategy")
     assert cfg.weight == 1.0
-    assert cfg.veto_threshold == -0.5
 
 
 class TestCashInfusion:

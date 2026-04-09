@@ -7,11 +7,10 @@ from datetime import date, timedelta
 from enum import Enum
 
 DEFAULT_MIN_CASH_PCT = 0.05
-DEFAULT_REBALANCE_THRESHOLD = 0.02
+DEFAULT_MIN_BUY_DELTA = 0.02
 DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
-DEFAULT_CONVICTION_WEIGHT = 1
-DEFAULT_PROTECTIVE_VETO_THRESHOLD = -0.5
+DEFAULT_ENTRY_WEIGHT = 1
 
 
 class Direction(Enum):
@@ -30,12 +29,6 @@ class AssetSuitability(Enum):
     INDIVIDUAL_EQUITY = "individual-equity"
     HIGH_VOLATILITY = "high-volatility"
     ALL = "all"
-
-
-class StrategyTier(Enum):
-    CONVICTION = "conviction"
-    PROTECTIVE = "protective"
-    MECHANICAL = "mechanical"
 
 
 @dataclass
@@ -104,12 +97,39 @@ class Order:
 
 
 @dataclass(frozen=True)
-class MechanicalIntent:
+class ExitIntent:
+    """Direct sell intent emitted by an ExitRule.
+
+    Exits are always sells, so there is no ``direction`` field. ``target_value``
+    is positive dollars to liquidate. The Order sizer converts dollars to a
+    share count using the current price and validates against held shares.
+    """
+
     ticker: str
-    direction: Direction
-    target_value: float
-    reason: str
-    source: str
+    target_value: float  # positive dollars to liquidate
+    source: str  # strategy class name, used for stats aggregation
+    reason: str  # human explanation of this firing
+
+
+@dataclass(frozen=True)
+class PositionLot:
+    """A single tax lot for an open position.
+
+    Backtest builds a list of these from FIFO purchase records. Live mode
+    returns one synthetic lot per ticker, with ``purchase_date=None`` and
+    ``cost_basis`` from the portfolio config (no per-lot persistence yet —
+    tracked as a follow-up).
+
+    ``high_water_mark`` is the highest price seen for this lot since
+    purchase, updated by the execution engine each tick. ``None`` until the
+    engine has had a chance to record at least one observation; readers
+    should fall back to ``cost_basis`` in that case.
+    """
+
+    shares: float
+    purchase_date: date | None
+    cost_basis: float
+    high_water_mark: float | None = None
 
 
 @dataclass(frozen=True)
@@ -132,7 +152,7 @@ class TradingRestrictions:
 class AllocationConstraints:
     max_position_pct: float | None = None
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
-    rebalance_threshold: float = DEFAULT_REBALANCE_THRESHOLD
+    min_buy_delta: float = DEFAULT_MIN_BUY_DELTA
     softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
 
 
@@ -141,5 +161,4 @@ class StrategyConfig:
     name: str
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
-    weight: float = DEFAULT_CONVICTION_WEIGHT
-    veto_threshold: float = DEFAULT_PROTECTIVE_VETO_THRESHOLD
+    weight: float = DEFAULT_ENTRY_WEIGHT

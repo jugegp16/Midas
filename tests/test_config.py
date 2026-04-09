@@ -32,7 +32,7 @@ def portfolio_yaml(tmp_path: Path) -> Path:
 def strategy_yaml(tmp_path: Path) -> Path:
     data = {
         "softmax_temperature": 0.25,
-        "rebalance_threshold": 0.03,
+        "min_buy_delta": 0.03,
         "min_cash_pct": 0.10,
         "strategies": [
             {
@@ -42,8 +42,6 @@ def strategy_yaml(tmp_path: Path) -> Path:
             },
             {
                 "name": "StopLoss",
-                "weight": 3.0,
-                "veto_threshold": -0.4,
                 "params": {"loss_threshold": 0.10},
             },
             {"name": "Momentum"},
@@ -87,16 +85,37 @@ def test_load_strategies(strategy_yaml: Path) -> None:
     assert configs[0].weight == 1.5
 
     assert configs[1].name == "StopLoss"
-    assert configs[1].weight == 3.0
-    assert configs[1].veto_threshold == -0.4
+    assert configs[1].params["loss_threshold"] == 0.10
 
     assert configs[2].name == "Momentum"
     assert configs[2].params == {}
     assert configs[2].weight == 1.0  # default
-    assert configs[2].veto_threshold == -0.5  # default
 
     # Allocation knobs
     assert constraints.softmax_temperature == 0.25
-    assert constraints.rebalance_threshold == 0.03
+    assert constraints.min_buy_delta == 0.03
     assert constraints.min_cash_pct == 0.10
     assert constraints.max_position_pct is None  # not specified -> None
+
+
+def test_load_strategies_rejects_legacy_rebalance_threshold(tmp_path: Path) -> None:
+    data = {
+        "rebalance_threshold": 0.02,
+        "strategies": [{"name": "MeanReversion"}],
+    }
+    p = tmp_path / "strategies.yaml"
+    p.write_text(yaml.dump(data))
+    with pytest.raises(ValueError, match="rebalance_threshold"):
+        load_strategies(p)
+
+
+def test_load_strategies_rejects_legacy_veto_threshold(tmp_path: Path) -> None:
+    data = {
+        "strategies": [
+            {"name": "StopLoss", "veto_threshold": -0.4, "params": {"loss_threshold": 0.10}},
+        ],
+    }
+    p = tmp_path / "strategies.yaml"
+    p.write_text(yaml.dump(data))
+    with pytest.raises(ValueError, match="veto_threshold"):
+        load_strategies(p)

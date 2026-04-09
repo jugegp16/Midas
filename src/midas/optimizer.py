@@ -22,11 +22,10 @@ from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
     PortfolioConfig,
-    StrategyTier,
 )
-from midas.rebalancer import Rebalancer
+from midas.order_sizer import OrderSizer
 from midas.strategies import STRATEGY_REGISTRY
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal, ExitRule
 
 # Parameters that should be cast to int when building strategy instances.
 INT_PARAMS = {
@@ -40,23 +39,19 @@ INT_PARAMS = {
 }
 
 # Meta-params prefixed with _ are not passed to the strategy constructor.
-# _weight: blending weight for conviction strategies.
-# _veto_threshold: veto threshold for protective strategies.
-META_PARAMS = {"_weight", "_veto_threshold"}
+# _weight: blending weight for entry signals.
+META_PARAMS = {"_weight"}
 
-# Synthetic key for global allocation knobs (softmax_temperature, rebalance_threshold).
+# Synthetic key for global allocation knobs (softmax_temperature, min_buy_delta).
 ALLOCATION_KEY = "_global"
 
 # Default parameter ranges per strategy.
 # Each entry: (min, max, step) — step used for Optuna discretisation.
 PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
+    # --- Entry signals (use _weight for blending) ---
     "MeanReversion": {
         "window": (10, 100, 5),
         "threshold": (0.03, 0.25, 0.01),
-        "_weight": (0.5, 3.0, 0.25),
-    },
-    "ProfitTaking": {
-        "gain_threshold": (0.10, 0.80, 0.03),
         "_weight": (0.5, 3.0, 0.25),
     },
     "Momentum": {
@@ -67,11 +62,6 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "RSIOversold": {
         "window": (7, 28, 2),
         "oversold_threshold": (15.0, 40.0, 2.0),
-        "_weight": (0.5, 3.0, 0.25),
-    },
-    "RSIOverbought": {
-        "window": (7, 28, 2),
-        "overbought_threshold": (60.0, 85.0, 2.0),
         "_weight": (0.5, 3.0, 0.25),
     },
     "BollingerBand": {
@@ -85,20 +75,9 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
         "signal_period": (5, 13, 2),
         "_weight": (0.5, 3.0, 0.25),
     },
-    "DollarCostAveraging": {
-        "frequency_days": (5, 30, 2),
-    },
     "GapDownRecovery": {
         "gap_threshold": (0.02, 0.08, 0.005),
         "_weight": (0.5, 3.0, 0.25),
-    },
-    "TrailingStop": {
-        "trail_pct": (0.05, 0.25, 0.02),
-        "_veto_threshold": (-0.8, -0.2, 0.1),
-    },
-    "StopLoss": {
-        "loss_threshold": (0.05, 0.25, 0.02),
-        "_veto_threshold": (-0.8, -0.2, 0.1),
     },
     "VWAPReversion": {
         "window": (10, 50, 5),
@@ -111,10 +90,29 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
         "spread_scale": (0.02, 0.10, 0.01),
         "_weight": (0.5, 3.0, 0.25),
     },
+    # --- Exit rules (no _weight — exits don't participate in blending) ---
+    "ProfitTaking": {
+        "gain_threshold": (0.10, 0.80, 0.03),
+    },
+    "TrailingStop": {
+        "trail_pct": (0.05, 0.25, 0.02),
+    },
+    "StopLoss": {
+        "loss_threshold": (0.05, 0.25, 0.02),
+    },
+    "MACDExit": {
+        "fast_period": (8, 16, 2),
+        "slow_period": (20, 40, 2),
+        "signal_period": (5, 13, 2),
+    },
+    "MovingAverageCrossoverExit": {
+        "short_window": (10, 30, 2),
+        "long_window": (40, 100, 5),
+    },
     ALLOCATION_KEY: {
         # softmax_temperature: low = concentrated, high = uniform split.
         "softmax_temperature": (0.2, 1.0, 0.1),
-        "rebalance_threshold": (0.01, 0.05, 0.005),
+        "min_buy_delta": (0.01, 0.05, 0.005),
         # min_cash_pct is a user risk preference, not optimized
         # max_position_pct is computed dynamically in optimize() from n_tickers
     },
@@ -209,7 +207,7 @@ def _run_trial(
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
 ) -> tuple[float, float, float, float, float, BacktestResult]:
-    """Run a single backtest trial with the allocator+rebalancer system.
+    """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
     Returns (total_return, bh_return, train_return, test_return, twr, result).
     """
@@ -219,26 +217,24 @@ def _run_trial(
 
     # Extract global allocation knobs
     global_params = strategy_params.get(ALLOCATION_KEY, {})
-    conviction: list[tuple[Strategy, float]] = []
-    protective: list[tuple[Strategy, float]] = []
-    mechanical: list[Strategy] = []
+    entries: list[tuple[EntrySignal, float]] = []
+    exits: list[ExitRule] = []
 
     for name, params in strategy_params.items():
         if name == ALLOCATION_KEY:
             continue
         cls = STRATEGY_REGISTRY[name]
-        # Separate meta-params from constructor params
         weight = params.get("_weight", 1.0)
-        veto_threshold = params.get("_veto_threshold", -0.5)
         clean_params = {k: int(v) if k in INT_PARAMS else v for k, v in params.items() if k not in META_PARAMS}
         strategy = cls(**clean_params)
 
-        if strategy.tier == StrategyTier.PROTECTIVE:
-            protective.append((strategy, veto_threshold))
-        elif strategy.tier == StrategyTier.MECHANICAL:
-            mechanical.append(strategy)
+        if isinstance(strategy, ExitRule):
+            exits.append(strategy)
+        elif isinstance(strategy, EntrySignal):
+            entries.append((strategy, weight))
         else:
-            conviction.append((strategy, weight))
+            msg = f"Strategy {name!r} is neither EntrySignal nor ExitRule"
+            raise TypeError(msg)
 
     # Count tickers in portfolio
     n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
@@ -246,16 +242,16 @@ def _run_trial(
         max_position_pct=global_params.get("max_position_pct"),
         min_cash_pct=min_cash_pct,
         softmax_temperature=global_params.get("softmax_temperature", 0.5),
-        rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
+        min_buy_delta=global_params.get("min_buy_delta", 0.02),
     )
 
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+    allocator = Allocator(entries, constraints, n_tickers)
+    order_sizer = OrderSizer()
 
     engine = BacktestEngine(
         allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical,
+        order_sizer=order_sizer,
+        exit_rules=exits,
         constraints=constraints,
         train_pct=train_pct,
         enable_split=enable_split,
@@ -270,7 +266,7 @@ def _run_trial(
     return total_return, bh_return, result.train_return, result.test_return, result.twr, result
 
 
-_worker_state: dict[str, Any] = {}
+worker_state: dict[str, Any] = {}
 
 
 def _init_worker(
@@ -282,7 +278,7 @@ def _init_worker(
     train_pct: float,
     enable_split: bool = True,
 ) -> None:
-    _worker_state.update(
+    worker_state.update(
         portfolio=portfolio,
         price_data=price_data,
         start=start,
@@ -294,7 +290,7 @@ def _init_worker(
 
 
 def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
-    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(strategy_params, **_worker_state)
+    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(strategy_params, **worker_state)
     return total_ret, bh_ret, train_ret, test_ret, twr
 
 
@@ -304,7 +300,7 @@ def _wf_init_worker(
     min_cash_pct: float,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
-    _worker_state.update(
+    worker_state.update(
         portfolio=portfolio,
         price_data=price_data,
         min_cash_pct=min_cash_pct,
@@ -318,11 +314,11 @@ def _wf_trial_worker(
 ) -> tuple[float, ...]:
     total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(
         strategy_params,
-        _worker_state["portfolio"],
-        _worker_state["price_data"],
+        worker_state["portfolio"],
+        worker_state["price_data"],
         start,
         end,
-        _worker_state["min_cash_pct"],
+        worker_state["min_cash_pct"],
         enable_split=False,
     )
     return total_ret, bh_ret, train_ret, test_ret, twr
@@ -370,7 +366,7 @@ def _prepare_names_and_ranges(
 ) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
     """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
     names = strategy_names or [k for k in PARAM_RANGES if k != ALLOCATION_KEY]
-    names = [n for n in names if n in PARAM_RANGES and STRATEGY_REGISTRY[n]().tier != StrategyTier.MECHANICAL]
+    names = [n for n in names if n in PARAM_RANGES]
 
     if not names:
         msg = "No optimizable strategies found"
@@ -752,8 +748,6 @@ def write_strategies_yaml(
         for k, v in p.items():
             if k == "_weight":
                 entry["weight"] = round(v, 4)
-            elif k == "_veto_threshold":
-                entry["veto_threshold"] = round(v, 4)
             elif k in INT_PARAMS:
                 clean_params[k] = int(v)
             else:

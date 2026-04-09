@@ -9,7 +9,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,15 +17,16 @@ from midas.allocator import Allocator
 from midas.models import (
     AllocationConstraints,
     Direction,
+    ExitIntent,
     HoldingPeriod,
-    MechanicalIntent,
     Order,
     PortfolioConfig,
+    PositionLot,
     TradeRecord,
 )
-from midas.rebalancer import Rebalancer
+from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy, max_warmup
+from midas.strategies.base import ExitRule, max_warmup
 
 
 @dataclass
@@ -83,15 +83,20 @@ class _SimState:
     """Mutable simulation state carried across trading days."""
 
     positions: dict[str, float] = field(default_factory=dict)
-    cost_basis: dict[str, float] = field(default_factory=dict)
     # Cost basis recorded at the moment each SELL trade was executed, in the
-    # same order as SELL entries in `trades`. A parallel list (rather than a
+    # same order as SELL entries in `trades`. Each entry is the share-weighted
+    # average of the FIFO lots actually consumed by that sell — not the
+    # weighted-average of all lots — so partial sells of mixed-basis positions
+    # attribute P&L to the correct lots. A parallel list (rather than a
     # (date, ticker)-keyed dict) is required so that multiple sells of the
     # same ticker on the same day — e.g. from different strategies — each get
     # their own basis snapshot instead of overwriting one another.
     basis_per_sell: list[float] = field(default_factory=list)
     bh_positions: dict[str, float] = field(default_factory=dict)
-    purchase_dates: dict[str, list[tuple[float, date]]] = field(default_factory=dict)
+    # Per-ticker FIFO list of open lots. The lot list is the source of truth
+    # for exit-rule evaluation (lot-aware stops, per-lot trailing high-water
+    # marks) and for FIFO holding-period accounting on sells.
+    lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     cash: float = 0.0
     starting_value: float = 0.0
     trades: list[TradeRecord] = field(default_factory=list)
@@ -264,16 +269,16 @@ class BacktestEngine:
     def __init__(
         self,
         allocator: Allocator,
-        rebalancer: Rebalancer,
-        mechanical_strategies: list[Strategy] | None = None,
+        order_sizer: OrderSizer,
+        exit_rules: list[ExitRule] | None = None,
         constraints: AllocationConstraints | None = None,
         train_pct: float = DEFAULT_TRAIN_PCT,
         enable_split: bool = True,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
         self._allocator = allocator
-        self._rebalancer = rebalancer
-        self._mechanical = mechanical_strategies or []
+        self._order_sizer = order_sizer
+        self._exit_rules = exit_rules or []
         self._constraints = constraints or AllocationConstraints()
         self._train_pct = train_pct
         self._enable_split = enable_split
@@ -383,8 +388,8 @@ class BacktestEngine:
         return index
 
     def _warmup_bars(self) -> int:
-        """Max warmup required across allocator + mechanical strategies."""
-        return max_warmup([*self._allocator.strategies, *self._mechanical])
+        """Max warmup required across entry signals and exit rules."""
+        return max_warmup([*self._allocator.strategies, *self._exit_rules])
 
     def _first_data_dates(
         self,
@@ -423,16 +428,25 @@ class BacktestEngine:
 
             ticker_start = first_dates[h.ticker]
             if ticker_start <= trading_days[0]:
+                # Backtest seeds the cost basis from the start-day market
+                # price, not the YAML ``cost_basis``. The YAML value is the
+                # user's real purchase basis (used by the live engine and for
+                # display) — using it here would let exit rules fire on
+                # pre-backtest gains, distorting strategy performance.
                 entry_price = float(price_data[h.ticker][price_data[h.ticker].index >= start].iloc[0])
                 state.positions[h.ticker] = h.shares
                 state.bh_positions[h.ticker] = h.shares
-                state.cost_basis[h.ticker] = entry_price
-                state.purchase_dates[h.ticker] = [(h.shares, trading_days[0])]
+                state.lots[h.ticker] = [
+                    PositionLot(
+                        shares=h.shares,
+                        purchase_date=trading_days[0],
+                        cost_basis=entry_price,
+                        high_water_mark=entry_price,
+                    )
+                ]
 
         state.starting_value = state.cash + sum(
-            shares * state.cost_basis[t]
-            for t, shares in state.positions.items()
-            if shares > 0 and t in state.cost_basis
+            lot.shares * lot.cost_basis for lots in state.lots.values() for lot in lots
         )
         state.twr_base_value = state.starting_value
         return state
@@ -553,8 +567,14 @@ class BacktestEngine:
                 state.twr_base_value = pre_activation_value + added_value
 
                 state.positions[ticker] = shares
-                state.cost_basis[ticker] = entry_price
-                state.purchase_dates[ticker] = [(shares, day)]
+                state.lots[ticker] = [
+                    PositionLot(
+                        shares=shares,
+                        purchase_date=day,
+                        cost_basis=entry_price,
+                        high_water_mark=entry_price,
+                    )
+                ]
                 state.starting_value += added_value
                 activated.add(ticker)
                 self._log(f"{ticker}: activated on {day} at ${entry_price:.2f} ({shares} shares)")
@@ -594,16 +614,8 @@ class BacktestEngine:
         for ticker in active_tickers:
             current_prices[ticker] = float(current_data[ticker][-1])
 
-        # Build per-ticker context (cost_basis for strategies that need it)
-        context: dict[str, dict[str, Any]] = {}
-        for ticker in active_tickers:
-            ctx: dict[str, Any] = {}
-            if ticker in state.cost_basis:
-                ctx["cost_basis"] = state.cost_basis[ticker]
-            context[ticker] = ctx
-
         # Compute current portfolio weights so the allocator can hold
-        # (not drift-correct) tickers whose strategies don't score today.
+        # (not drift-correct) tickers whose entry signals don't score today.
         # Pass None (not {}) when the denominator is zero so the allocator
         # falls back to its equal-weight baseline rather than anchoring held
         # tickers at 0.
@@ -614,96 +626,116 @@ class BacktestEngine:
                 t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers
             }
 
-        # Phase 1-3: Allocator scores, blends, and applies vetoes
+        # Update each lot's high-water mark with today's price before exit
+        # rules see them. TrailingStop reads ``lot.high_water_mark`` to size
+        # its drawdown threshold per-lot, so this update has to happen on
+        # every tick regardless of whether a trade fires.
+        for ticker in active_tickers:
+            lots = state.lots.get(ticker)
+            if not lots:
+                continue
+            px = current_prices[ticker]
+            for i, lot in enumerate(lots):
+                prev_high = lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis
+                if px > prev_high:
+                    lots[i] = PositionLot(
+                        shares=lot.shares,
+                        purchase_date=lot.purchase_date,
+                        cost_basis=lot.cost_basis,
+                        high_water_mark=px,
+                    )
+
+        # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
             active_tickers,
             current_data,
-            context,
             current_weights=current_weights,
         )
 
-        # Phase 4: Rebalancer diffs target vs current, generates orders
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
 
-        rebalance_orders = self._rebalancer.generate_orders(
+        # Phase 2: Exit rules emit lot-aware exit intents per held ticker.
+        exit_intents: list[ExitIntent] = []
+        for rule in self._exit_rules:
+            for ticker in active_tickers:
+                if state.positions.get(ticker, 0.0) <= 0:
+                    continue
+                lots = state.lots.get(ticker, [])
+                if not lots:
+                    continue
+                exit_intents.extend(rule.evaluate_exit(ticker, lots, current_data[ticker]))
+
+        # Phase 3: Size sells from intents and filter restriction-blocked sells
+        # *before* computing post-sell cash. Otherwise a blocked sell would
+        # leak phantom proceeds into the buy pass and the cash balance could
+        # go negative when the buy fills but the sell didn't.
+        exit_orders = self._order_sizer.size_exits(exit_intents, positions, current_prices)
+        if state.restriction_tracker:
+            exit_orders = [
+                o for o in exit_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)
+            ]
+        sell_proceeds = sum(o.estimated_value for o in exit_orders)
+        post_sell_cash = state.cash + sell_proceeds
+
+        # Phase 4: Size buys against post-sell cash, then filter restrictions.
+        buy_orders = self._order_sizer.size_buys(
             allocation,
             positions,
             current_prices,
-            state.cash,
+            post_sell_cash,
             self._constraints,
         )
+        if state.restriction_tracker:
+            buy_orders = [o for o in buy_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
 
-        # Phase 5: Mechanical strategies generate intents
-        mechanical_intents: list[MechanicalIntent] = []
-        for strat in self._mechanical:
-            for ticker in active_tickers:
-                if ticker in current_data:
-                    ticker_ctx = context.get(ticker, {})
-                    intents = strat.generate_intents(
-                        ticker,
-                        current_data[ticker],
-                        **ticker_ctx,
-                    )
-                    mechanical_intents.extend(intents)
-
-        # Estimate post-rebalance cash for mechanical sizing
-        sell_proceeds = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.SELL)
-        buy_cost = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.BUY)
-        post_rebalance_cash = state.cash + sell_proceeds - buy_cost
-
-        mechanical_orders = self._rebalancer.size_mechanical(
-            mechanical_intents,
-            post_rebalance_cash,
-            current_prices,
-        )
-
-        all_orders = rebalance_orders + mechanical_orders
-
-        # Phase 6: Check trading restrictions, filter blocked
-        filtered_orders: list[Order] = []
-        for order in all_orders:
-            if state.restriction_tracker and state.restriction_tracker.is_blocked(
-                order.ticker,
-                order.direction,
-                day,
-            ):
-                continue
-            filtered_orders.append(order)
-
-        # Phase 7: Execute all orders
-        for order in filtered_orders:
+        # Phase 5: Execute sells first (so proceeds land in cash before buys),
+        # then buys. Sell basis is computed FIFO from the lot list *before*
+        # ``_execute`` consumes the lots, so trade-stat attribution sees the
+        # actual lots that left the position rather than a weighted average
+        # of all open lots.
+        for order in exit_orders:
             if order.shares <= 0:
                 continue
-            # Snapshot cost basis before _execute / cash update; the position
-            # may close inside _execute and have its basis popped below.
-            sell_basis: float | None = None
-            if order.direction == Direction.SELL:
-                sell_basis = state.cost_basis.get(order.ticker, order.price)
+            sell_basis = self._fifo_consumed_basis(state.lots.get(order.ticker, []), order.shares)
             trade = self._execute(order, day, state)
             if trade is not None:
                 state.trades.append(trade)
-                if sell_basis is not None:
-                    state.basis_per_sell.append(sell_basis)
+                state.basis_per_sell.append(sell_basis)
                 if state.restriction_tracker:
-                    state.restriction_tracker.record_trade(
-                        order.ticker,
-                        order.direction,
-                        day,
-                    )
-                if order.direction == Direction.BUY:
-                    state.cash -= order.estimated_value
-                    self._update_cost_basis(state, order)
-                else:
-                    state.cash += order.estimated_value
-                    if state.positions.get(order.ticker, 0) == 0:
-                        state.cost_basis.pop(order.ticker, None)
+                    state.restriction_tracker.record_trade(order.ticker, order.direction, day)
+                state.cash += order.estimated_value
 
-    def _update_cost_basis(self, state: _SimState, order: Order) -> None:
-        tk = order.ticker
-        old_shares = state.positions[tk] - order.shares
-        old_cost = state.cost_basis.get(tk, 0.0)
-        if state.positions[tk] > 0:
-            state.cost_basis[tk] = (old_cost * old_shares + order.price * order.shares) / state.positions[tk]
+        for order in buy_orders:
+            if order.shares <= 0:
+                continue
+            trade = self._execute(order, day, state)
+            if trade is not None:
+                state.trades.append(trade)
+                if state.restriction_tracker:
+                    state.restriction_tracker.record_trade(order.ticker, order.direction, day)
+                state.cash -= order.estimated_value
+
+    @staticmethod
+    def _fifo_consumed_basis(lots: list[PositionLot], shares: float) -> float:
+        """Share-weighted cost basis of the first *shares* shares in FIFO order.
+
+        Mirrors what ``_execute`` will pop off the lot list, without mutating
+        it. Used to record the actual basis for the lots leaving the position
+        on a sell, rather than the weighted average of all open lots.
+        """
+        if shares <= 0 or not lots:
+            return 0.0
+        remaining = shares
+        weighted = 0.0
+        consumed = 0.0
+        for lot in lots:
+            if remaining <= 0:
+                break
+            take = min(lot.shares, remaining)
+            weighted += take * lot.cost_basis
+            consumed += take
+            remaining -= take
+        return weighted / consumed if consumed > 0 else 0.0
 
     def _execute(
         self,
@@ -716,7 +748,14 @@ class BacktestEngine:
 
         if order.direction == Direction.BUY:
             state.positions[ticker] = state.positions.get(ticker, 0) + order.shares
-            state.purchase_dates.setdefault(ticker, []).append((order.shares, day))
+            state.lots.setdefault(ticker, []).append(
+                PositionLot(
+                    shares=order.shares,
+                    purchase_date=day,
+                    cost_basis=order.price,
+                    high_water_mark=order.price,
+                )
+            )
             return TradeRecord(
                 date=day,
                 ticker=ticker,
@@ -726,20 +765,25 @@ class BacktestEngine:
                 strategy_name=strategy_name,
             )
 
-        # SELL — FIFO for holding period
+        # SELL — FIFO consume the lot list to determine holding period.
         holding_period = None
-        lots = state.purchase_dates.get(ticker, [])
+        lots = state.lots.get(ticker, [])
         if lots:
-            days_held = (day - lots[0][1]).days
+            days_held = (day - lots[0].purchase_date).days if lots[0].purchase_date else 0
             holding_period = HoldingPeriod.LONG_TERM if days_held >= 365 else HoldingPeriod.SHORT_TERM
             remaining = order.shares
             while remaining > 0 and lots:
-                lot_shares, lot_date = lots[0]
-                if lot_shares <= remaining:
-                    remaining -= lot_shares
+                lot = lots[0]
+                if lot.shares <= remaining:
+                    remaining -= lot.shares
                     lots.pop(0)
                 else:
-                    lots[0] = (lot_shares - remaining, lot_date)
+                    lots[0] = PositionLot(
+                        shares=lot.shares - remaining,
+                        purchase_date=lot.purchase_date,
+                        cost_basis=lot.cost_basis,
+                        high_water_mark=lot.high_water_mark,
+                    )
                     remaining = 0
 
         state.positions[ticker] = max(

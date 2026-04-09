@@ -67,7 +67,7 @@ def print_strategy_table(strategies: list[Strategy]) -> None:
 
     for s in strategies:
         tags = ", ".join(t.value for t in s.suitability)
-        table.add_row(s.name, s.tier.value, s.description, tags)
+        table.add_row(s.name, s.tier_label, s.description, tags)
 
     console.print(table, justify="center")
 

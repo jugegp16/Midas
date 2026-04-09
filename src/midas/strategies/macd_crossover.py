@@ -1,14 +1,18 @@
-"""MACD crossover strategy: buy when MACD line crosses above signal line."""
+"""MACD crossover entry: bullish when MACD line is above signal line.
+
+The bearish "MACD below signal" half lives in ``MACDExit`` — entries and
+exits are separate types and never blended together.
+"""
 
 from __future__ import annotations
 
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, Strategy
+from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal
 
 
-def _ema(values: np.ndarray, period: int) -> np.ndarray:
+def ema(values: np.ndarray, period: int) -> np.ndarray:
     """Compute exponential moving average."""
     alpha = 2.0 / (period + 1)
     result = np.empty_like(values)
@@ -18,7 +22,7 @@ def _ema(values: np.ndarray, period: int) -> np.ndarray:
     return result
 
 
-class MACDCrossover(Strategy):
+class MACDCrossover(EntrySignal):
     def __init__(
         self,
         fast_period: int = 12,
@@ -42,13 +46,13 @@ class MACDCrossover(Strategy):
         scores = np.full(n, np.nan)
         if n < min_len:
             return scores
-        fast_ema = _ema(prices, self._fast_period)
-        slow_ema = _ema(prices, self._slow_period)
+        fast_ema = ema(prices, self._fast_period)
+        slow_ema = ema(prices, self._slow_period)
         macd_line = fast_ema - slow_ema
-        signal_line = _ema(macd_line, self._signal_period)
+        signal_line = ema(macd_line, self._signal_period)
         diff = macd_line - signal_line
         raw = np.where(prices != 0, diff / prices * 100, 0.0)
-        scores[min_len - 1 :] = np.clip(raw[min_len - 1 :], -1.0, 1.0)
+        scores[min_len - 1 :] = np.clip(raw[min_len - 1 :], 0.0, 1.0)
         return scores
 
     def score(
@@ -60,18 +64,19 @@ class MACDCrossover(Strategy):
         if len(price_history) < min_len:
             return None
 
-        fast_ema = _ema(price_history, self._fast_period)
-        slow_ema = _ema(price_history, self._slow_period)
+        fast_ema = ema(price_history, self._fast_period)
+        slow_ema = ema(price_history, self._slow_period)
         macd_line = fast_ema - slow_ema
-        signal_line = _ema(macd_line, self._signal_period)
+        signal_line = ema(macd_line, self._signal_period)
 
         current = float(price_history[-1])
         diff = float(macd_line[-1] - signal_line[-1])
         if current == 0:
             return 0.0
-        # Positive when MACD > signal (bullish), negative when below.
-        # Normalize by price so the score is comparable across tickers.
-        return self.clamp(diff / current * 100, -1.0, 1.0)
+        # Bullish when MACD > signal. The bearish below-signal half lives
+        # in MACDExit, not here. Normalize by price so the score is
+        # comparable across tickers.
+        return self.clamp(diff / current * 100, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -81,5 +86,5 @@ class MACDCrossover(Strategy):
     def description(self) -> str:
         return (
             f"Bullish when MACD({self._fast_period},{self._slow_period}) "
-            f"is above {self._signal_period}-period signal line, bearish when below"
+            f"is above the {self._signal_period}-period signal line"
         )
