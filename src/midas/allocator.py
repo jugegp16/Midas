@@ -279,15 +279,10 @@ class Allocator:
             return
         t_safe = max(temperature, self._MIN_TEMPERATURE)
         # Subtract max for numerical stability — softmax is translation-invariant.
+        # The max-subtracted ticker contributes exp(0) = 1, so z >= 1 always.
         max_score = max(blended_scores[t] for t in tickers)
         exps = {t: math.exp((blended_scores[t] - max_score) / t_safe) for t in tickers}
         z = sum(exps.values())
-        if z <= 0:
-            # Degenerate (shouldn't happen after max-subtraction, but be safe).
-            equal = budget / len(tickers)
-            for t in tickers:
-                targets[t] = equal
-            return
         for t in tickers:
             targets[t] = budget * exps[t] / z
 
@@ -320,7 +315,13 @@ class Allocator:
                 budget -= cap
                 survivors.remove(t)
             if not survivors or budget <= 0:
+                # Caps consumed the entire investable budget. Survivors had
+                # positive contribs (they were in `active`) so the rebalancer's
+                # justification check would suppress their SELL on a bare zero
+                # target. Tag them with "cap" so the SELL fires as
+                # `Rebalancer (cap)` and the portfolio stays consistent.
                 for t in survivors:
                     targets[t] = 0.0
+                    trim_reasons[t] = "cap"
                 return
             self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)

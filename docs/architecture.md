@@ -46,7 +46,11 @@ The allocator takes conviction scores and produces target portfolio weights. It 
 
 For each ticker, the allocator collects scores from all CONVICTION strategies and computes a weighted average. Each strategy has a configurable weight (default 1.0) that controls its influence. A strategy returning None is excluded entirely -- it doesn't pull the average toward zero, it simply doesn't participate.
 
-#### Phase 2: Softmax Budget Allocation
+#### Phase 2: Protective Vetoes
+
+Each PROTECTIVE strategy is evaluated per ticker. If its score falls at or below its veto threshold, the ticker is removed from further allocation and its target weight is forced to zero. This is a hard override -- no amount of bullish conviction can prevent a protective liquidation. This is how stop-losses and trailing stops work: they don't reduce the position, they eliminate it.
+
+#### Phase 3: Softmax Budget Allocation
 
 The blended scores need to become target portfolio weights that sum to the investable budget (1 minus the minimum cash reserve). The allocator uses softmax — the same construct-to-budget operator used by QuantConnect LEAN's `InsightWeightingPortfolioConstructionModel`, mean-variance optimizers, risk-parity libraries, and every production portfolio construction system in the literature.
 
@@ -59,10 +63,6 @@ By construction, `sum(targets) == investable_budget` exactly, always. There is n
 Compared to the older "score → sigmoid → multiply by base_weight → clip → normalize" pattern, softmax eliminates a class of phantom rebalance trades that arose whenever the sum of per-ticker targets drifted past the budget and had to be scaled back proportionally. Under softmax, relative weight shifts cleanly reflect relative conviction shifts — the allocator reallocates between tickers rather than "normalizing" them.
 
 **Neutral = hold.** When no conviction strategy produces a score for a ticker (all abstain — e.g. during warmup), the allocator holds that ticker's current weight (Option A) and excludes it from the softmax. The remaining budget `investable - sum(held)` is distributed via softmax across tickers that actually scored. This avoids churn from drift-correction trades on days when no signal is firing on a held position. On the very first allocation, with no current weights known, the allocator falls back to equal-weight as the hold target.
-
-#### Phase 3: Protective Vetoes
-
-Each PROTECTIVE strategy is evaluated per ticker. If its score falls at or below its veto threshold, the target weight is forced to zero. This is a hard override -- no amount of bullish conviction can prevent a protective liquidation. This is how stop-losses and trailing stops work: they don't reduce the position, they eliminate it.
 
 #### Phase 4: Position Cap
 
@@ -115,7 +115,7 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search over a
 | Strategy parameters | When a strategy fires and how strong | `window`, `threshold`, `loss_threshold`, etc. |
 | Strategy weights | How much influence each conviction strategy has in the blend | 0.5 to 3.0 |
 | Veto thresholds | When a protective strategy overrides the blend | -0.8 to -0.2 |
-| Sigmoid steepness | How aggressively the allocator responds to conviction | 1.0 to 5.0 |
+| Softmax temperature | How aggressively the allocator concentrates budget on top conviction | 0.2 to 1.0 |
 | Rebalance threshold | Minimum weight diff to trigger a trade | 0.01 to 0.05 |
 | Max position % | Maximum weight for any single position | 0.15 to 0.50 |
 

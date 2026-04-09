@@ -122,11 +122,12 @@ class LiveEngine:
             holding = self._portfolio.get_holding(t)
             positions[t] = holding.shares if holding else 0.0
 
+        # Pass None (not {}) when the denominator is zero so the allocator
+        # falls back to its equal-weight baseline.
         total_value = self._portfolio.available_cash + sum(positions[t] * current_prices[t] for t in active_tickers)
-        current_weights: dict[str, float] = {}
+        current_weights: dict[str, float] | None = None
         if total_value > 0:
-            for t in active_tickers:
-                current_weights[t] = (positions[t] * current_prices[t]) / total_value
+            current_weights = {t: (positions[t] * current_prices[t]) / total_value for t in active_tickers}
 
         # Phase 1-3: Allocate
         allocation = self._allocator.allocate(
