@@ -17,7 +17,7 @@ class DollarCostAveraging(Strategy):
     def __init__(self, frequency_days: int = 14, amount: float = 500.0) -> None:
         self._frequency_days = frequency_days
         self._amount = amount
-        self._last_trigger_len: int = 0
+        self._last_trigger_len: dict[str, int] = {}
 
     @property
     def tier(self) -> StrategyTier:
@@ -41,13 +41,15 @@ class DollarCostAveraging(Strategy):
         if n < self._frequency_days:
             return []
 
-        if self._last_trigger_len == 0:
+        last = self._last_trigger_len.get(ticker, 0)
+        if last == 0:
             # Align the first trigger to the end of the first full window so
             # behaviour is deterministic regardless of warmup buffer size.
-            self._last_trigger_len = n - (n % self._frequency_days or self._frequency_days)
+            last = n - (n % self._frequency_days or self._frequency_days)
+            self._last_trigger_len[ticker] = last
 
-        if n - self._last_trigger_len >= self._frequency_days:
-            self._last_trigger_len = n
+        if n - last >= self._frequency_days:
+            self._last_trigger_len[ticker] = n
             current = float(price_history[-1])
             return [
                 MechanicalIntent(

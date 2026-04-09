@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, Strategy
+from midas.strategies.base import Strategy
 
 
 class RSIOversold(Strategy):

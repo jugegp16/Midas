@@ -187,6 +187,15 @@ class TestDollarCostAveraging:
         intents = strategy.generate_intents("FLAT", flat_prices[:11])
         assert intents == []
 
+    def test_multi_ticker_all_trigger(self, flat_prices: np.ndarray) -> None:
+        # One strategy instance shared across tickers (as the backtest engine does).
+        # All tickers must trigger on the same day, not just the first in iteration order.
+        strategy = DollarCostAveraging(frequency_days=10)
+        prices = flat_prices[:10]
+        for ticker in ("AAPL", "VOO", "MSFT"):
+            intents = strategy.generate_intents(ticker, prices)
+            assert len(intents) == 1, f"{ticker} did not trigger"
+
     def test_name_and_description(self) -> None:
         s = DollarCostAveraging(frequency_days=7)
         assert s.name == "DollarCostAveraging"
