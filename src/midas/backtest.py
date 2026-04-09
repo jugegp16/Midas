@@ -67,6 +67,7 @@ class BacktestResult:
     avg_loss: float  # average P&L of losing sells
     efficiency_ratio: float  # test_return / train_return (0 if no split)
     strategy_stats: list[StrategyStats]
+    unrealized_pnl: float  # mark-to-market gain on positions still held at end
 
 
 @dataclass
@@ -882,6 +883,13 @@ class BacktestEngine:
         efficiency = test_return / train_return if split_date and train_return != 0 else 0.0
         strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
+        # Unrealized P&L: mark-to-market gain on positions still held at end.
+        unrealized_pnl = sum(
+            lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis)
+            for ticker, lots in state.lots.items()
+            for lot in lots
+        )
+
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
@@ -906,6 +914,7 @@ class BacktestEngine:
             avg_loss=round(avg_loss, 2),
             efficiency_ratio=round(efficiency, 4),
             strategy_stats=strategy_stats,
+            unrealized_pnl=round(unrealized_pnl, 2),
         )
 
 
@@ -997,3 +1006,4 @@ def write_backtest_csv(result: BacktestResult, path: Path) -> None:
                         f"${s.pnl:.2f}" if s.sells > 0 else "",
                     ]
                 )
+            writer.writerow(["Open Positions", "", "", "", "", f"${result.unrealized_pnl:.2f}"])

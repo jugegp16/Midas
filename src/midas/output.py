@@ -198,16 +198,22 @@ def print_backtest_summary(result: BacktestResult) -> None:
                 f"[{pnl_style}]${s.pnl:,.2f}[/{pnl_style}]" if s.sells > 0 else "—",
             )
 
+        # Unrealized P&L from positions still held at end of backtest.
+        unr = result.unrealized_pnl
+        unr_style = "green" if unr >= 0 else "red"
+        strat_table.add_row(
+            "[dim]Open Positions[/dim]",
+            "—",
+            "—",
+            "—",
+            "—",
+            f"[{unr_style}]${unr:,.2f}[/{unr_style}]",
+        )
+
         print_centered(strat_table)
-        # Per-strategy P&L is currently credited to whichever strategy
-        # triggered the *exit*, not the strategy that found the entry.
-        # Exit strategies (e.g. ProfitTaking, TrailingStop) therefore
-        # capture gains that entry strategies (e.g. Momentum) actually
-        # sourced. Trust the activity counts; take the P&L column with
-        # a grain of salt until the tier redesign lands. See #26.
         console.print(
-            "[dim italic]Note: P&L is credited to the exit strategy, not the "
-            "entry strategy. Activity counts are accurate; P&L attribution is "
-            "known to be misleading. See issue #26.[/dim italic]",
+            "[dim italic]Note: P&L is credited to the exit strategy. "
+            "Open Positions shows unrealized gain/loss on shares still "
+            "held at backtest end.[/dim italic]",
             justify="center",
         )
