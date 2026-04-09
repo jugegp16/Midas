@@ -15,10 +15,12 @@ def _alloc_result(
     targets: dict[str, float],
     blended: dict[str, float] | None = None,
     contribs: dict[str, dict[str, float]] | None = None,
+    trim_reasons: dict[str, str] | None = None,
 ) -> AllocationResult:
     blended = blended or {t: 0.0 for t in targets}
     contribs = contribs or {t: {} for t in targets}
-    return AllocationResult(targets, contribs, blended)
+    trim_reasons = trim_reasons or {}
+    return AllocationResult(targets, contribs, blended, trim_reasons)
 
 
 class TestRebalancer:
@@ -37,7 +39,7 @@ class TestRebalancer:
     def test_sell_generated_when_overweight(self):
         """Should generate SELL when current > target by more than threshold."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.30})
+        allocation = _alloc_result({"A": 0.30}, contribs={"A": {"ProfitTaking": -0.5}})
         # A is 50% of portfolio, target is 30% -> need to sell
         positions = {"A": 50.0}
         prices = {"A": 100.0}
@@ -53,7 +55,7 @@ class TestRebalancer:
     def test_buy_generated_when_underweight(self):
         """Should generate BUY when current < target by more than threshold."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.50})
+        allocation = _alloc_result({"A": 0.50}, contribs={"A": {"Momentum": 0.5}})
         # A is 30% of portfolio, target is 50% -> need to buy
         positions = {"A": 30.0}
         prices = {"A": 100.0}
@@ -69,7 +71,10 @@ class TestRebalancer:
     def test_sells_before_buys(self):
         """Sells should appear before buys in the order list."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.20, "B": 0.60})
+        allocation = _alloc_result(
+            {"A": 0.20, "B": 0.60},
+            contribs={"A": {"ProfitTaking": -0.5}, "B": {"Momentum": 0.5}},
+        )
         # A overweight (50%), B underweight (20%)
         positions = {"A": 50.0, "B": 20.0}
         prices = {"A": 100.0, "B": 100.0}
@@ -84,7 +89,7 @@ class TestRebalancer:
     def test_cash_constraint_limits_buys(self):
         """Buy orders are reduced when cash is insufficient."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0))
-        allocation = _alloc_result({"A": 0.90})
+        allocation = _alloc_result({"A": 0.90}, contribs={"A": {"Momentum": 0.9}})
         positions = {"A": 0.0}
         prices = {"A": 100.0}
         cash = 500.0  # total = 500, want to buy 90% = $450 = 4 shares
@@ -96,7 +101,7 @@ class TestRebalancer:
     def test_circuit_breaker_limits_deployment(self):
         """Circuit breaker caps total buy deployment per day."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.0, circuit_breaker_pct=0.10))
-        allocation = _alloc_result({"A": 0.90})
+        allocation = _alloc_result({"A": 0.90}, contribs={"A": {"Momentum": 0.9}})
         positions = {"A": 0.0}
         prices = {"A": 10.0}
         cash = 10000.0  # total = 10000
@@ -109,7 +114,7 @@ class TestRebalancer:
     def test_slippage_applied(self):
         """Slippage adjusts execution prices."""
         r = Rebalancer(RebalancerConfig(default_slippage=0.01))
-        allocation = _alloc_result({"A": 0.80})
+        allocation = _alloc_result({"A": 0.80}, contribs={"A": {"Momentum": 0.8}})
         positions = {"A": 0.0}
         prices = {"A": 100.0}
         cash = 10000.0
@@ -118,6 +123,39 @@ class TestRebalancer:
         assert len(orders) >= 1
         buy = orders[0]
         assert buy.price > 100.0  # slippage raises buy price
+
+    def test_fallback_source_tagged_with_cap(self):
+        """When no strategy drove the trade and trim_reason=cap, source = Rebalancer (cap)."""
+        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
+        # No contribs → fallback path. Cap trim recorded.
+        allocation = _alloc_result(
+            {"A": 0.10},
+            contribs={"A": {}},
+            trim_reasons={"A": "cap"},
+        )
+        positions = {"A": 50.0}  # currently 50%
+        prices = {"A": 100.0}
+        cash = 5000.0  # total = 10000
+        constraints = AllocationConstraints(rebalance_threshold=0.02)
+        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
+        assert len(orders) == 1
+        assert orders[0].context.source == "Rebalancer (cap)"
+
+    def test_unjustified_trade_skipped(self):
+        """No aligned contrib AND no trim reason → order is suppressed entirely.
+
+        Unjustified drift-correction trades serve no purpose and should not
+        appear in the order book. Softmax + Option A eliminate most of these
+        at the source; this check is a belt-and-braces guard.
+        """
+        r = Rebalancer(RebalancerConfig(default_slippage=0.0))
+        allocation = _alloc_result({"A": 0.30}, contribs={"A": {}})
+        positions = {"A": 50.0}
+        prices = {"A": 100.0}
+        cash = 5000.0
+        constraints = AllocationConstraints(rebalance_threshold=0.02)
+        orders = r.generate_orders(allocation, positions, prices, cash, constraints)
+        assert orders == []
 
     def test_order_context_populated(self):
         """Orders carry proper OrderContext."""

@@ -602,11 +602,24 @@ class BacktestEngine:
                 ctx["cost_basis"] = state.cost_basis[ticker]
             context[ticker] = ctx
 
+        # Compute current portfolio weights so the allocator can hold
+        # (not drift-correct) tickers whose strategies don't score today.
+        # Pass None (not {}) when the denominator is zero so the allocator
+        # falls back to its equal-weight baseline rather than anchoring held
+        # tickers at 0.
+        total_value = state.cash + sum(state.positions.get(t, 0.0) * current_prices[t] for t in active_tickers)
+        current_weights: dict[str, float] | None = None
+        if total_value > 0:
+            current_weights = {
+                t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers
+            }
+
         # Phase 1-3: Allocator scores, blends, and applies vetoes
         allocation = self._allocator.allocate(
             active_tickers,
             current_data,
             context,
+            current_weights=current_weights,
         )
 
         # Phase 4: Rebalancer diffs target vs current, generates orders

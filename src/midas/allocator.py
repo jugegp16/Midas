@@ -22,6 +22,11 @@ MAX_POSITION_MULTIPLIER = 2.5
 LOW_POSITION_MULTIPLIER = 1.5
 HIGH_POSITION_MULTIPLIER = 5.0
 
+# Temperature floor prevents division-by-zero and bounds exp() growth in the
+# winner-take-all limit. Combined with max-subtraction in _softmax_allocate,
+# the softmax collapses cleanly to argmax as temperature → 0.
+MIN_TEMPERATURE = 1e-6
+
 
 @dataclass
 class _ScoredStrategy:
@@ -40,6 +45,10 @@ class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
+    # ticker -> "cap" when Phase 4 constraints trimmed the target. Used by the
+    # Rebalancer to label fallback attribution when no conviction strategy drove
+    # the trade.
+    trim_reasons: dict[str, str]
 
 
 class Allocator:
@@ -119,6 +128,7 @@ class Allocator:
         tickers: list[str],
         price_data: dict[str, np.ndarray],
         context: dict[str, dict[str, Any]] | None = None,
+        current_weights: dict[str, float] | None = None,
     ) -> AllocationResult:
         """Compute target weights for all tickers.
 
@@ -126,30 +136,42 @@ class Allocator:
             tickers: Active tickers in the portfolio.
             price_data: Ticker -> price series mapping.
             context: Per-ticker context dict (e.g. {"AAPL": {"cost_basis": 150.0}}).
+            current_weights: Ticker -> current portfolio weight. When no
+                conviction strategy scores a ticker, the allocator holds the
+                current weight instead of reverting to equal-weight (Option A:
+                neutral = hold). If omitted, falls back to equal-weight base.
 
         Returns:
             AllocationResult with target weights, per-ticker contributions,
-            and blended scores.
+            blended scores, and trim reasons.
         """
         ctx = context or {}
+        cur_w = current_weights or {}
         n = len(tickers)
         if n == 0:
-            return AllocationResult({}, {}, {})
+            return AllocationResult({}, {}, {}, {})
 
-        base_weight = (1.0 - self._constraints.min_cash_pct) / n
-        k = self._constraints.sigmoid_steepness
+        investable = 1.0 - self._constraints.min_cash_pct
+        base_weight = investable / n  # fallback when current_weights unknown
+        temperature = self._constraints.softmax_temperature
 
-        # Phase 1+2: Score conviction strategies and blend
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
-        targets: dict[str, float] = {}
+        targets: dict[str, float] = dict.fromkeys(tickers, 0.0)
+        trim_reasons: dict[str, str] = {}
+
+        # Phase 1: Score conviction strategies and compute blended scores.
+        # Partition tickers into `active` (at least one strategy scored) and
+        # `held` (all strategies abstained — Option A: hold current weight).
+        active: list[str] = []
+        held: list[str] = []
 
         for ticker in tickers:
             prices = price_data.get(ticker)
             if prices is None or len(prices) == 0:
-                targets[ticker] = base_weight
                 contributions[ticker] = {}
                 blended_scores[ticker] = 0.0
+                held.append(ticker)
                 continue
 
             ticker_ctx = ctx.get(ticker, {})
@@ -168,15 +190,27 @@ class Allocator:
 
             contributions[ticker] = ticker_contributions
 
-            blended = weighted_sum / weight_total if weight_total > 0 else 0.0
+            if weight_total > 0:
+                blended_scores[ticker] = weighted_sum / weight_total
+                active.append(ticker)
+            else:
+                blended_scores[ticker] = 0.0
+                held.append(ticker)
 
-            blended_scores[ticker] = blended
-
-            # Symmetric sigmoid transform
-            sigmoid_val = 1.0 / (1.0 + math.exp(-k * blended))
-            targets[ticker] = base_weight * 2.0 * sigmoid_val
-
-        # Phase 3: PROTECTIVE vetoes
+        # Phase 2: Protective vetoes. A vetoed ticker is removed from `active`
+        # (its softmax slot vanishes and its share of budget flows to peers).
+        #
+        # KNOWN LIMITATION: the vetoed score is stored in ``contributions`` and
+        # the Rebalancer's justification/attribution picker filters by sign
+        # (``v < 0`` for SELL). A protective strategy that vetoes with a score
+        # >= 0 would therefore have its forced-exit SELL either suppressed by
+        # the justification check or mislabeled as ``Rebalancer (unknown)``.
+        # All currently shipped protective strategies (StopLoss, TrailingStop)
+        # return strictly negative scores when they veto, so this is not
+        # exploitable today. The whole protective tier is slated for removal
+        # in favor of direct EXIT_RULE order intents — see #26 — at which
+        # point this pathway (and the limitation) disappears entirely.
+        vetoed: set[str] = set()
         for entry in self._protective:
             for ticker in tickers:
                 prices = price_data.get(ticker)
@@ -187,20 +221,107 @@ class Allocator:
                     ticker_ctx = ctx.get(ticker, {})
                     s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None and s <= entry.veto_threshold:
-                    targets[ticker] = 0.0
-                    # Record protective strategy in contributions
+                    vetoed.add(ticker)
                     contributions.setdefault(ticker, {})[entry.strategy.name] = s
+        active = [t for t in active if t not in vetoed]
+        held = [t for t in held if t not in vetoed]
+        for t in vetoed:
+            targets[t] = 0.0
 
-        # Phase 4: Apply constraints
-        for ticker in tickers:
-            targets[ticker] = max(0.0, min(targets[ticker], self._max_position_pct))
+        # Held tickers (Option A) consume their current weight from the
+        # investable budget. Remaining budget goes to the active softmax.
+        def _held_target(ticker: str) -> float:
+            if current_weights is None:
+                return base_weight
+            return cur_w.get(ticker, 0.0)
 
-        # Normalize so sum <= 1 - min_cash_pct
-        total = sum(targets.values())
-        max_total = 1.0 - self._constraints.min_cash_pct
-        if total > max_total and total > 0:
-            scale = max_total / total
-            for ticker in targets:
-                targets[ticker] *= scale
+        held_total = 0.0
+        for t in held:
+            w = _held_target(t)
+            targets[t] = w
+            held_total += w
 
-        return AllocationResult(targets, contributions, blended_scores)
+        budget_for_active = max(investable - held_total, 0.0)
+
+        # Phase 3: Softmax construct-to-budget over active tickers. Sum of
+        # softmax weights is exactly budget_for_active by construction, so
+        # there is no normalize step.
+        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
+
+        # Phase 4: Position cap with redistribution (Option X). Iteratively
+        # clamp any ticker exceeding max_position_pct and re-softmax the
+        # survivors over the reduced remaining budget. Usually converges in
+        # one pass; bounded by len(active) for safety.
+        self._apply_cap_with_redistribution(
+            active, blended_scores, budget_for_active, temperature, targets, trim_reasons
+        )
+
+        return AllocationResult(targets, contributions, blended_scores, trim_reasons)
+
+    def _softmax_allocate(
+        self,
+        tickers: list[str],
+        blended_scores: dict[str, float],
+        budget: float,
+        temperature: float,
+        targets: dict[str, float],
+    ) -> None:
+        """Distribute `budget` across `tickers` via softmax(blended_scores / T).
+
+        Temperature semantics:
+            T → 0   winner-take-all (budget to the argmax ticker)
+            T = 1   standard softmax over raw scores
+            T → ∞   uniform split regardless of conviction
+        """
+        if not tickers or budget <= 0:
+            for t in tickers:
+                targets[t] = 0.0
+            return
+        t_safe = max(temperature, MIN_TEMPERATURE)
+        # Subtract max for numerical stability — softmax is translation-invariant.
+        # The max-subtracted ticker contributes exp(0) = 1, so z >= 1 always.
+        max_score = max(blended_scores[t] for t in tickers)
+        exps = {t: math.exp((blended_scores[t] - max_score) / t_safe) for t in tickers}
+        z = sum(exps.values())
+        for t in tickers:
+            targets[t] = budget * exps[t] / z
+
+    def _apply_cap_with_redistribution(
+        self,
+        active: list[str],
+        blended_scores: dict[str, float],
+        initial_budget: float,
+        temperature: float,
+        targets: dict[str, float],
+        trim_reasons: dict[str, str],
+    ) -> None:
+        """Clamp targets exceeding max_position_pct; re-softmax the survivors.
+
+        Option X: when a cap trims a ticker, the freed budget is redistributed
+        to uncapped tickers in proportion to their softmax weight (achieved by
+        re-running softmax over the survivors with the reduced budget).
+        """
+        cap = self._max_position_pct
+        survivors = list(active)
+        budget = initial_budget
+        # At most one iteration per ticker (each pass pins at least one).
+        for _ in range(len(active) + 1):
+            over = [t for t in survivors if targets[t] > cap + 1e-12]
+            if not over:
+                return
+            for t in over:
+                targets[t] = cap
+                trim_reasons[t] = "cap"
+                budget -= cap
+                survivors.remove(t)
+            if not survivors or budget <= 0:
+                # Caps consumed the entire investable budget. Survivors had
+                # positive contribs (they were in `active`) so the rebalancer's
+                # justification check would suppress their SELL on a bare zero
+                # target. Tag them with "cap" so the SELL fires as
+                # `Rebalancer (cap)` and the portfolio stays consistent.
+                for t in survivors:
+                    targets[t] = 0.0
+                    trim_reasons[t] = "cap"
+                return
+            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)

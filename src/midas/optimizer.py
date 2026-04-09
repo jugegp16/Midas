@@ -44,7 +44,7 @@ INT_PARAMS = {
 # _veto_threshold: veto threshold for protective strategies.
 META_PARAMS = {"_weight", "_veto_threshold"}
 
-# Synthetic key for global allocation knobs (sigmoid_steepness, rebalance_threshold).
+# Synthetic key for global allocation knobs (softmax_temperature, rebalance_threshold).
 ALLOCATION_KEY = "_global"
 
 # Default parameter ranges per strategy.
@@ -112,7 +112,8 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
         "_weight": (0.5, 3.0, 0.25),
     },
     ALLOCATION_KEY: {
-        "sigmoid_steepness": (1.0, 5.0, 0.5),
+        # softmax_temperature: low = concentrated, high = uniform split.
+        "softmax_temperature": (0.2, 1.0, 0.1),
         "rebalance_threshold": (0.01, 0.05, 0.005),
         # min_cash_pct is a user risk preference, not optimized
         # max_position_pct is computed dynamically in optimize() from n_tickers
@@ -244,7 +245,7 @@ def _run_trial(
     constraints = AllocationConstraints(
         max_position_pct=global_params.get("max_position_pct"),
         min_cash_pct=min_cash_pct,
-        sigmoid_steepness=global_params.get("sigmoid_steepness", 2.0),
+        softmax_temperature=global_params.get("softmax_temperature", 0.5),
         rebalance_threshold=global_params.get("rebalance_threshold", 0.02),
     )
 

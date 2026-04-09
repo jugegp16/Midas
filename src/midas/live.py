@@ -90,6 +90,14 @@ class LiveEngine:
         if not price_data:
             return
 
+        # If any held position is missing from price_data, we can't compute an
+        # accurate portfolio denominator for current_weights — skip the tick
+        # rather than let Option A hold inflated weights based on partial info.
+        missing_held = [h.ticker for h in self._portfolio.holdings if h.shares > 0 and h.ticker not in price_data]
+        if missing_held:
+            print_status(f"Skipping tick: missing price data for held positions {missing_held}. Will retry next poll.")
+            return
+
         # Build context (cost_basis from portfolio config)
         context: dict[str, dict[str, object]] = {}
         current_prices: dict[str, float] = {}
@@ -108,14 +116,26 @@ class LiveEngine:
         # and the allocator operate on np.ndarray for performance.
         price_arrays: dict[str, np.ndarray] = {t: np.asarray(price_data[t]) for t in active_tickers}
 
-        # Phase 1-3: Allocate
-        allocation = self._allocator.allocate(active_tickers, price_arrays, context)
-
-        # Phase 4: Rebalance
+        # Current positions + weights (weights feed Option A: neutral=hold).
         positions = {}
         for t in active_tickers:
             holding = self._portfolio.get_holding(t)
             positions[t] = holding.shares if holding else 0.0
+
+        # Pass None (not {}) when the denominator is zero so the allocator
+        # falls back to its equal-weight baseline.
+        total_value = self._portfolio.available_cash + sum(positions[t] * current_prices[t] for t in active_tickers)
+        current_weights: dict[str, float] | None = None
+        if total_value > 0:
+            current_weights = {t: (positions[t] * current_prices[t]) / total_value for t in active_tickers}
+
+        # Phase 1-3: Allocate
+        allocation = self._allocator.allocate(
+            active_tickers,
+            price_arrays,
+            context,
+            current_weights=current_weights,
+        )
 
         rebalance_orders = self._rebalancer.generate_orders(
             allocation,

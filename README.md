@@ -1,6 +1,6 @@
 # Midas
 
-Target-weight allocation engine for your portfolio. Define your holdings and pick a set of strategies to fit your thesis -- Midas scores every position using technical indicators, blends those scores into target portfolio weights via a sigmoid transformation, and generates the trades needed to rebalance.
+Target-weight allocation engine for your portfolio. Define your holdings and pick a set of strategies to fit your thesis -- Midas scores every position using technical indicators, blends those scores into target portfolio weights via a softmax construct-to-budget allocator, and generates the trades needed to rebalance.
 
 - **Optimize** strategy parameters with Bayesian search and walk-forward validation
 - **Backtest** against years of historical data with train/test splits
@@ -53,7 +53,7 @@ cash_infusion:
 ### Strategies
 
 ```yaml
-sigmoid_steepness: 2.0
+softmax_temperature: 0.5
 rebalance_threshold: 0.02
 min_cash_pct: 0.05
 

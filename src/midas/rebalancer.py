@@ -72,6 +72,14 @@ class Rebalancer:
             if abs(delta) < constraints.rebalance_threshold:
                 continue
 
+            # Skip unjustified drift-correction trades: no conviction strategy
+            # is directionally aligned with this trade AND no Phase 4 trim
+            # forced it. Belt-and-braces guard — softmax + Option A eliminate
+            # most of these at the source, but this catches any residue.
+            direction = Direction.SELL if delta < 0 else Direction.BUY
+            if not self._has_justification(allocation, ticker, direction):
+                continue
+
             px = prices.get(ticker, 0.0)
             if px <= 0:
                 continue
@@ -220,6 +228,20 @@ class Rebalancer:
         return orders
 
     @staticmethod
+    def _has_justification(
+        allocation: AllocationResult,
+        ticker: str,
+        direction: Direction,
+    ) -> bool:
+        """Is there a conviction contributor aligned with this trade, or a trim reason?"""
+        if allocation.trim_reasons.get(ticker):
+            return True
+        contribs = allocation.contributions.get(ticker, {})
+        if direction == Direction.BUY:
+            return any(v > 0 for v in contribs.values())
+        return any(v < 0 for v in contribs.values())
+
+    @staticmethod
     def _build_context(
         ticker: str,
         allocation: AllocationResult,
@@ -241,10 +263,16 @@ class Rebalancer:
         # strategy truly drove the order — the allocator just rebalanced.
         if direction == Direction.BUY:
             aligned = {k: v for k, v in contribs.items() if v > 0}
-            source = max(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
+            source = max(aligned, key=lambda k: aligned[k]) if aligned else ""
         else:
             aligned = {k: v for k, v in contribs.items() if v < 0}
-            source = min(aligned, key=lambda k: aligned[k]) if aligned else "Rebalancer"
+            source = min(aligned, key=lambda k: aligned[k]) if aligned else ""
+        # No aligned conviction contributor -> must be a Phase 4 constraint
+        # trim (currently only ``cap``). _has_justification guarantees a trim
+        # reason is present when this branch is reached.
+        if not source:
+            trim = allocation.trim_reasons.get(ticker, "unknown")
+            source = f"Rebalancer ({trim})"
         return OrderContext(
             contributions=contribs,
             blended_score=blended,

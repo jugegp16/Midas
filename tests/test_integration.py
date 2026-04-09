@@ -36,7 +36,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
     strategy_data = {
         "min_cash_pct": 0.05,
         "rebalance_threshold": 0.01,
-        "sigmoid_steepness": 2.0,
+        "softmax_temperature": 0.5,
         "strategies": [
             {"name": "MeanReversion", "params": {"window": 20, "threshold": 0.05}},
             {"name": "ProfitTaking", "params": {"gain_threshold": 0.15}},

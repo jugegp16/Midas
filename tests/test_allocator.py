@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from midas.allocator import Allocator
@@ -19,7 +17,7 @@ def _prices(values: list[float]) -> np.ndarray:
 
 class TestAllocator:
     def test_uniform_scores_produce_equal_weights(self):
-        """When all strategies score 0.0, targets equal base_weight (after cap)."""
+        """When all strategies score 0.0, softmax produces equal weights summing to investable."""
         mr = MeanReversion(window=5, threshold=0.01)
         constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.50)
         allocator = Allocator(
@@ -28,21 +26,17 @@ class TestAllocator:
             constraints=constraints,
             n_tickers=2,
         )
-        # Flat prices -> score 0.0
-        prices = {
-            "A": _prices([100.0] * 10),
-            "B": _prices([100.0] * 10),
-        }
+        prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}
         result = allocator.allocate(["A", "B"], prices)
         base = (1 - 0.05) / 2  # 0.475
-        # sigmoid(0) = 0.5, so target = base * 2 * 0.5 = base
-        assert abs(result.targets["A"] - base) < 1e-6
-        assert abs(result.targets["B"] - base) < 1e-6
+        # softmax of equal scores → equal split of investable budget
+        assert abs(result.targets["A"] - base) < 1e-9
+        assert abs(result.targets["B"] - base) < 1e-9
 
     def test_bullish_score_increases_weight(self):
         """A positive blended score should produce weight > base_weight."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.05, sigmoid_steepness=2.0, max_position_pct=0.90)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.5, max_position_pct=0.90)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -114,7 +108,7 @@ class TestAllocator:
     def test_normalization_respects_min_cash(self):
         """Sum of all target weights should not exceed 1 - min_cash_pct."""
         mr = MeanReversion(window=5, threshold=0.01)
-        constraints = AllocationConstraints(min_cash_pct=0.20, sigmoid_steepness=5.0)
+        constraints = AllocationConstraints(min_cash_pct=0.20, softmax_temperature=0.2)
         allocator = Allocator(
             conviction_strategies=[(mr, 1.0)],
             protective_strategies=[],
@@ -137,11 +131,159 @@ class TestAllocator:
         result = allocator.allocate([], {})
         assert result.targets == {}
 
-    def test_sigmoid_symmetry(self):
-        """Verify sigmoid transform is symmetric around 0."""
-        k = 2.0
-        for score in [0.5, 1.0, 0.3]:
-            pos = 1.0 / (1.0 + math.exp(-k * score))
-            neg = 1.0 / (1.0 + math.exp(-k * (-score)))
-            # pos + neg should equal 1.0 (sigmoid symmetry)
-            assert abs(pos + neg - 1.0) < 1e-10
+    def test_neutral_holds_current_weight(self):
+        """When no conviction strategy scores, target = current weight (Option A)."""
+        # window too large to score
+        mr = MeanReversion(window=100, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices = {
+            "A": _prices([100.0] * 10),
+            "B": _prices([100.0] * 10),
+        }
+        # A is overweight, B is underweight — neither should move.
+        result = allocator.allocate(
+            ["A", "B"],
+            prices,
+            current_weights={"A": 0.70, "B": 0.10},
+        )
+        assert abs(result.targets["A"] - 0.70) < 1e-9
+        assert abs(result.targets["B"] - 0.10) < 1e-9
+
+    def test_neutral_without_current_weights_falls_back_to_base(self):
+        """Back-compat: omitting current_weights keeps legacy drift-correct behavior."""
+        mr = MeanReversion(window=100, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}
+        result = allocator.allocate(["A", "B"], prices)
+        base = (1 - 0.05) / 2
+        assert abs(result.targets["A"] - base) < 1e-9
+
+    def test_trim_reason_cap_recorded(self):
+        """Target clamped by max_position_pct gets trim_reasons['cap']."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(max_position_pct=0.10, min_cash_pct=0.05)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        prices_a = _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0])
+        prices_b = _prices([100.0] * 7)
+        result = allocator.allocate(["A", "B"], {"A": prices_a, "B": prices_b})
+        assert result.trim_reasons.get("A") == "cap"
+
+    def test_softmax_sum_equals_investable(self):
+        """Softmax construct-to-budget: sum of active targets == investable, exactly."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.20, softmax_temperature=0.2, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        prices = {
+            "A": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+            "B": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+            "C": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 50.0]),
+        }
+        result = allocator.allocate(["A", "B", "C"], prices)
+        investable = 1.0 - 0.20
+        assert abs(sum(result.targets.values()) - investable) < 1e-9
+        # No normalize trim — construct-to-budget means normalize cannot fire.
+        assert all(r != "normalize" for r in result.trim_reasons.values())
+
+    def test_softmax_concentrates_on_higher_conviction(self):
+        """Higher blended score → larger softmax share of the budget."""
+        # Use a large threshold so scores don't saturate at 1.0.
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.25, max_position_pct=0.90)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        # A moderately bullish (bigger drop), B mildly bullish, C flat.
+        prices = {
+            "A": _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0]),  # ~10% drop
+            "B": _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 96.0]),  # ~4% drop
+            "C": _prices([100.0] * 7),  # flat
+        }
+        result = allocator.allocate(["A", "B", "C"], prices)
+        assert result.targets["A"] > result.targets["B"] > result.targets["C"]
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9
+
+    def test_cap_with_redistribution(self):
+        """When a cap clamps a ticker, freed budget redistributes to survivors."""
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, softmax_temperature=0.125, max_position_pct=0.50)
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=2,
+        )
+        # A overwhelmingly bullish → pre-cap softmax would give it > 0.50.
+        prices_a = _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 40.0])
+        prices_b = _prices([100.0] * 7)
+        result = allocator.allocate(["A", "B"], {"A": prices_a, "B": prices_b})
+        # A pinned at cap.
+        assert abs(result.targets["A"] - 0.50) < 1e-9
+        assert result.trim_reasons["A"] == "cap"
+        # Freed budget went to B, not to cash — sum stays at investable.
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9
+        assert result.targets["B"] > 0.40  # got the freed 0.45-ish
+
+    def test_cap_redistribution_multi_iteration(self):
+        """Capping one ticker can push another over the cap → second loop pass.
+
+        Regression test for the ``_apply_cap_with_redistribution`` iteration:
+        with very concentrated softmax (low T) and a tight cap, pinning the
+        top ticker frees enough budget to push the second-place ticker above
+        the cap as well, forcing the loop to run another iteration.
+        """
+        # threshold=0.20 yields non-saturated MeanReversion scores.
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.1,  # very concentrated
+            max_position_pct=0.35,
+        )
+        allocator = Allocator(
+            conviction_strategies=[(mr, 1.0)],
+            protective_strategies=[],
+            constraints=constraints,
+            n_tickers=3,
+        )
+        # A: 20% drop → score saturates high
+        # B: 15% drop → score mid-high (would exceed cap on pass 2)
+        # C: ~5% drop → score low
+        prices_a = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 80.0])
+        prices_b = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 85.0])
+        prices_c = _prices([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 95.0])
+        result = allocator.allocate(
+            ["A", "B", "C"],
+            {"A": prices_a, "B": prices_b, "C": prices_c},
+        )
+        # Both A and B pinned at the cap — the second pin only happens if the
+        # redistribution loop runs twice.
+        assert abs(result.targets["A"] - 0.35) < 1e-9
+        assert abs(result.targets["B"] - 0.35) < 1e-9
+        assert result.trim_reasons["A"] == "cap"
+        assert result.trim_reasons["B"] == "cap"
+        # Survivors absorb the rest; sum stays at investable.
+        assert abs(sum(result.targets.values()) - 0.95) < 1e-9

@@ -11,7 +11,7 @@ import yaml
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     DEFAULT_REBALANCE_THRESHOLD,
-    DEFAULT_SIGMOID_STEEPNESS,
+    DEFAULT_SOFTMAX_TEMPERATURE,
     AllocationConstraints,
     CashInfusion,
     Holding,
@@ -73,7 +73,7 @@ def load_strategies(
 ) -> tuple[list[StrategyConfig], AllocationConstraints]:
     """Load strategy configs and allocation-level knobs from YAML.
 
-    Returns (strategies, constraints) tuple.  sigmoid_steepness and
+    Returns (strategies, constraints) tuple.  softmax_temperature and
     rebalance_threshold live at the top level of the strategies file
     because they are meta-strategy knobs (how scores are blended/acted on).
     """
@@ -94,8 +94,8 @@ def load_strategies(
     constraints = AllocationConstraints(
         max_position_pct=float(max_pos) if max_pos is not None else None,
         min_cash_pct=float(raw.get("min_cash_pct", DEFAULT_MIN_CASH_PCT)),
-        sigmoid_steepness=float(
-            raw.get("sigmoid_steepness", DEFAULT_SIGMOID_STEEPNESS),
+        softmax_temperature=float(
+            raw.get("softmax_temperature", DEFAULT_SOFTMAX_TEMPERATURE),
         ),
         rebalance_threshold=float(
             raw.get("rebalance_threshold", DEFAULT_REBALANCE_THRESHOLD),

@@ -8,7 +8,7 @@ from enum import Enum
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_REBALANCE_THRESHOLD = 0.02
-DEFAULT_SIGMOID_STEEPNESS = 2.0
+DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
 DEFAULT_CONVICTION_WEIGHT = 1
 DEFAULT_PROTECTIVE_VETO_THRESHOLD = -0.5
@@ -133,7 +133,7 @@ class AllocationConstraints:
     max_position_pct: float | None = None
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
     rebalance_threshold: float = DEFAULT_REBALANCE_THRESHOLD
-    sigmoid_steepness: float = DEFAULT_SIGMOID_STEEPNESS
+    softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
 
 
 @dataclass

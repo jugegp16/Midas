@@ -84,7 +84,7 @@ def test_allocation_constraints_defaults() -> None:
     assert c.max_position_pct is None
     assert c.min_cash_pct == 0.05
     assert c.rebalance_threshold == 0.02
-    assert c.sigmoid_steepness == 2.0
+    assert c.softmax_temperature == 0.5
 
 
 def test_mechanical_intent() -> None:
