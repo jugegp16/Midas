@@ -22,6 +22,11 @@ MAX_POSITION_MULTIPLIER = 2.5
 LOW_POSITION_MULTIPLIER = 1.5
 HIGH_POSITION_MULTIPLIER = 5.0
 
+# Temperature floor prevents division-by-zero and bounds exp() growth in the
+# winner-take-all limit. Combined with max-subtraction in _softmax_allocate,
+# the softmax collapses cleanly to argmax as temperature → 0.
+MIN_TEMPERATURE = 1e-6
+
 
 @dataclass
 class _ScoredStrategy:
@@ -253,11 +258,6 @@ class Allocator:
 
         return AllocationResult(targets, contributions, blended_scores, trim_reasons)
 
-    # Temperature floor prevents division-by-zero and bounds exp() growth in the
-    # winner-take-all limit. Combined with max-subtraction below, the softmax
-    # collapses cleanly to argmax as temperature → 0.
-    _MIN_TEMPERATURE = 1e-6
-
     def _softmax_allocate(
         self,
         tickers: list[str],
@@ -277,7 +277,7 @@ class Allocator:
             for t in tickers:
                 targets[t] = 0.0
             return
-        t_safe = max(temperature, self._MIN_TEMPERATURE)
+        t_safe = max(temperature, MIN_TEMPERATURE)
         # Subtract max for numerical stability — softmax is translation-invariant.
         # The max-subtracted ticker contributes exp(0) = 1, so z >= 1 always.
         max_score = max(blended_scores[t] for t in tickers)
