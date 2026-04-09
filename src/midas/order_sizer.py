@@ -50,18 +50,29 @@ class OrderSizer:
         prices: dict[str, float],
         cash: float,
         constraints: AllocationConstraints,
+        total_value: float | None = None,
     ) -> list[Order]:
         """Size buy orders from positive target-vs-current deltas.
 
         Sells are not produced here — drift above target is allowed and the
         soft cap only blocks further buys. Any required sells come from
         ``size_exits``.
+
+        ``total_value`` is the portfolio basis the allocator used to compute
+        ``allocation.targets``. The caller should pass the same value here so
+        that the per-ticker current weights computed inside ``size_buys`` line
+        up with the allocator's view; otherwise held tickers can fire phantom
+        buys when sells in the same tick free cash and shift the denominator.
+        When omitted, ``total_value`` falls back to ``cash + held positions``,
+        which matches the allocator only if no sells happened first.
         """
-        total_value = cash + sum(positions.get(t, 0.0) * prices.get(t, 0.0) for t in allocation.targets)
+        if total_value is None:
+            total_value = cash + sum(positions.get(t, 0.0) * prices.get(t, 0.0) for t in allocation.targets)
         if total_value <= 0:
             return []
 
-        # Compute current weights for delta calculations.
+        # Compute current weights for delta calculations using the allocator's
+        # basis (total_value), not post-sell cash.
         current_weights: dict[str, float] = {}
         for ticker in allocation.targets:
             pos = positions.get(ticker, 0.0)

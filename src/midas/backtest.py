@@ -678,12 +678,17 @@ class BacktestEngine:
         post_sell_cash = state.cash + sell_proceeds
 
         # Phase 4: Size buys against post-sell cash, then filter restrictions.
+        # ``total_value`` is the same denominator the allocator used for
+        # ``current_weights``; passing it through keeps the per-ticker delta
+        # math consistent so held tickers don't fire phantom buys when sells
+        # earlier in the tick freed cash and shifted post-sell weights.
         buy_orders = self._order_sizer.size_buys(
             allocation,
             positions,
             current_prices,
             post_sell_cash,
             self._constraints,
+            total_value=total_value if total_value > 0 else None,
         )
         if state.restriction_tracker:
             buy_orders = [o for o in buy_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
