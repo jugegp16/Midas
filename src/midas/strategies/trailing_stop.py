@@ -1,10 +1,10 @@
-"""Trailing stop exit rule: sell when price falls from per-lot high-water mark."""
+"""Trailing stop exit rule: sell when price falls from high-water mark."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
 
@@ -12,42 +12,39 @@ class TrailingStop(ExitRule):
     def __init__(self, trail_pct: float = 0.10) -> None:
         self._trail_pct = trail_pct
 
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
-        if not lots or len(price_history) == 0:
-            return []
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0:
+            return proposed_target
         current = float(price_history[-1])
-        if current <= 0:
-            return []
+        if current <= 0 or high_water_mark <= 0:
+            return proposed_target
+        drawdown = (high_water_mark - current) / high_water_mark
+        in_profit = current > cost_basis if cost_basis > 0 else False
+        if drawdown >= self._trail_pct and in_profit:
+            return 0.0
+        return proposed_target
 
-        # Each lot tracks its own high-water mark since purchase, updated by
-        # the execution engine on every tick. A lot only triggers if (a) the
-        # trailing drawdown threshold is met AND (b) the lot is currently in
-        # profit — the trailing stop is a gain-protection mechanism, not a
-        # loss-cut (StopLoss handles that). Lots without a recorded high
-        # (synthesized lots in live mode before any tick) fall back to cost
-        # basis, which keeps the rule from firing until the engine has had a
-        # chance to observe at least one price.
-        def triggered(lot: PositionLot) -> bool:
-            high_water = lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis
-            if high_water <= 0:
-                return False
-            drawdown = (high_water - current) / high_water
-            return drawdown >= self._trail_pct and current > lot.cost_basis
-
-        def reason(lot: PositionLot) -> str:
-            high_water = lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis
-            drawdown_pct = (high_water - current) / high_water if high_water else 0.0
-            return (
-                f"{lot.shares:g} shares: drawdown {drawdown_pct:.1%} from high "
-                f"${high_water:.2f} (threshold {self._trail_pct:.0%}, basis ${lot.cost_basis:.2f})"
-            )
-
-        return self.fire_on_lots(ticker, lots, current, triggered, reason)
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        current = float(price_history[-1])
+        drawdown = (high_water_mark - current) / high_water_mark if high_water_mark > 0 else 0.0
+        return (
+            f"TrailingStop: {drawdown:.1%} drawdown from high "
+            f"${high_water_mark:.2f} (threshold {self._trail_pct:.0%}, "
+            f"basis ${cost_basis:.2f})"
+        )
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -55,4 +52,4 @@ class TrailingStop(ExitRule):
 
     @property
     def description(self) -> str:
-        return f"Sell lots in profit when price falls {self._trail_pct:.0%} from their high-water mark"
+        return f"Sell when price falls {self._trail_pct:.0%} from high-water mark (gain-protection only)"

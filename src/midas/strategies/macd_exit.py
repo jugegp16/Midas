@@ -1,16 +1,14 @@
 """MACD exit rule: sell on bearish MACD crossover (MACD line below signal).
 
-Companion to ``MACDCrossover`` (the entry signal). The two strategies are
-deliberately split into separate types — entries and exits never blend
-together. The bearish crossover is technical-only and lot-unaware: when
-triggered, all open shares of the ticker are sold regardless of cost basis.
+Companion to ``MACDCrossover`` (the entry signal). The bearish crossover
+is a technical signal that does not use cost basis or high-water mark.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, ExitRule
 from midas.strategies.macd_crossover import ema
 
@@ -30,18 +28,22 @@ class MACDExit(ExitRule):
     def warmup_period(self) -> int:
         return self._slow_period * RECURSIVE_WARMUP_MULTIPLIER + self._signal_period
 
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0:
+            return proposed_target
         min_len = self._slow_period + self._signal_period
-        if not lots or len(price_history) < min_len:
-            return []
+        if len(price_history) < min_len:
+            return proposed_target
         current = float(price_history[-1])
         if current <= 0:
-            return []
+            return proposed_target
 
         fast_ema = ema(price_history, self._fast_period)
         slow_ema = ema(price_history, self._slow_period)
@@ -49,12 +51,23 @@ class MACDExit(ExitRule):
         signal_line = ema(macd_line, self._signal_period)
         diff = float(macd_line[-1] - signal_line[-1])
 
-        # Bearish: MACD below signal line.
-        if diff >= 0:
-            return []
+        if diff < 0:
+            return 0.0
+        return proposed_target
 
-        reason = f"MACD below signal: MACD {macd_line[-1]:+.3f} vs signal {signal_line[-1]:+.3f} (diff {diff:+.3f})"
-        return self.sell_all(ticker, lots, current, reason)
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        fast_ema = ema(price_history, self._fast_period)
+        slow_ema = ema(price_history, self._slow_period)
+        macd_line = fast_ema - slow_ema
+        signal_line = ema(macd_line, self._signal_period)
+        diff = float(macd_line[-1] - signal_line[-1])
+        return f"MACD below signal: MACD {macd_line[-1]:+.3f} vs signal {signal_line[-1]:+.3f} (diff {diff:+.3f})"
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -63,6 +76,6 @@ class MACDExit(ExitRule):
     @property
     def description(self) -> str:
         return (
-            f"Sell entire position when MACD({self._fast_period},{self._slow_period}) "
+            f"Sell when MACD({self._fast_period},{self._slow_period}) "
             f"crosses below the {self._signal_period}-period signal line"
         )

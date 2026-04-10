@@ -97,24 +97,6 @@ class Order:
 
 
 @dataclass(frozen=True)
-class ExitIntent:
-    """Direct sell intent emitted by an ExitRule.
-
-    Each intent targets a single lot by positional index in the position's
-    lot list at evaluation time. ``lot_shares`` is denormalized from the
-    lot for convenience — ``OrderSizer.size_exits`` dedupes by
-    ``(ticker, lot_index)`` and sums ``lot_shares`` over the unique union
-    to compute the order's share count.
-    """
-
-    ticker: str
-    lot_index: int  # positional index in state.lots[ticker]
-    lot_shares: float  # shares in this lot (denormalized for sizing)
-    source: str  # strategy class name, used for stats aggregation
-    reason: str  # human explanation of this firing
-
-
-@dataclass(frozen=True)
 class PositionLot:
     """A single tax lot for an open position.
 

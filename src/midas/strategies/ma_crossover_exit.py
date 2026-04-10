@@ -1,16 +1,14 @@
 """Moving average crossover exit: sell on death cross (short MA < long MA).
 
-Companion to ``MovingAverageCrossover`` (the entry signal). The two strategies
-are deliberately split into separate types — entries and exits never blend
-together. The death cross is technical-only and lot-unaware: when triggered,
-all open shares of the ticker are sold regardless of cost basis.
+Companion to ``MovingAverageCrossover`` (the entry signal). The death cross
+is a technical signal that does not use cost basis or high-water mark.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
 
@@ -27,33 +25,46 @@ class MovingAverageCrossoverExit(ExitRule):
     def warmup_period(self) -> int:
         return self._long_window
 
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
-        if not lots or len(price_history) < self._long_window:
-            return []
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0:
+            return proposed_target
+        if len(price_history) < self._long_window:
+            return proposed_target
         current = float(price_history[-1])
         if current <= 0:
-            return []
+            return proposed_target
 
         short_ma = float(price_history[-self._short_window :].mean())
         long_ma = float(price_history[-self._long_window :].mean())
         if long_ma == 0:
-            return []
+            return proposed_target
 
         spread = (short_ma - long_ma) / long_ma
-        # Death cross: short MA below long MA.
-        if spread >= 0:
-            return []
+        if spread < 0:
+            return 0.0
+        return proposed_target
 
-        reason = (
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        short_ma = float(price_history[-self._short_window :].mean())
+        long_ma = float(price_history[-self._long_window :].mean())
+        spread = (short_ma - long_ma) / long_ma if long_ma else 0.0
+        return (
             f"Death cross: {self._short_window}-day MA ${short_ma:.2f} "
             f"below {self._long_window}-day MA ${long_ma:.2f} ({spread:.1%})"
         )
-        return self.sell_all(ticker, lots, current, reason)
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -61,4 +72,4 @@ class MovingAverageCrossoverExit(ExitRule):
 
     @property
     def description(self) -> str:
-        return f"Sell entire position on death cross ({self._short_window}-day MA below {self._long_window}-day MA)"
+        return f"Sell on death cross ({self._short_window}-day MA below {self._long_window}-day MA)"

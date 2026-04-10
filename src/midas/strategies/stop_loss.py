@@ -1,10 +1,10 @@
-"""Stop loss exit rule: sell lots whose unrealized loss exceeds threshold."""
+"""Stop loss exit rule: sell when unrealized loss exceeds threshold."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
 
@@ -12,29 +12,34 @@ class StopLoss(ExitRule):
     def __init__(self, loss_threshold: float = 0.10) -> None:
         self._loss_threshold = loss_threshold
 
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
-        if not lots or len(price_history) == 0:
-            return []
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0 or cost_basis <= 0:
+            return proposed_target
         current = float(price_history[-1])
         if current <= 0:
-            return []
+            return proposed_target
+        loss = (cost_basis - current) / cost_basis
+        if loss >= self._loss_threshold:
+            return 0.0
+        return proposed_target
 
-        def triggered(lot: PositionLot) -> bool:
-            return (lot.cost_basis - current) / lot.cost_basis >= self._loss_threshold
-
-        def reason(lot: PositionLot) -> str:
-            loss_pct = (lot.cost_basis - current) / lot.cost_basis
-            return (
-                f"{lot.shares:g} shares at {loss_pct:.1%} loss "
-                f"vs cost basis ${lot.cost_basis:.2f} (threshold {self._loss_threshold:.0%})"
-            )
-
-        return self.fire_on_lots(ticker, lots, current, triggered, reason)
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        current = float(price_history[-1])
+        loss = (cost_basis - current) / cost_basis
+        return f"StopLoss: {loss:.1%} loss vs cost basis ${cost_basis:.2f} (threshold {self._loss_threshold:.0%})"
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -42,4 +47,4 @@ class StopLoss(ExitRule):
 
     @property
     def description(self) -> str:
-        return f"Sell lots whose unrealized loss exceeds {self._loss_threshold:.0%} of cost basis"
+        return f"Sell when unrealized loss exceeds {self._loss_threshold:.0%} of cost basis"

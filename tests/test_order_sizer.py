@@ -6,7 +6,6 @@ from midas.allocator import AllocationResult
 from midas.models import (
     AllocationConstraints,
     Direction,
-    ExitIntent,
 )
 from midas.order_sizer import OrderSizer
 
@@ -154,96 +153,86 @@ class TestSizeBuys:
         assert orders[0].context.source == "Momentum"
 
 
-class TestSizeExits:
-    def test_exit_intent_becomes_sell_order(self):
-        """Per-lot ExitIntent is converted to a whole-share sell."""
+class TestSizeSells:
+    def test_sell_on_negative_delta(self):
+        """Clamped target below current weight produces a sell."""
         sizer = OrderSizer(default_slippage=0.0)
-        intent = ExitIntent(
-            ticker="VOO",
-            lot_index=0,
-            lot_shares=5.0,
-            source="StopLoss",
-            reason="loss exceeded",
+        # VOO: held 10 shares at $100 = $1000 of $10000 = 10% weight.
+        # Clamped target = 0% → sell all.
+        orders = sizer.size_sells(
+            clamped_targets={"VOO": 0.0},
+            positions={"VOO": 10.0},
+            prices={"VOO": 100.0},
+            total_value=10000.0,
+            clamp_attribution={"VOO": ("StopLoss", "loss exceeded")},
         )
-        orders = sizer.size_exits([intent], positions={"VOO": 10.0}, prices={"VOO": 100.0})
         assert len(orders) == 1
         assert orders[0].direction == Direction.SELL
-        assert orders[0].shares == 5
+        assert orders[0].shares == 10
         assert orders[0].context.source == "StopLoss"
         assert "loss exceeded" in orders[0].context.reason
 
-    def test_exit_capped_by_held_shares(self):
-        """Exit can't sell more shares than the position holds."""
+    def test_sell_capped_by_held_shares(self):
+        """Sell can't exceed held shares even if delta says more."""
         sizer = OrderSizer(default_slippage=0.0)
-        intent = ExitIntent(
-            ticker="VOO",
-            lot_index=0,
-            lot_shares=100.0,  # asks for 100 shares
-            source="StopLoss",
-            reason="full liquidation",
+        orders = sizer.size_sells(
+            clamped_targets={"VOO": 0.0},
+            positions={"VOO": 7.0},
+            prices={"VOO": 100.0},
+            total_value=10000.0,
+            clamp_attribution={"VOO": ("StopLoss", "full liquidation")},
         )
-        orders = sizer.size_exits([intent], positions={"VOO": 7.0}, prices={"VOO": 100.0})
         assert len(orders) == 1
         assert orders[0].shares == 7
 
-    def test_same_lot_dedupes_to_one_sell(self):
-        """Two rules targeting the same lot collapse to one sell.
-
-        Regression: ProfitTaking and TrailingStop both triggering lot 0
-        used to produce two sell orders each sized against the full
-        position. Per-lot dedupe ensures exactly one sell per lot — the
-        first claimer wins.
-        """
+    def test_no_sell_without_attribution(self):
+        """Tickers not in clamp_attribution produce no sells."""
         sizer = OrderSizer(default_slippage=0.0)
-        intents = [
-            ExitIntent(ticker="VOO", lot_index=0, lot_shares=10.0, source="ProfitTaking", reason="up 20%"),
-            ExitIntent(ticker="VOO", lot_index=0, lot_shares=10.0, source="TrailingStop", reason="trail hit"),
-        ]
-        orders = sizer.size_exits(intents, positions={"VOO": 10.0}, prices={"VOO": 100.0})
-        assert len(orders) == 1
-        assert orders[0].shares == 10  # full position, not 20
-        assert orders[0].context.source == "ProfitTaking"  # first claimer wins
-
-    def test_disjoint_lots_sell_union(self):
-        """Two rules targeting disjoint lots sell the union of both."""
-        sizer = OrderSizer(default_slippage=0.0)
-        intents = [
-            ExitIntent(ticker="VOO", lot_index=0, lot_shares=5.0, source="ProfitTaking", reason="up 20%"),
-            ExitIntent(ticker="VOO", lot_index=1, lot_shares=3.0, source="TrailingStop", reason="trail hit"),
-        ]
-        orders = sizer.size_exits(intents, positions={"VOO": 10.0}, prices={"VOO": 100.0})
-        assert len(orders) == 1
-        assert orders[0].shares == 8  # 5 + 3 = union
-        # PT contributed 5 shares, TS contributed 3 → PT wins attribution
-        assert orders[0].context.source == "ProfitTaking"
-
-    def test_partial_overlap_sells_union(self):
-        """Partial overlap: shared lot dedupes, disjoint lots contribute."""
-        sizer = OrderSizer(default_slippage=0.0)
-        intents = [
-            # PT claims lots 0 and 1
-            ExitIntent(ticker="VOO", lot_index=0, lot_shares=5.0, source="ProfitTaking", reason="a"),
-            ExitIntent(ticker="VOO", lot_index=1, lot_shares=5.0, source="ProfitTaking", reason="b"),
-            # TS claims lots 1 and 2 (lot 1 overlaps with PT)
-            ExitIntent(ticker="VOO", lot_index=1, lot_shares=5.0, source="TrailingStop", reason="c"),
-            ExitIntent(ticker="VOO", lot_index=2, lot_shares=3.0, source="TrailingStop", reason="d"),
-        ]
-        orders = sizer.size_exits(intents, positions={"VOO": 20.0}, prices={"VOO": 100.0})
-        assert len(orders) == 1
-        assert orders[0].shares == 13  # lots 0(5) + 1(5) + 2(3) = 13
-        # PT: lots 0+1 = 10 shares; TS: lot 2 = 3 shares → PT wins
-        assert orders[0].context.source == "ProfitTaking"
+        orders = sizer.size_sells(
+            clamped_targets={"VOO": 0.05},
+            positions={"VOO": 10.0},
+            prices={"VOO": 100.0},
+            total_value=10000.0,
+            clamp_attribution={},  # no attribution → no sell
+        )
+        assert orders == []
 
     def test_distinct_tickers_both_fire(self):
-        """Dedupe is per-ticker — different tickers still produce both sells."""
+        """Different tickers with attribution produce independent sells."""
         sizer = OrderSizer(default_slippage=0.0)
-        intents = [
-            ExitIntent(ticker="A", lot_index=0, lot_shares=5.0, source="StopLoss", reason="a"),
-            ExitIntent(ticker="B", lot_index=0, lot_shares=5.0, source="StopLoss", reason="b"),
-        ]
-        orders = sizer.size_exits(
-            intents,
+        orders = sizer.size_sells(
+            clamped_targets={"A": 0.0, "B": 0.0},
             positions={"A": 10.0, "B": 10.0},
             prices={"A": 100.0, "B": 100.0},
+            total_value=10000.0,
+            clamp_attribution={
+                "A": ("StopLoss", "a"),
+                "B": ("StopLoss", "b"),
+            },
         )
         assert sorted(o.ticker for o in orders) == ["A", "B"]
+
+    def test_no_sell_when_no_position(self):
+        """No position held → no sell even with attribution."""
+        sizer = OrderSizer(default_slippage=0.0)
+        orders = sizer.size_sells(
+            clamped_targets={"VOO": 0.0},
+            positions={"VOO": 0.0},
+            prices={"VOO": 100.0},
+            total_value=10000.0,
+            clamp_attribution={"VOO": ("StopLoss", "loss exceeded")},
+        )
+        assert orders == []
+
+    def test_sell_slippage_applied(self):
+        """Sell price reflects slippage below market."""
+        sizer = OrderSizer(default_slippage=0.01)
+        orders = sizer.size_sells(
+            clamped_targets={"VOO": 0.0},
+            positions={"VOO": 10.0},
+            prices={"VOO": 100.0},
+            total_value=10000.0,
+            clamp_attribution={"VOO": ("StopLoss", "loss exceeded")},
+        )
+        assert len(orders) == 1
+        assert orders[0].price < 100.0

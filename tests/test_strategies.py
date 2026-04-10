@@ -1,10 +1,7 @@
-"""Tests for individual strategies — entry score() and exit evaluate_exit() interfaces."""
-
-from datetime import date
+"""Tests for individual strategies — entry score() and exit clamp_target() interfaces."""
 
 import numpy as np
 
-from midas.models import PositionLot
 from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
 from midas.strategies.gap_down_recovery import GapDownRecovery
@@ -19,19 +16,6 @@ from midas.strategies.rsi_oversold import RSIOversold
 from midas.strategies.stop_loss import StopLoss
 from midas.strategies.trailing_stop import TrailingStop
 from midas.strategies.vwap_reversion import VWAPReversion
-
-
-def _lot(
-    shares: float = 10.0,
-    basis: float = 100.0,
-    high_water_mark: float | None = None,
-) -> PositionLot:
-    return PositionLot(
-        shares=shares,
-        purchase_date=date(2024, 1, 1),
-        cost_basis=basis,
-        high_water_mark=high_water_mark,
-    )
 
 
 class TestMeanReversion:
@@ -57,21 +41,18 @@ class TestMeanReversion:
 
 
 class TestProfitTaking:
-    def test_fires_on_gain(self, rising_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.15)
+    def test_clamps_to_zero_on_gain(self, rising_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.15)
         # rising_prices ramps from 100 to ~150 — well above 15% gain.
-        intents = strategy.evaluate_exit("X", [_lot(basis=100.0)], rising_prices)
-        assert len(intents) == 1
-        assert intents[0].lot_shares > 0
+        assert rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=150.0) == 0.0
 
-    def test_no_fire_below_threshold(self, flat_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.20)
-        intents = strategy.evaluate_exit("X", [_lot(basis=100.0)], flat_prices)
-        assert intents == []
+    def test_no_clamp_below_threshold(self, flat_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.20)
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
-    def test_no_fire_without_lots(self, rising_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.15)
-        assert strategy.evaluate_exit("X", [], rising_prices) == []
+    def test_no_clamp_without_cost_basis(self, rising_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.15)
+        assert rule.clamp_target("X", 0.10, rising_prices, cost_basis=0.0, high_water_mark=150.0) == 0.10
 
 
 class TestMomentum:
@@ -156,15 +137,15 @@ class TestMACDCrossover:
 
 
 class TestMACDExit:
-    def test_no_fire_on_flat(self, flat_prices: np.ndarray) -> None:
+    def test_no_clamp_on_flat(self, flat_prices: np.ndarray) -> None:
         rule = MACDExit()
-        assert rule.evaluate_exit("X", [_lot()], flat_prices) == []
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
 
 class TestMovingAverageCrossoverExit:
-    def test_no_fire_on_flat(self, flat_prices: np.ndarray) -> None:
+    def test_no_clamp_on_flat(self, flat_prices: np.ndarray) -> None:
         rule = MovingAverageCrossoverExit(short_window=10, long_window=30)
-        assert rule.evaluate_exit("X", [_lot()], flat_prices) == []
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
 
 class TestGapDownRecovery:
@@ -189,86 +170,49 @@ class TestGapDownRecovery:
 
 
 class TestTrailingStop:
-    def test_fires_on_drawdown(self, peak_then_drop_prices: np.ndarray) -> None:
-        # Engine is responsible for tracking each lot's high-water mark.
-        # Pre-seed it to the peak so the strategy sees the full drawdown.
+    def test_clamps_on_drawdown(self, peak_then_drop_prices: np.ndarray) -> None:
         peak = float(peak_then_drop_prices.max())
-        strategy = TrailingStop(trail_pct=0.08)
-        intents = strategy.evaluate_exit(
-            "X",
-            [_lot(basis=100.0, high_water_mark=peak)],
-            peak_then_drop_prices,
-        )
-        assert len(intents) == 1
+        rule = TrailingStop(trail_pct=0.08)
+        # Current price is below peak and above basis — gain-protection fires.
+        result = rule.clamp_target("X", 0.10, peak_then_drop_prices, cost_basis=100.0, high_water_mark=peak)
+        assert result == 0.0
 
-    def test_no_fire_on_rising(self, rising_prices: np.ndarray) -> None:
-        strategy = TrailingStop(trail_pct=0.10)
+    def test_no_clamp_on_rising(self, rising_prices: np.ndarray) -> None:
+        rule = TrailingStop(trail_pct=0.10)
         peak = float(rising_prices.max())
-        assert (
-            strategy.evaluate_exit(
-                "X",
-                [_lot(basis=100.0, high_water_mark=peak)],
-                rising_prices,
-            )
-            == []
-        )
+        # Current price == peak, so drawdown is 0% — no clamp.
+        result = rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=peak)
+        assert result == 0.10
 
     def test_name_and_description(self) -> None:
         s = TrailingStop(trail_pct=0.15)
         assert s.name == "TrailingStop"
         assert s.description
 
-    def test_multi_lot_only_triggered_lots_sold(self) -> None:
-        """Per-lot HWM: only lots past their own drawdown threshold sell.
-
-        Two lots in the same ticker:
-          - Lot A: 10 shares, basis $80, HWM $120 — drawdown from $120 to
-            current $100 is 16.7% (> 10% threshold) AND still in profit
-            ($100 > $80). Triggers.
-          - Lot B: 5 shares, basis $95, HWM $102 — drawdown from $102 to
-            $100 is 2.0% (< 10% threshold). Does not trigger.
-
-        Expected: one intent for lot A (10 shares at index 0). Lot B is
-        untouched — a flat HWM across the position would have sold both.
-        """
-        current = 100.0
-        prices = np.array([80.0, 120.0, 102.0, current])
-        lots = [
-            _lot(shares=10.0, basis=80.0, high_water_mark=120.0),
-            _lot(shares=5.0, basis=95.0, high_water_mark=102.0),
-        ]
-        strategy = TrailingStop(trail_pct=0.10)
-        intents = strategy.evaluate_exit("X", lots, prices)
-        assert len(intents) == 1
-        assert intents[0].lot_shares == 10.0
-        assert intents[0].lot_index == 0
-
-    def test_multi_lot_losing_lot_skipped(self) -> None:
-        """A lot that's underwater must not fire trailing-stop even if its
-        HWM drawdown crosses the threshold — TrailingStop is gain-protection,
-        StopLoss handles losses."""
-        current = 70.0
-        prices = np.array([80.0, 100.0, current])
-        # Lot is underwater (basis 80 > current 70) but drawdown from HWM
-        # 100 → 70 is 30%, well past 10% threshold.
-        lots = [_lot(shares=10.0, basis=80.0, high_water_mark=100.0)]
-        strategy = TrailingStop(trail_pct=0.10)
-        assert strategy.evaluate_exit("X", lots, prices) == []
+    def test_no_clamp_when_underwater(self) -> None:
+        """TrailingStop is gain-protection only — no fire when losing."""
+        prices = np.array([80.0, 100.0, 70.0])
+        rule = TrailingStop(trail_pct=0.10)
+        # Basis 80 > current 70: underwater, so no fire despite drawdown.
+        result = rule.clamp_target("X", 0.10, prices, cost_basis=80.0, high_water_mark=100.0)
+        assert result == 0.10
 
 
 class TestStopLoss:
-    def test_fires_on_loss(self, dropping_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        intents = strategy.evaluate_exit("X", [_lot(basis=100.0)], dropping_prices)
-        assert len(intents) == 1
+    def test_clamps_on_loss(self, dropping_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, dropping_prices, cost_basis=100.0, high_water_mark=100.0)
+        assert result == 0.0
 
-    def test_no_fire_above_cost(self, rising_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        assert strategy.evaluate_exit("X", [_lot(basis=100.0)], rising_prices) == []
+    def test_no_clamp_above_cost(self, rising_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=150.0)
+        assert result == 0.10
 
-    def test_no_fire_without_lots(self, dropping_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        assert strategy.evaluate_exit("X", [], dropping_prices) == []
+    def test_no_clamp_without_cost_basis(self, dropping_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, dropping_prices, cost_basis=0.0, high_water_mark=100.0)
+        assert result == 0.10
 
     def test_name_and_description(self) -> None:
         s = StopLoss(loss_threshold=0.05)

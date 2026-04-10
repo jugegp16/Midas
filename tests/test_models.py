@@ -8,7 +8,6 @@ from midas.models import (
     AllocationConstraints,
     CashInfusion,
     Direction,
-    ExitIntent,
     Holding,
     HoldingPeriod,
     Order,
@@ -79,19 +78,6 @@ def test_allocation_constraints_defaults() -> None:
     assert c.min_cash_pct == 0.05
     assert c.min_buy_delta == 0.02
     assert c.softmax_temperature == 0.5
-
-
-def test_exit_intent() -> None:
-    intent = ExitIntent(
-        ticker="VOO",
-        lot_index=0,
-        lot_shares=5.0,
-        source="StopLoss",
-        reason="loss exceeded threshold",
-    )
-    assert intent.lot_shares == 5.0
-    assert intent.lot_index == 0
-    assert intent.source == "StopLoss"
 
 
 def test_position_lot() -> None:

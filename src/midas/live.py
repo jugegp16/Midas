@@ -9,14 +9,12 @@ from datetime import UTC, date, datetime, timedelta
 import numpy as np
 import pandas as pd
 
-from midas.allocator import Allocator
+from midas.allocator import AllocationResult, Allocator
 from midas.data.provider import DataProvider
 from midas.models import (
     AllocationConstraints,
     Direction,
-    ExitIntent,
     PortfolioConfig,
-    PositionLot,
 )
 from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
@@ -132,26 +130,20 @@ class LiveEngine:
             current_weights=current_weights,
         )
 
-        # Phase 2: Exit rules. Live mode has no per-lot history (the portfolio
-        # config records only an aggregate cost_basis), so each held position
-        # is presented as a single synthetic lot. This is good enough for
-        # stop-loss / trailing-stop / profit-taking which all read from
-        # current price vs cost basis. A future iteration should track lots
-        # across ticks for true FIFO accounting (see follow-up issue).
-        exit_intents: list[ExitIntent] = []
+        # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).
+        clamped_targets = dict(allocation.targets)
+        clamp_attribution: dict[str, tuple[str, str]] = {}
         for rule in self._exit_rules:
             for ticker in active_tickers:
                 if positions.get(ticker, 0.0) <= 0:
+                    continue
+                proposed = clamped_targets.get(ticker, 0.0)
+                if proposed <= 0:
                     continue
                 holding = self._portfolio.get_holding(ticker)
                 if holding is None:
                     continue
                 if holding.cost_basis is None:
-                    # No basis on file — fall back to today's price so the lot
-                    # is "fresh". This silently disables stop-loss / profit-
-                    # taking on the position (gain == 0%, loss == 0%) until a
-                    # real basis is recorded; warn loudly so the operator
-                    # knows their stops aren't actually armed.
                     logger.warning(
                         "%s: no cost_basis in portfolio config — using current "
                         "price as fallback. Stop-loss and profit-taking exits "
@@ -162,24 +154,24 @@ class LiveEngine:
                     cost_basis = current_prices[ticker]
                 else:
                     cost_basis = holding.cost_basis
-                # Synthesize a single lot with HWM = max(basis, current price)
-                # so trailing-stop has a sensible reference until proper
-                # per-lot tracking is added.
                 hwm = max(cost_basis, current_prices[ticker])
-                lots = [
-                    PositionLot(
-                        shares=holding.shares,
-                        purchase_date=None,
-                        cost_basis=cost_basis,
-                        high_water_mark=hwm,
-                    )
-                ]
-                exit_intents.extend(rule.evaluate_exit(ticker, lots, price_arrays[ticker]))
+                clamped = rule.clamp_target(ticker, proposed, price_arrays[ticker], cost_basis, hwm)
+                if clamped < proposed:
+                    clamped_targets[ticker] = clamped
+                    if ticker not in clamp_attribution:
+                        reason = rule.clamp_reason(ticker, price_arrays[ticker], cost_basis, hwm)
+                        clamp_attribution[ticker] = (rule.name, reason)
 
         # Size sells and filter restriction-blocked sells *before* computing
         # post-sell cash. Otherwise a blocked sell would leak phantom proceeds
         # into the buy pass, sizing buys against cash that will never arrive.
-        exit_orders = self._order_sizer.size_exits(exit_intents, positions, current_prices)
+        exit_orders = self._order_sizer.size_sells(
+            clamped_targets,
+            positions,
+            current_prices,
+            total_value,
+            clamp_attribution,
+        )
         if self._restriction_tracker:
             exit_orders = [
                 o for o in exit_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
@@ -187,8 +179,14 @@ class LiveEngine:
         sell_proceeds = sum(o.estimated_value for o in exit_orders)
         post_sell_cash = self._portfolio.available_cash + sell_proceeds
 
+        clamped_allocation = AllocationResult(
+            targets=clamped_targets,
+            contributions=allocation.contributions,
+            blended_scores=allocation.blended_scores,
+        )
+
         buy_orders = self._order_sizer.size_buys(
-            allocation,
+            clamped_allocation,
             positions,
             current_prices,
             post_sell_cash,

@@ -13,11 +13,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from midas.allocator import Allocator
+from midas.allocator import AllocationResult, Allocator
 from midas.models import (
     AllocationConstraints,
     Direction,
-    ExitIntent,
     HoldingPeriod,
     Order,
     PortfolioConfig,
@@ -98,6 +97,9 @@ class _SimState:
     # for exit-rule evaluation (lot-aware stops, per-lot trailing high-water
     # marks) and for FIFO holding-period accounting on sells.
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
+    # Aggregate per-ticker high-water mark for exit rule evaluation.
+    # Updated each tick with the day's closing price.
+    high_water_marks: dict[str, float] = field(default_factory=dict)
     cash: float = 0.0
     starting_value: float = 0.0
     trades: list[TradeRecord] = field(default_factory=list)
@@ -445,6 +447,7 @@ class BacktestEngine:
                         high_water_mark=entry_price,
                     )
                 ]
+                state.high_water_marks[h.ticker] = entry_price
 
         state.starting_value = state.cash + sum(
             lot.shares * lot.cost_basis for lots in state.lots.values() for lot in lots
@@ -576,6 +579,7 @@ class BacktestEngine:
                         high_water_mark=entry_price,
                     )
                 ]
+                state.high_water_marks[ticker] = entry_price
                 state.starting_value += added_value
                 activated.add(ticker)
                 self._log(f"{ticker}: activated on {day} at ${entry_price:.2f} ({shares} shares)")
@@ -627,24 +631,15 @@ class BacktestEngine:
                 t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers
             }
 
-        # Update each lot's high-water mark with today's price before exit
-        # rules see them. TrailingStop reads ``lot.high_water_mark`` to size
-        # its drawdown threshold per-lot, so this update has to happen on
-        # every tick regardless of whether a trade fires.
+        # Update aggregate per-ticker high-water marks before exit rules
+        # evaluate. TrailingStop reads HWM to size its drawdown threshold.
         for ticker in active_tickers:
-            lots = state.lots.get(ticker)
-            if not lots:
+            if state.positions.get(ticker, 0.0) <= 0:
                 continue
             px = current_prices[ticker]
-            for i, lot in enumerate(lots):
-                prev_high = lot.high_water_mark if lot.high_water_mark is not None else lot.cost_basis
-                if px > prev_high:
-                    lots[i] = PositionLot(
-                        shares=lot.shares,
-                        purchase_date=lot.purchase_date,
-                        cost_basis=lot.cost_basis,
-                        high_water_mark=px,
-                    )
+            prev = state.high_water_marks.get(ticker, 0.0)
+            if px > prev:
+                state.high_water_marks[ticker] = px
 
         # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
@@ -655,22 +650,38 @@ class BacktestEngine:
 
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
 
-        # Phase 2: Exit rules emit lot-aware exit intents per held ticker.
-        exit_intents: list[ExitIntent] = []
+        # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).
+        # Each rule can only reduce a target, never increase. First clamper
+        # wins attribution for that ticker.
+        clamped_targets = dict(allocation.targets)
+        clamp_attribution: dict[str, tuple[str, str]] = {}
         for rule in self._exit_rules:
             for ticker in active_tickers:
                 if state.positions.get(ticker, 0.0) <= 0:
                     continue
-                lots = state.lots.get(ticker, [])
-                if not lots:
+                proposed = clamped_targets.get(ticker, 0.0)
+                if proposed <= 0:
                     continue
-                exit_intents.extend(rule.evaluate_exit(ticker, lots, current_data[ticker]))
+                cost_basis = self._aggregate_cost_basis(state.lots.get(ticker, []))
+                hwm = state.high_water_marks.get(ticker, 0.0)
+                clamped = rule.clamp_target(ticker, proposed, current_data[ticker], cost_basis, hwm)
+                if clamped < proposed:
+                    clamped_targets[ticker] = clamped
+                    if ticker not in clamp_attribution:
+                        reason = rule.clamp_reason(ticker, current_data[ticker], cost_basis, hwm)
+                        clamp_attribution[ticker] = (rule.name, reason)
 
-        # Phase 3: Size sells from intents and filter restriction-blocked sells
-        # *before* computing post-sell cash. Otherwise a blocked sell would
+        # Phase 3: Size sells from clamped targets and filter restriction-blocked
+        # sells *before* computing post-sell cash. Otherwise a blocked sell would
         # leak phantom proceeds into the buy pass and the cash balance could
         # go negative when the buy fills but the sell didn't.
-        exit_orders = self._order_sizer.size_exits(exit_intents, positions, current_prices)
+        exit_orders = self._order_sizer.size_sells(
+            clamped_targets,
+            positions,
+            current_prices,
+            total_value,
+            clamp_attribution,
+        )
         if state.restriction_tracker:
             exit_orders = [
                 o for o in exit_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)
@@ -678,13 +689,21 @@ class BacktestEngine:
         sell_proceeds = sum(o.estimated_value for o in exit_orders)
         post_sell_cash = state.cash + sell_proceeds
 
+        # Build clamped allocation for buy sizing so that buy-side doesn't
+        # try to buy tickers that were just clamped to 0.
+        clamped_allocation = AllocationResult(
+            targets=clamped_targets,
+            contributions=allocation.contributions,
+            blended_scores=allocation.blended_scores,
+        )
+
         # Phase 4: Size buys against post-sell cash, then filter restrictions.
         # ``total_value`` is the same denominator the allocator used for
         # ``current_weights``; passing it through keeps the per-ticker delta
         # math consistent so held tickers don't fire phantom buys when sells
         # earlier in the tick freed cash and shifted post-sell weights.
         buy_orders = self._order_sizer.size_buys(
-            allocation,
+            clamped_allocation,
             positions,
             current_prices,
             post_sell_cash,
@@ -720,6 +739,14 @@ class BacktestEngine:
                 if state.restriction_tracker:
                     state.restriction_tracker.record_trade(order.ticker, order.direction, day)
                 state.cash -= order.estimated_value
+
+    @staticmethod
+    def _aggregate_cost_basis(lots: list[PositionLot]) -> float:
+        """Share-weighted average cost basis across all open lots."""
+        total_shares = sum(lot.shares for lot in lots)
+        if total_shares <= 0:
+            return 0.0
+        return sum(lot.shares * lot.cost_basis for lot in lots) / total_shares
 
     @staticmethod
     def _fifo_consumed_basis(lots: list[PositionLot], shares: float) -> float:

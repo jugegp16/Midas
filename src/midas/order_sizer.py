@@ -1,18 +1,18 @@
 """OrderSizer: turn allocation decisions into sized Order objects.
 
-Two stateless methods, no shared logic between them:
+Two stateless methods:
 
 - ``size_buys`` takes target weights from the Allocator and produces buy
   Orders for any positive delta above ``min_buy_delta``. Never sells —
   drift above target is allowed (winners run; the soft position cap blocks
   further buys but never trims).
 
-- ``size_exits`` takes per-lot ``ExitIntent`` objects from ExitRule
-  strategies, deduplicates by ``(ticker, lot_index)`` to form the union of
-  triggered lots, and produces one sell Order per ticker.
+- ``size_sells`` takes clamped target weights (after exit rules have
+  reduced them) and produces sell Orders for any negative delta where
+  the current weight exceeds the clamped target.
 
-Sells and buys come from different sources and have honest, separate
-attribution paths. There is no diff-based "rebalance trim" anymore.
+Buys come from entry-signal-driven targets; sells come from exit-rule
+clamping. Attribution is honest and separate.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from midas.allocator import AllocationResult
 from midas.models import (
     AllocationConstraints,
     Direction,
-    ExitIntent,
     Order,
     OrderContext,
 )
@@ -56,7 +55,7 @@ class OrderSizer:
 
         Sells are not produced here — drift above target is allowed and the
         soft cap only blocks further buys. Any required sells come from
-        ``size_exits``.
+        ``size_sells``.
 
         ``total_value`` must be the same portfolio basis the allocator used to
         compute ``allocation.targets``. The caller is responsible for passing a
@@ -126,62 +125,53 @@ class OrderSizer:
 
         return buys
 
-    def size_exits(
+    def size_sells(
         self,
-        intents: list[ExitIntent],
+        clamped_targets: dict[str, float],
         positions: dict[str, float],
         prices: dict[str, float],
+        total_value: float,
+        clamp_attribution: dict[str, tuple[str, str]],
     ) -> list[Order]:
-        """Convert per-lot exit intents into sized sell orders.
+        """Sell orders from negative deltas (clamped target < current weight).
 
-        Multiple exit rules may target the same lot on the same tick (e.g.
-        ProfitTaking and TrailingStop both fire on lot 0). Intents are
-        deduplicated by ``(ticker, lot_index)`` — the first intent to claim
-        a lot wins — and the unique union is summed to get the total shares
-        to sell. This is the exit-side analog of the allocator's softmax:
-        one decision per ticker per tick, but computed as the union of
-        independently triggered lots rather than a dollar-amount maximum.
+        ``clamped_targets`` maps ticker → clamped target weight (after exit
+        rules have reduced the allocator's proposed targets).
 
-        Attribution goes to the source whose claimed lots contribute the
-        most shares. The reason string comes from that source's first
-        claimed intent.
+        ``clamp_attribution`` maps ticker → (source, reason) for attribution
+        when an exit rule fired. Only tickers present in this dict will
+        generate sell orders.
+
+        Sells are sized from the negative delta between clamped target and
+        current weight, capped at held shares. Slippage is applied
+        conservatively (sell price below market).
         """
-        # Group by ticker.
-        by_ticker: dict[str, list[ExitIntent]] = {}
-        for intent in intents:
-            by_ticker.setdefault(intent.ticker, []).append(intent)
+        if total_value <= 0:
+            return []
 
         orders: list[Order] = []
-        for ticker, ticker_intents in by_ticker.items():
+        for ticker, clamped_w in clamped_targets.items():
+            if ticker not in clamp_attribution:
+                continue
+
+            pos = positions.get(ticker, 0.0)
             px = prices.get(ticker, 0.0)
-            if px <= 0:
+            if pos <= 0 or px <= 0:
                 continue
 
-            # Dedupe by lot_index: first claimer wins.
-            claimed: dict[int, ExitIntent] = {}
-            for intent in ticker_intents:
-                if intent.lot_shares <= 0:
-                    continue
-                if intent.lot_index not in claimed:
-                    claimed[intent.lot_index] = intent
-
-            if not claimed:
+            current_w = (pos * px) / total_value
+            delta = current_w - clamped_w
+            if delta <= 0:
                 continue
 
-            # Total shares from union of triggered lots, capped at held.
-            total_shares = sum(i.lot_shares for i in claimed.values())
+            sell_value = delta * total_value
             slip_price = px * (1 - self._default_slippage)
-            shares = min(math.floor(total_shares), math.floor(positions.get(ticker, 0.0)))
+            shares = math.floor(sell_value / px)
+            shares = min(shares, math.floor(pos))
             if shares <= 0:
                 continue
 
-            # Attribution: source that contributed the most shares.
-            by_source: dict[str, float] = {}
-            for intent in claimed.values():
-                by_source[intent.source] = by_source.get(intent.source, 0.0) + intent.lot_shares
-            winning_source = max(by_source, key=lambda s: by_source[s])
-            winning_reason = next(i.reason for i in claimed.values() if i.source == winning_source)
-
+            source, reason = clamp_attribution[ticker]
             orders.append(
                 Order(
                     ticker=ticker,
@@ -192,10 +182,10 @@ class OrderSizer:
                     context=OrderContext(
                         contributions={},
                         blended_score=0.0,
-                        target_weight=0.0,
-                        current_weight=0.0,
-                        reason=winning_reason,
-                        source=winning_source,
+                        target_weight=clamped_w,
+                        current_weight=round(current_w, 6),
+                        reason=reason,
+                        source=source,
                     ),
                 )
             )

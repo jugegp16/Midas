@@ -681,7 +681,7 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
 
     The backtest orders Phase 3 as:
 
-        1. size exits from ExitRule intents
+        1. size sells from clamped targets
         2. filter restriction-blocked sells
         3. compute ``post_sell_cash = state.cash + sum(filtered)``
         4. call ``size_buys(..., cash=post_sell_cash, ...)``
@@ -733,6 +733,7 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
             )
         ]
     }
+    state.high_water_marks = {"A": 100.0}
     state.restriction_tracker = RestrictionTracker(TradingRestrictions(round_trip_days=30))
     state.restriction_tracker.record_trade("A", Direction.BUY, date(2024, 1, 15))
 
@@ -758,7 +759,7 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
 
     When a held lot is in deep profit *and* its HWM has already drifted
     below the trail threshold, both rules independently want to liquidate
-    the entire position. Pre-fix, ``size_exits`` produced two sell orders
+    the entire position. Pre-fix, ``size_sells`` produced two sell orders
     each sized against the full position — the second sell drained shares
     that no longer existed, fabricated cash, and broke the realized-P&L
     reconciliation against ``final - start``.
@@ -796,6 +797,7 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
             )
         ]
     }
+    state.high_water_marks = {"A": 130.0}
     state.starting_value = 800.0  # 10 shares at $80 basis
     state.twr_base_value = 800.0
 

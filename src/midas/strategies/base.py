@@ -6,26 +6,29 @@ Two distinct strategy roles, enforced by the type system:
   blended by the Allocator into target weights via softmax. Entries are
   the only thing that drives buys.
 
-- ``ExitRule`` evaluates the lots of an open position and emits direct
-  ``ExitIntent`` objects (one per triggered lot, analogous to "sell lot N because Y").
-  Exits never participate in score blending and never go through the
-  target-weight path; the OrderSizer converts intents to sized sell orders.
+- ``ExitRule`` is a downstream override layer (the LEAN RiskManagementModel
+  pattern). Each rule receives the allocator's proposed target weight for
+  a held ticker and can clamp it downward (reduce or zero it) but never
+  increase it. Sells arise from the negative delta between the clamped
+  target and the current weight. Exit rules evaluate at the aggregate
+  position level (weighted-average cost basis, per-ticker high-water
+  mark), not per lot.
 
 Both inherit from ``Strategy`` for shared bookkeeping (``name``,
 ``warmup_period``, ``suitability``, ``description``, ``tier_label``), but
 the two scoring interfaces (``EntrySignal.score`` and
-``ExitRule.evaluate_exit``) are completely disjoint.
+``ExitRule.clamp_target``) are completely disjoint.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from typing import ClassVar
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 
 # Recursive indicators (EMA, RSI, MACD) converge to their steady-state value
 # only after ~3-10x their nominal period. Following TA-Lib's "Unstable Period"
@@ -134,74 +137,47 @@ class EntrySignal(Strategy):
 
 
 class ExitRule(Strategy):
-    """Strategy that emits direct exit intents based on lot state.
+    """Downstream override layer that clamps allocator targets downward.
 
-    Receives the FIFO lot list for one open position plus the current price
-    history and returns zero or more ``ExitIntent`` objects (one per
-    triggered lot) describing which lot to sell and why. Exit intents bypass
-    the target-weight blend entirely — the OrderSizer dedupes per-lot
-    intents across all rules and converts them into sell Orders.
+    Each rule receives the allocator's proposed target weight for a held
+    position plus aggregate position data (cost basis, high-water mark,
+    price history) and returns a possibly-reduced target. Exit rules
+    never increase a target — they can only reduce or zero it. Sells
+    arise from the negative delta between the clamped target and the
+    current portfolio weight.
+
+    Multiple exit rules are applied sequentially. Each sees the output
+    of the previous rule, so a StopLoss that fires first prevents a
+    later TrailingStop from re-evaluating the same target.
     """
 
     tier_label: ClassVar[str] = "Exit Rule"
 
     @abstractmethod
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
-        """Return a list of exit intents for *ticker* given its open *lots*."""
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        """Return the adjusted target weight for *ticker*.
 
-    # ----- shared helpers used by lot-aware and full-position exit rules -----
-
-    def fire_on_lots(
-        self,
-        ticker: str,
-        lots: list[PositionLot],
-        current: float,
-        predicate: Callable[[PositionLot], bool],
-        reason: Callable[[PositionLot], str],
-    ) -> list[ExitIntent]:
-        """Build one ExitIntent per lot matching ``predicate``.
-
-        Lots with non-positive shares or non-positive cost basis are skipped.
-        ``reason(lot)`` produces the human-readable log string for a single
-        triggered lot. Returns an empty list when no lot triggers.
+        Must be ``<= proposed_target``. Return ``proposed_target`` unchanged
+        when this rule has no opinion. Return ``0.0`` for full liquidation.
         """
-        intents: list[ExitIntent] = []
-        for i, lot in enumerate(lots):
-            if lot.cost_basis <= 0 or lot.shares <= 0:
-                continue
-            if predicate(lot):
-                intents.append(
-                    ExitIntent(
-                        ticker=ticker,
-                        lot_index=i,
-                        lot_shares=lot.shares,
-                        source=self.name,
-                        reason=reason(lot),
-                    )
-                )
-        return intents
 
-    def sell_all(
+    def clamp_reason(
         self,
         ticker: str,
-        lots: list[PositionLot],
-        current: float,
-        reason: str,
-    ) -> list[ExitIntent]:
-        """Build one ExitIntent per lot to liquidate the entire open position."""
-        return [
-            ExitIntent(
-                ticker=ticker,
-                lot_index=i,
-                lot_shares=lot.shares,
-                source=self.name,
-                reason=reason,
-            )
-            for i, lot in enumerate(lots)
-            if lot.shares > 0
-        ]
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        """Human-readable explanation when this rule fires.
+
+        Called only when ``clamp_target`` reduced the target. Subclasses
+        should override to provide specific details (loss %, drawdown %, etc).
+        """
+        return f"{self.name} triggered on {ticker}"

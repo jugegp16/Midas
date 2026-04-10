@@ -1,10 +1,10 @@
-"""Profit taking exit rule: sell lots whose unrealized gain exceeds threshold."""
+"""Profit taking exit rule: sell when unrealized gain exceeds threshold."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, ExitIntent, PositionLot
+from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
 
@@ -12,29 +12,34 @@ class ProfitTaking(ExitRule):
     def __init__(self, gain_threshold: float = 0.20) -> None:
         self._gain_threshold = gain_threshold
 
-    def evaluate_exit(
+    def clamp_target(
         self,
         ticker: str,
-        lots: list[PositionLot],
+        proposed_target: float,
         price_history: np.ndarray,
-    ) -> list[ExitIntent]:
-        if not lots or len(price_history) == 0:
-            return []
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0 or cost_basis <= 0:
+            return proposed_target
         current = float(price_history[-1])
         if current <= 0:
-            return []
+            return proposed_target
+        gain = (current - cost_basis) / cost_basis
+        if gain >= self._gain_threshold:
+            return 0.0
+        return proposed_target
 
-        def triggered(lot: PositionLot) -> bool:
-            return (current - lot.cost_basis) / lot.cost_basis >= self._gain_threshold
-
-        def reason(lot: PositionLot) -> str:
-            gain_pct = (current - lot.cost_basis) / lot.cost_basis
-            return (
-                f"{lot.shares:g} shares at {gain_pct:.1%} gain "
-                f"vs cost basis ${lot.cost_basis:.2f} (threshold {self._gain_threshold:.0%})"
-            )
-
-        return self.fire_on_lots(ticker, lots, current, triggered, reason)
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        current = float(price_history[-1])
+        gain = (current - cost_basis) / cost_basis
+        return f"ProfitTaking: {gain:.1%} gain vs cost basis ${cost_basis:.2f} (threshold {self._gain_threshold:.0%})"
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -42,4 +47,4 @@ class ProfitTaking(ExitRule):
 
     @property
     def description(self) -> str:
-        return f"Sell lots whose unrealized gain exceeds {self._gain_threshold:.0%} of cost basis"
+        return f"Sell when unrealized gain exceeds {self._gain_threshold:.0%} of cost basis"
