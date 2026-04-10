@@ -631,7 +631,6 @@ def _pl(shares: float, basis: float) -> PositionLot:
         shares=shares,
         purchase_date=date(2024, 1, 1),
         cost_basis=basis,
-        high_water_mark=basis,
     )
 
 
@@ -729,7 +728,6 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
                 shares=5.0,
                 purchase_date=date(2024, 1, 1),
                 cost_basis=80.0,
-                high_water_mark=100.0,
             )
         ]
     }
@@ -793,7 +791,6 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
                 shares=10.0,
                 purchase_date=date(2024, 1, 1),
                 cost_basis=80.0,
-                high_water_mark=130.0,
             )
         ]
     }

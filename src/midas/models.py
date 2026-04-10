@@ -100,21 +100,14 @@ class Order:
 class PositionLot:
     """A single tax lot for an open position.
 
-    Backtest builds a list of these from FIFO purchase records. Live mode
-    returns one synthetic lot per ticker, with ``purchase_date=None`` and
-    ``cost_basis`` from the portfolio config (no per-lot persistence yet —
-    tracked as a follow-up).
-
-    ``high_water_mark`` is the highest price seen for this lot since
-    purchase, updated by the execution engine each tick. ``None`` until the
-    engine has had a chance to record at least one observation; readers
-    should fall back to ``cost_basis`` in that case.
+    Used by the backtest engine for FIFO sell execution, cost-basis
+    accounting, and holding-period classification. Each buy fill appends
+    a new lot; each sell consumes lots first-in-first-out.
     """
 
     shares: float
     purchase_date: date | None
     cost_basis: float
-    high_water_mark: float | None = None
 
 
 @dataclass(frozen=True)

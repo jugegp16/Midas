@@ -93,9 +93,8 @@ class _SimState:
     # their own basis snapshot instead of overwriting one another.
     basis_per_sell: list[float] = field(default_factory=list)
     bh_positions: dict[str, float] = field(default_factory=dict)
-    # Per-ticker FIFO list of open lots. The lot list is the source of truth
-    # for exit-rule evaluation (lot-aware stops, per-lot trailing high-water
-    # marks) and for FIFO holding-period accounting on sells.
+    # Per-ticker FIFO list of open lots. Used for cost-basis accounting
+    # and FIFO holding-period classification on sells.
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     # Aggregate per-ticker high-water mark for exit rule evaluation.
     # Updated each tick with the day's closing price.
@@ -444,7 +443,6 @@ class BacktestEngine:
                         shares=h.shares,
                         purchase_date=trading_days[0],
                         cost_basis=entry_price,
-                        high_water_mark=entry_price,
                     )
                 ]
                 state.high_water_marks[h.ticker] = entry_price
@@ -576,7 +574,6 @@ class BacktestEngine:
                         shares=shares,
                         purchase_date=day,
                         cost_basis=entry_price,
-                        high_water_mark=entry_price,
                     )
                 ]
                 state.high_water_marks[ticker] = entry_price
@@ -786,7 +783,6 @@ class BacktestEngine:
                     shares=order.shares,
                     purchase_date=day,
                     cost_basis=order.price,
-                    high_water_mark=order.price,
                 )
             )
             return TradeRecord(
@@ -815,7 +811,6 @@ class BacktestEngine:
                         shares=lot.shares - remaining,
                         purchase_date=lot.purchase_date,
                         cost_basis=lot.cost_basis,
-                        high_water_mark=lot.high_water_mark,
                     )
                     remaining = 0
 
