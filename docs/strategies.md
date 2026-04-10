@@ -4,7 +4,7 @@ Every midas strategy is one of two disjoint types:
 
 - **EntrySignal** — receives a price history array and returns a bullish score in `[0, 1]` (or `None` to abstain). Pure buy-side: a score of 0 means "no opinion", not "sell". Multiple entry signals are blended into a single conviction per ticker, then turned into a target weight by the allocator's softmax.
 
-- **ExitRule** — receives a ticker symbol, the current `list[PositionLot]` for that ticker, and a price history array. Returns zero or more `ExitIntent` objects, each specifying a dollar amount to liquidate. Exit rules run *outside* the allocator and never participate in target-weight construction. They go straight to the order sizer's sell path.
+- **ExitRule** — a downstream override layer that clamps the allocator's proposed target weights downward. Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` returns an adjusted target weight ≤ the proposed target. Returning 0.0 means "full liquidation." Exit rules run *outside* the allocator and never participate in target-weight construction or softmax. Sells arise from negative deltas between clamped targets and current weights.
 
 The two tiers exist as separate base classes (`midas.strategies.base.EntrySignal` and `midas.strategies.base.ExitRule`). There is no shared parent and no third tier. Entry-signal logic cannot accidentally produce a sell, and exit-rule logic cannot accidentally inflate a buy. See [Architecture](architecture.md#the-two-tier-model) for the design rationale and the comparison to LEAN's AlphaModel/PortfolioConstructionModel/RiskManagementModel split.
 
@@ -22,11 +22,11 @@ To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under
 | MovingAverageCrossover | Entry | Bullish on the golden cross (short MA above long MA) |
 | RSIOversold | Entry | Bullish when RSI dips below 50 (oversold conditions) |
 | VWAPReversion | Entry | Bullish when price is below the average price (VWAP proxy) |
-| MACDExit | Exit | Liquidates the position on a bearish MACD crossover |
-| MovingAverageCrossoverExit | Exit | Liquidates the position on the death cross |
-| ProfitTaking | Exit | Liquidates lots whose unrealized gain exceeds the threshold |
-| StopLoss | Exit | Liquidates lots whose unrealized loss exceeds the threshold |
-| TrailingStop | Exit | Liquidates profitable lots after a drawdown from their peak |
+| MACDExit | Exit | Clamps target to 0 on a bearish MACD crossover |
+| MovingAverageCrossoverExit | Exit | Clamps target to 0 on the death cross |
+| ProfitTaking | Exit | Clamps target to 0 when unrealized gain exceeds the threshold |
+| StopLoss | Exit | Clamps target to 0 when unrealized loss exceeds the threshold |
+| TrailingStop | Exit | Clamps target to 0 after a drawdown from the high-water mark |
 
 ## Composing Strategy Files
 
@@ -197,9 +197,9 @@ A short-term opportunistic entry that looks for gap-down events followed by reco
 
 ## Exit Rules
 
-Exit rules run independently of the allocator. Each rule's `evaluate_exit(ticker, lots, prices)` method receives the ticker symbol, its current lot list, and price history; it returns a list of `ExitIntent` objects (a dollar amount to liquidate, plus the source strategy name and reason). The order sizer turns each intent into a whole-share sell order capped at the actual shares held.
+Exit rules act as a downstream override/veto layer (following the LEAN `RiskManagementModel` pattern). Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` receives the allocator's proposed target weight, the position's aggregate cost basis, aggregate high-water mark, and price history. It returns an adjusted target ≤ the proposed target. Returning 0.0 triggers full liquidation.
 
-Lot-aware exits (`StopLoss`, `TrailingStop`, `ProfitTaking`) inspect each `PositionLot` independently, so a recently-purchased lot at a high cost basis can be liquidated while older, profitable lots in the same ticker stay untouched. Technical exits (`MACDExit`, `MovingAverageCrossoverExit`) are lot-unaware: when the indicator fires, all open shares of the ticker are sold.
+Exit rules evaluate at the **aggregate position level** — they see a share-weighted average cost basis and a single high-water mark per ticker, not individual lots. This matches how LEAN, Zipline, and Backtrader handle exits. Per-lot logic belongs at execution time (FIFO consumption). Exit rules are applied sequentially; the first rule to clamp a ticker wins attribution for that sell.
 
 > **Note on initial cost basis in backtests.** The backtest seeds each starting position with the *start-day market price* as cost basis, not the YAML `cost_basis` value. The YAML value is the user's real purchase basis (used by the live engine and for display) — using it inside a backtest would let exit rules fire on pre-window gains and distort strategy performance. The live engine uses the YAML basis directly.
 
@@ -207,9 +207,9 @@ Lot-aware exits (`StopLoss`, `TrailingStop`, `ProfitTaking`) inspect each `Posit
 
 ### StopLoss
 
-**Type**: Exit rule (lot-aware)
+**Type**: Exit rule
 
-Liquidates any lot whose unrealized loss exceeds `loss_threshold`. Each lot is evaluated independently against its own cost basis, so older profitable lots can stay even when newer lots get stopped out.
+Clamps the target weight to 0 when the position's unrealized loss (from aggregate cost basis) exceeds `loss_threshold`.
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -223,13 +223,13 @@ Liquidates any lot whose unrealized loss exceeds `loss_threshold`. Each lot is e
 
 ### TrailingStop
 
-**Type**: Exit rule (lot-aware)
+**Type**: Exit rule
 
-Tracks the high-water mark per lot (the highest price seen since purchase) and liquidates lots whose drawdown from that peak exceeds `trail_pct`. Only fires on lots whose current price is above cost basis — this prevents `TrailingStop` from compounding with `StopLoss` on losing lots.
+Clamps the target weight to 0 when the position's drawdown from its aggregate high-water mark exceeds `trail_pct`. Only fires when the position is in profit (current price > cost basis) — this prevents `TrailingStop` from compounding with `StopLoss` on losing positions.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `trail_pct` | 0.10 | Drawdown from the lot's high-water mark that triggers liquidation |
+| `trail_pct` | 0.10 | Drawdown from the ticker's high-water mark that triggers liquidation |
 
 **Suited for**: All asset classes
 
@@ -239,9 +239,9 @@ Tracks the high-water mark per lot (the highest price seen since purchase) and l
 
 ### ProfitTaking
 
-**Type**: Exit rule (lot-aware)
+**Type**: Exit rule
 
-Liquidates lots whose unrealized gain exceeds `gain_threshold`. Each lot is evaluated independently against its own cost basis.
+Clamps the target weight to 0 when the position's unrealized gain (from aggregate cost basis) exceeds `gain_threshold`.
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -255,9 +255,9 @@ Liquidates lots whose unrealized gain exceeds `gain_threshold`. Each lot is eval
 
 ### MACDExit
 
-**Type**: Exit rule (lot-unaware)
+**Type**: Exit rule
 
-Symmetric counterpart to `MACDCrossover`. Liquidates the entire ticker position when the MACD line crosses below the signal line — the bearish crossover that mirrors the bullish entry trigger.
+Symmetric counterpart to `MACDCrossover`. Clamps the target weight to 0 when the MACD line crosses below the signal line — the bearish crossover that mirrors the bullish entry trigger. Does not use cost basis or high-water mark.
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -273,9 +273,9 @@ Symmetric counterpart to `MACDCrossover`. Liquidates the entire ticker position 
 
 ### MovingAverageCrossoverExit
 
-**Type**: Exit rule (lot-unaware)
+**Type**: Exit rule
 
-Symmetric counterpart to `MovingAverageCrossover`. Liquidates the entire ticker position on a death cross — the short-term MA crossing below the long-term MA.
+Symmetric counterpart to `MovingAverageCrossover`. Clamps the target weight to 0 on a death cross — the short-term MA crossing below the long-term MA. Does not use cost basis or high-water mark.
 
 | Param | Default | Description |
 |-------|---------|-------------|
