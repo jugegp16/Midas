@@ -95,7 +95,7 @@ class OrderSizer:
 
             buy_value = delta * total_value
             slip_price = px * (1 + self._default_slippage)
-            shares = math.floor(buy_value / slip_price)
+            shares = math.floor(buy_value / px)
 
             # Cash constraint.
             affordable = math.floor(available / slip_price)
