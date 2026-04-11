@@ -31,14 +31,51 @@ from midas.strategies.base import ExitRule, max_warmup
 
 @dataclass
 class StrategyStats:
-    """Per-strategy performance breakdown."""
+    """Per-strategy, per-ticker performance breakdown."""
 
     name: str
+    ticker: str
     trades: int
     buys: int
     sells: int
     win_rate: float  # fraction of profitable sells
     pnl: float  # total realized P&L from sells
+
+
+@dataclass
+class AggregateStrategyStats:
+    """Per-strategy totals aggregated across all tickers."""
+
+    name: str
+    trades: int
+    buys: int
+    sells: int
+    win_rate: float
+    pnl: float
+
+
+def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[AggregateStrategyStats]:
+    """Aggregate per-(strategy, ticker) stats into per-strategy totals."""
+    by_strategy: dict[str, list[StrategyStats]] = defaultdict(list)
+    for s in stats:
+        by_strategy[s.name].append(s)
+    result: list[AggregateStrategyStats] = []
+    for name, group in sorted(by_strategy.items()):
+        total_sells = sum(s.sells for s in group)
+        total_pnl = sum(s.pnl for s in group)
+        winning = sum(round(s.win_rate * s.sells) for s in group)
+        agg_wr = winning / total_sells if total_sells > 0 else 0.0
+        result.append(
+            AggregateStrategyStats(
+                name=name,
+                trades=sum(s.trades for s in group),
+                buys=sum(s.buys for s in group),
+                sells=total_sells,
+                win_rate=round(agg_wr, 4),
+                pnl=round(total_pnl, 2),
+            )
+        )
+    return result
 
 
 @dataclass
@@ -68,6 +105,7 @@ class BacktestResult:
     efficiency_ratio: float  # test_return / train_return (0 if no split)
     strategy_stats: list[StrategyStats]
     unrealized_pnl: float  # mark-to-market gain on positions still held at end
+    unrealized_pnl_by_ticker: dict[str, float]  # per-ticker unrealized P&L
     basis_per_sell: list[float]  # cost basis for each SELL trade (parallel list)
 
 
@@ -237,15 +275,15 @@ def compute_strategy_stats(
     trades: list[TradeRecord],
     basis_per_sell: list[float],
 ) -> list[StrategyStats]:
-    """Compute per-strategy trade breakdown."""
+    """Compute per-(strategy, ticker) trade breakdown."""
     sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
 
-    by_strategy: dict[str, list[TradeRecord]] = defaultdict(list)
+    by_key: dict[tuple[str, str], list[TradeRecord]] = defaultdict(list)
     for t in trades:
-        by_strategy[t.strategy_name].append(t)
+        by_key[(t.strategy_name, t.ticker)].append(t)
 
     stats: list[StrategyStats] = []
-    for name, strades in sorted(by_strategy.items()):
+    for (name, ticker), strades in sorted(by_key.items()):
         buys = [t for t in strades if t.direction == Direction.BUY]
         sells = [t for t in strades if t.direction == Direction.SELL]
         winning_sells = 0
@@ -260,6 +298,7 @@ def compute_strategy_stats(
         stats.append(
             StrategyStats(
                 name=name,
+                ticker=ticker,
                 trades=len(strades),
                 buys=len(buys),
                 sells=len(sells),
@@ -969,11 +1008,12 @@ class BacktestEngine:
         strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
         # Unrealized P&L: mark-to-market gain on positions still held at end.
-        unrealized_pnl = sum(
-            lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis)
-            for ticker, lots in state.lots.items()
-            for lot in lots
-        )
+        unrealized_pnl_by_ticker: dict[str, float] = {}
+        for ticker, lots in state.lots.items():
+            ticker_pnl = sum(lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis) for lot in lots)
+            if lots:
+                unrealized_pnl_by_ticker[ticker] = round(ticker_pnl, 2)
+        unrealized_pnl = sum(unrealized_pnl_by_ticker.values())
 
         return BacktestResult(
             trades=state.trades,
@@ -1000,6 +1040,7 @@ class BacktestEngine:
             efficiency_ratio=round(efficiency, 4),
             strategy_stats=strategy_stats,
             unrealized_pnl=round(unrealized_pnl, 2),
+            unrealized_pnl_by_ticker=unrealized_pnl_by_ticker,
             basis_per_sell=state.basis_per_sell,
         )
 
@@ -1107,11 +1148,14 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
 def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["strategy", "trades", "buys", "sells", "win_rate", "pnl"])
+        writer.writerow(["strategy", "ticker", "trades", "buys", "sells", "win_rate", "pnl"])
+
+        # Per-(strategy, ticker) rows
         for s in result.strategy_stats:
             writer.writerow(
                 [
                     s.name,
+                    s.ticker,
                     s.trades,
                     s.buys,
                     s.sells,
@@ -1119,4 +1163,22 @@ def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
                     round(s.pnl, 2) if s.sells > 0 else "",
                 ]
             )
-        writer.writerow(["Open Positions", "", "", "", "", round(result.unrealized_pnl, 2)])
+
+        # Aggregate per-strategy rows
+        for a in aggregate_strategy_stats(result.strategy_stats):
+            writer.writerow(
+                [
+                    a.name,
+                    "*",
+                    a.trades,
+                    a.buys,
+                    a.sells,
+                    a.win_rate if a.sells > 0 else "",
+                    a.pnl if a.sells > 0 else "",
+                ]
+            )
+
+        # Per-ticker open positions
+        for ticker, pnl in sorted(result.unrealized_pnl_by_ticker.items()):
+            writer.writerow(["Open Positions", ticker, "", "", "", "", round(pnl, 2)])
+        writer.writerow(["Open Positions", "*", "", "", "", "", round(result.unrealized_pnl, 2)])

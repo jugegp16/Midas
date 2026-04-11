@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from midas.backtest import aggregate_strategy_stats
 from midas.models import Direction, Order
 from midas.strategies.base import Strategy
 
@@ -177,31 +178,30 @@ def print_backtest_summary(result: BacktestResult) -> None:
         trade_table.add_row("Avg Loss", f"[red]${result.avg_loss:,.2f}[/red]")
         print_centered(trade_table)
 
-    # --- Per-Strategy Breakdown ---
+    # --- Per-Strategy Breakdown (aggregate) ---
     if result.strategy_stats:
-        strat_table = make_wide_table("Strategy Breakdown")
-        strat_table.add_column("Strategy", style="bold")
-        strat_table.add_column("Trades", justify="right")
-        strat_table.add_column("Buys", justify="right")
-        strat_table.add_column("Sells", justify="right")
-        strat_table.add_column("Win Rate", justify="right")
-        strat_table.add_column("P&L", justify="right")
+        agg_table = make_wide_table("Strategy Breakdown")
+        agg_table.add_column("Strategy", style="bold")
+        agg_table.add_column("Trades", justify="right")
+        agg_table.add_column("Buys", justify="right")
+        agg_table.add_column("Sells", justify="right")
+        agg_table.add_column("Win Rate", justify="right")
+        agg_table.add_column("P&L", justify="right")
 
-        for s in result.strategy_stats:
-            pnl_style = "green" if s.pnl >= 0 else "red"
-            strat_table.add_row(
-                s.name,
-                str(s.trades),
-                str(s.buys),
-                str(s.sells),
-                f"{s.win_rate:.0%}" if s.sells > 0 else "—",
-                f"[{pnl_style}]${s.pnl:,.2f}[/{pnl_style}]" if s.sells > 0 else "—",
+        for a in aggregate_strategy_stats(result.strategy_stats):
+            pnl_style = "green" if a.pnl >= 0 else "red"
+            agg_table.add_row(
+                a.name,
+                str(a.trades),
+                str(a.buys),
+                str(a.sells),
+                f"{a.win_rate:.0%}" if a.sells > 0 else "—",
+                f"[{pnl_style}]${a.pnl:,.2f}[/{pnl_style}]" if a.sells > 0 else "—",
             )
 
-        # Unrealized P&L from positions still held at end of backtest.
         unr = result.unrealized_pnl
         unr_style = "green" if unr >= 0 else "red"
-        strat_table.add_row(
+        agg_table.add_row(
             "[dim]Open Positions[/dim]",
             "—",
             "—",
@@ -210,7 +210,44 @@ def print_backtest_summary(result: BacktestResult) -> None:
             f"[{unr_style}]${unr:,.2f}[/{unr_style}]",
         )
 
-        print_centered(strat_table)
+        print_centered(agg_table)
+
+        # --- Strategy x Ticker Breakdown ---
+        detail_table = make_wide_table("Strategy x Ticker Breakdown")
+        detail_table.add_column("Strategy", style="bold")
+        detail_table.add_column("Ticker", style="bold")
+        detail_table.add_column("Trades", justify="right")
+        detail_table.add_column("Buys", justify="right")
+        detail_table.add_column("Sells", justify="right")
+        detail_table.add_column("Win Rate", justify="right")
+        detail_table.add_column("P&L", justify="right")
+
+        for s in result.strategy_stats:
+            pnl_style = "green" if s.pnl >= 0 else "red"
+            detail_table.add_row(
+                s.name,
+                s.ticker,
+                str(s.trades),
+                str(s.buys),
+                str(s.sells),
+                f"{s.win_rate:.0%}" if s.sells > 0 else "—",
+                f"[{pnl_style}]${s.pnl:,.2f}[/{pnl_style}]" if s.sells > 0 else "—",
+            )
+
+        detail_table.add_section()
+        for ticker, pnl in sorted(result.unrealized_pnl_by_ticker.items()):
+            pnl_style = "green" if pnl >= 0 else "red"
+            detail_table.add_row(
+                "[dim]Open Positions[/dim]",
+                ticker,
+                "—",
+                "—",
+                "—",
+                "—",
+                f"[{pnl_style}]${pnl:,.2f}[/{pnl_style}]",
+            )
+
+        print_centered(detail_table)
         console.print(
             "[dim italic]Note: P&L is credited to the exit strategy. "
             "Open Positions shows unrealized gain/loss on shares still "

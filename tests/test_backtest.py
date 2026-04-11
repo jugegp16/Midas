@@ -212,6 +212,7 @@ def test_write_backtest_results_rejects_existing_file(tmp_path: Path) -> None:
         efficiency_ratio=0,
         strategy_stats=[],
         unrealized_pnl=0,
+        unrealized_pnl_by_ticker={},
         basis_per_sell=[],
     )
 
