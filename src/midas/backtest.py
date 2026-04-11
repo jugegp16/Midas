@@ -31,10 +31,10 @@ from midas.strategies.base import ExitRule, max_warmup
 
 @dataclass
 class StrategyStats:
-    """Per-strategy, per-ticker performance breakdown."""
+    """Per-strategy performance breakdown, optionally scoped to a ticker."""
 
     name: str
-    ticker: str
+    ticker: str | None
     trades: int
     buys: int
     sells: int
@@ -42,32 +42,21 @@ class StrategyStats:
     pnl: float  # total realized P&L from sells
 
 
-@dataclass
-class AggregateStrategyStats:
-    """Per-strategy totals aggregated across all tickers."""
-
-    name: str
-    trades: int
-    buys: int
-    sells: int
-    win_rate: float
-    pnl: float
-
-
-def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[AggregateStrategyStats]:
+def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[StrategyStats]:
     """Aggregate per-(strategy, ticker) stats into per-strategy totals."""
     by_strategy: dict[str, list[StrategyStats]] = defaultdict(list)
     for s in stats:
         by_strategy[s.name].append(s)
-    result: list[AggregateStrategyStats] = []
+    result: list[StrategyStats] = []
     for name, group in sorted(by_strategy.items()):
         total_sells = sum(s.sells for s in group)
         total_pnl = sum(s.pnl for s in group)
         winning = sum(round(s.win_rate * s.sells) for s in group)
         agg_wr = winning / total_sells if total_sells > 0 else 0.0
         result.append(
-            AggregateStrategyStats(
+            StrategyStats(
                 name=name,
+                ticker=None,
                 trades=sum(s.trades for s in group),
                 buys=sum(s.buys for s in group),
                 sells=total_sells,
