@@ -96,26 +96,3 @@ def test_load_strategies(strategy_yaml: Path) -> None:
     assert constraints.min_buy_delta == 0.03
     assert constraints.min_cash_pct == 0.10
     assert constraints.max_position_pct is None  # not specified -> None
-
-
-def test_load_strategies_rejects_legacy_rebalance_threshold(tmp_path: Path) -> None:
-    data = {
-        "rebalance_threshold": 0.02,
-        "strategies": [{"name": "MeanReversion"}],
-    }
-    p = tmp_path / "strategies.yaml"
-    p.write_text(yaml.dump(data))
-    with pytest.raises(ValueError, match="rebalance_threshold"):
-        load_strategies(p)
-
-
-def test_load_strategies_rejects_legacy_veto_threshold(tmp_path: Path) -> None:
-    data = {
-        "strategies": [
-            {"name": "StopLoss", "veto_threshold": -0.4, "params": {"loss_threshold": 0.10}},
-        ],
-    }
-    p = tmp_path / "strategies.yaml"
-    p.write_text(yaml.dump(data))
-    with pytest.raises(ValueError, match="veto_threshold"):
-        load_strategies(p)
