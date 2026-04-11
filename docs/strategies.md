@@ -8,7 +8,7 @@ Every midas strategy is one of two disjoint types:
 
 The two tiers exist as separate base classes (`midas.strategies.base.EntrySignal` and `midas.strategies.base.ExitRule`). There is no shared parent and no third tier. Entry-signal logic cannot accidentally produce a sell, and exit-rule logic cannot accidentally inflate a buy. See [Architecture](architecture.md#the-two-tier-model) for the design rationale and the comparison to LEAN's AlphaModel/PortfolioConstructionModel/RiskManagementModel split.
 
-To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under `strategies/`, register it in `strategies/__init__.py`, and optionally add a search range in `PARAM_RANGES` in `optimizer.py` to make it optimizable. Entry-signal entries get a `_weight` field; exit rules don't (they fire on their own conditions, not as a contributor to a blend).
+To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under `strategies/`, register it in `strategies/__init__.py`, and optionally add a search range in `PARAM_RANGES` in `optimizer.py` to make it optimizable. Entry-signal entries get a `weight` field; exit rules don't (they fire on their own conditions, not as a contributor to a blend).
 
 ## Summary
 

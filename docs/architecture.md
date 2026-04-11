@@ -125,7 +125,7 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointl
 | Min buy delta | Minimum weight diff to trigger a buy | 0.01 to 0.05 |
 | Max position % | Maximum weight for any single position | 0.15 to 0.50 |
 
-Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `_weight` field — they fire on their own conditions, not as a contributor to a blended score.
+Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
 
 **Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination, runs a full backtest with train/test split, and returns the training return as the optimization objective. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
