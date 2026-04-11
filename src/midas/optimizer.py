@@ -211,10 +211,6 @@ def _run_trial(
 
     Returns (total_return, bh_return, train_return, test_return, twr, result).
     """
-    # Suppress allocator warnings during optimization — the optimizer explores
-    # boundary values that trigger heuristic warnings but are fine to evaluate.
-    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
-
     # Extract global allocation knobs
     global_params = strategy_params.get(ALLOCATION_KEY, {})
     entries: list[tuple[EntrySignal, float]] = []
@@ -278,6 +274,13 @@ def _init_worker(
     train_pct: float,
     enable_split: bool = True,
 ) -> None:
+    # Suppress allocator warnings during trial evaluation — the optimizer
+    # explores boundary values that trigger heuristic warnings but are fine
+    # to evaluate. Scoped to the worker process so the main-process final
+    # re-run at the end of optimize() still surfaces warnings for the chosen
+    # config, and subsequent backtest/live calls in the same session aren't
+    # silently muted.
+    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
     worker_state.update(
         portfolio=portfolio,
         price_data=price_data,
@@ -300,6 +303,7 @@ def _wf_init_worker(
     min_cash_pct: float,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
+    logging.getLogger("midas.allocator").setLevel(logging.ERROR)
     worker_state.update(
         portfolio=portfolio,
         price_data=price_data,

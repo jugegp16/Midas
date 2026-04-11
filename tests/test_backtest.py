@@ -26,6 +26,9 @@ from midas.models import (
     CashInfusion,
     Direction,
     Holding,
+    HoldingPeriod,
+    Order,
+    OrderContext,
     PortfolioConfig,
     PositionLot,
     TradeRecord,
@@ -829,3 +832,168 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
     assert math.isclose(delta, realized + unrealized, abs_tol=1.0), (
         f"reconciliation broken: final-start=${delta:,.2f} but realized+unrealized=${realized + unrealized:,.2f}"
     )
+
+
+# --- HWM lifecycle: stale peaks must not survive a full exit ---
+
+
+def _sell_order(ticker: str, shares: float, price: float, source: str = "TestRule") -> Order:
+    return Order(
+        ticker=ticker,
+        direction=Direction.SELL,
+        shares=shares,
+        price=price,
+        estimated_value=shares * price,
+        context=OrderContext(
+            contributions={},
+            blended_score=0.0,
+            target_weight=0.0,
+            current_weight=0.0,
+            reason="test",
+            source=source,
+        ),
+    )
+
+
+def test_full_exit_clears_high_water_mark() -> None:
+    """Regression: ``state.high_water_marks[ticker]`` must be cleared when a
+    position is fully exited. Otherwise a later re-entry inherits the stale
+    peak and TrailingStop misfires on day 1 of the new lot against a price
+    the new position has never reached.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+    state.high_water_marks = {"A": 200.0}  # AAPL rallied from $100 to $200
+
+    order = _sell_order("A", 10.0, 160.0, source="TrailingStop")
+    engine._execute(order, date(2024, 2, 1), state)
+
+    assert state.positions["A"] == 0
+    assert "A" not in state.high_water_marks, "stale HWM survived a full exit — TrailingStop would misfire on re-entry"
+
+
+def test_partial_exit_preserves_high_water_mark() -> None:
+    """Partial exits leave HWM intact — the position still exists."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+    state.high_water_marks = {"A": 200.0}
+
+    order = _sell_order("A", 4.0, 180.0)
+    engine._execute(order, date(2024, 2, 1), state)
+
+    assert state.positions["A"] == 6.0
+    assert state.high_water_marks["A"] == 200.0
+
+
+# --- Mixed holding-period sells split into per-period records ---
+
+
+def test_sell_crossing_st_lt_boundary_splits_into_two_records() -> None:
+    """A FIFO sell that consumes lots straddling the 365-day boundary must
+    emit two TradeRecords — one short-term, one long-term — each with the
+    correct per-group share count, weighted cost basis, and classification.
+
+    Pre-fix, ``lots[0].purchase_date`` classified the entire sell (whichever
+    bucket the oldest lot fell into), misreporting the other portion.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    # Lot 0 is ancient (1000 days old — LT), lot 1 is fresh (30 days old — ST).
+    # FIFO consumes lot 0 first then lot 1.
+    state.positions = {"A": 15.0}
+    state.lots = {
+        "A": [
+            PositionLot(shares=5.0, purchase_date=date(2022, 1, 1), cost_basis=80.0),
+            PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=120.0),
+        ]
+    }
+    state.high_water_marks = {"A": 150.0}
+
+    # Sell 12 shares — consumes all 5 LT shares + 7 ST shares from lot 1.
+    order = _sell_order("A", 12.0, 130.0)
+    day = date(2024, 2, 1)  # lot 0: 762 days (LT), lot 1: 31 days (ST)
+    records = engine._execute(order, day, state)
+
+    assert len(records) == 2, f"expected 2 records (ST + LT), got {len(records)}"
+
+    # Records are returned ST-first, then LT.
+    st_trade, st_basis = records[0]
+    lt_trade, lt_basis = records[1]
+
+    assert st_trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert st_trade.shares == 7.0
+    assert st_basis == 120.0  # all 7 ST shares came from lot 1 @ $120
+
+    assert lt_trade.holding_period == HoldingPeriod.LONG_TERM
+    assert lt_trade.shares == 5.0
+    assert lt_basis == 80.0  # all 5 LT shares came from lot 0 @ $80
+
+    # Total shares reconcile.
+    assert st_trade.shares + lt_trade.shares == order.shares
+    # Position correctly decremented and 3 shares of lot 1 remain.
+    assert state.positions["A"] == 3.0
+    assert len(state.lots["A"]) == 1
+    assert state.lots["A"][0].shares == 3.0
+
+
+def test_sell_single_period_emits_one_record() -> None:
+    """A sell consuming only ST lots emits a single ST record."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+
+    order = _sell_order("A", 6.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert trade.shares == 6.0
+    assert basis == 100.0
+
+
+def test_sell_pure_long_term_emits_one_lt_record() -> None:
+    """A sell consuming only LT lots emits a single LT record."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2022, 1, 1), cost_basis=100.0)]}
+
+    order = _sell_order("A", 6.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.LONG_TERM
+    assert trade.shares == 6.0
+    assert basis == 100.0
+
+
+def test_sell_mixed_basis_within_single_period() -> None:
+    """Two ST lots at different bases aggregate into a single ST record
+    with a weighted cost basis.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {
+        "A": [
+            PositionLot(shares=4.0, purchase_date=date(2024, 1, 1), cost_basis=80.0),
+            PositionLot(shares=6.0, purchase_date=date(2024, 1, 15), cost_basis=100.0),
+        ]
+    }
+
+    # Sell all 10: weighted basis = (4*80 + 6*100) / 10 = 92.0
+    order = _sell_order("A", 10.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert trade.shares == 10.0
+    assert basis == 92.0

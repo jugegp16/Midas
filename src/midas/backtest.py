@@ -711,31 +711,32 @@ class BacktestEngine:
             buy_orders = [o for o in buy_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
 
         # Phase 5: Execute sells first (so proceeds land in cash before buys),
-        # then buys. Sell basis is computed FIFO from the lot list *before*
-        # ``_execute`` consumes the lots, so trade-stat attribution sees the
-        # actual lots that left the position rather than a weighted average
-        # of all open lots.
+        # then buys. ``_execute`` emits one TradeRecord per holding-period
+        # group on sells, so mixed-lot sells crossing the 365-day boundary
+        # split into separate ST and LT records with per-group cost basis.
         for order in exit_orders:
             if order.shares <= 0:
                 continue
-            sell_basis = self._fifo_consumed_basis(state.lots.get(order.ticker, []), order.shares)
-            trade = self._execute(order, day, state)
-            if trade is not None:
+            records = self._execute(order, day, state)
+            if not records:
+                continue
+            for trade, basis in records:
                 state.trades.append(trade)
-                state.basis_per_sell.append(sell_basis)
-                if state.restriction_tracker:
-                    state.restriction_tracker.record_trade(order.ticker, order.direction, day)
-                state.cash += order.estimated_value
+                state.basis_per_sell.append(basis)
+            if state.restriction_tracker:
+                state.restriction_tracker.record_trade(order.ticker, order.direction, day)
+            state.cash += order.estimated_value
 
         for order in buy_orders:
             if order.shares <= 0:
                 continue
-            trade = self._execute(order, day, state)
-            if trade is not None:
-                state.trades.append(trade)
-                if state.restriction_tracker:
-                    state.restriction_tracker.record_trade(order.ticker, order.direction, day)
-                state.cash -= order.estimated_value
+            records = self._execute(order, day, state)
+            if not records:
+                continue
+            state.trades.append(records[0][0])
+            if state.restriction_tracker:
+                state.restriction_tracker.record_trade(order.ticker, order.direction, day)
+            state.cash -= order.estimated_value
 
     @staticmethod
     def _aggregate_cost_basis(lots: list[PositionLot]) -> float:
@@ -772,62 +773,118 @@ class BacktestEngine:
         order: Order,
         day: date,
         state: _SimState,
-    ) -> TradeRecord | None:
+    ) -> list[tuple[TradeRecord, float]]:
+        """Execute an order and return ``(TradeRecord, cost_basis)`` pairs.
+
+        Buys return a single pair with ``cost_basis=0.0`` (unused). Sells
+        FIFO-consume the lot list and emit one pair per holding-period
+        bucket, so a sell straddling the 365-day ST/LT boundary produces
+        two records — one short-term, one long-term — each with its own
+        share count and weighted cost basis.
+        """
         ticker = order.ticker
         strategy_name = order.context.source
 
         if order.direction == Direction.BUY:
             state.positions[ticker] = state.positions.get(ticker, 0) + order.shares
             state.lots.setdefault(ticker, []).append(
-                PositionLot(
-                    shares=order.shares,
-                    purchase_date=day,
-                    cost_basis=order.price,
+                PositionLot(shares=order.shares, purchase_date=day, cost_basis=order.price)
+            )
+            return [
+                (
+                    TradeRecord(
+                        date=day,
+                        ticker=ticker,
+                        direction=Direction.BUY,
+                        shares=order.shares,
+                        price=order.price,
+                        strategy_name=strategy_name,
+                    ),
+                    0.0,
+                )
+            ]
+
+        # SELL — FIFO consume lots, bucketing each consumed slice into the
+        # short-term or long-term group based on its own purchase date.
+        lots = state.lots.get(ticker, [])
+        if not lots:
+            return []
+
+        st_shares = 0.0
+        st_weighted_basis = 0.0
+        lt_shares = 0.0
+        lt_weighted_basis = 0.0
+
+        remaining = order.shares
+        while remaining > 0 and lots:
+            lot = lots[0]
+            take = min(lot.shares, remaining)
+            if lot.purchase_date is not None and (day - lot.purchase_date).days >= 365:
+                lt_shares += take
+                lt_weighted_basis += take * lot.cost_basis
+            else:
+                st_shares += take
+                st_weighted_basis += take * lot.cost_basis
+
+            if lot.shares <= remaining:
+                remaining -= lot.shares
+                lots.pop(0)
+            else:
+                lots[0] = PositionLot(
+                    shares=lot.shares - remaining,
+                    purchase_date=lot.purchase_date,
+                    cost_basis=lot.cost_basis,
+                )
+                remaining = 0
+
+        new_position = state.positions.get(ticker, 0) - order.shares
+        # ``size_sells`` caps at held shares, so reaching _execute with a
+        # sell larger than the position is a logic bug — not a float rounding
+        # blip — and would fabricate cash if silently clamped to 0. Fail loud.
+        assert new_position >= 0, (
+            f"sell exceeds position on {ticker}: {order.shares} shares against {state.positions.get(ticker, 0)} held"
+        )
+        state.positions[ticker] = new_position
+
+        # Full exit resets the high-water mark. Otherwise a subsequent
+        # re-entry would inherit the old peak and TrailingStop (or any
+        # future HWM-driven rule) could misfire on day 1 of the new
+        # position against a price that the new lot has never seen.
+        if new_position == 0:
+            state.high_water_marks.pop(ticker, None)
+
+        records: list[tuple[TradeRecord, float]] = []
+        if st_shares > 0:
+            records.append(
+                (
+                    TradeRecord(
+                        date=day,
+                        ticker=ticker,
+                        direction=Direction.SELL,
+                        shares=st_shares,
+                        price=order.price,
+                        strategy_name=strategy_name,
+                        holding_period=HoldingPeriod.SHORT_TERM,
+                    ),
+                    st_weighted_basis / st_shares,
                 )
             )
-            return TradeRecord(
-                date=day,
-                ticker=ticker,
-                direction=Direction.BUY,
-                shares=order.shares,
-                price=order.price,
-                strategy_name=strategy_name,
+        if lt_shares > 0:
+            records.append(
+                (
+                    TradeRecord(
+                        date=day,
+                        ticker=ticker,
+                        direction=Direction.SELL,
+                        shares=lt_shares,
+                        price=order.price,
+                        strategy_name=strategy_name,
+                        holding_period=HoldingPeriod.LONG_TERM,
+                    ),
+                    lt_weighted_basis / lt_shares,
+                )
             )
-
-        # SELL — FIFO consume the lot list to determine holding period.
-        holding_period = None
-        lots = state.lots.get(ticker, [])
-        if lots:
-            days_held = (day - lots[0].purchase_date).days if lots[0].purchase_date else 0
-            holding_period = HoldingPeriod.LONG_TERM if days_held >= 365 else HoldingPeriod.SHORT_TERM
-            remaining = order.shares
-            while remaining > 0 and lots:
-                lot = lots[0]
-                if lot.shares <= remaining:
-                    remaining -= lot.shares
-                    lots.pop(0)
-                else:
-                    lots[0] = PositionLot(
-                        shares=lot.shares - remaining,
-                        purchase_date=lot.purchase_date,
-                        cost_basis=lot.cost_basis,
-                    )
-                    remaining = 0
-
-        state.positions[ticker] = max(
-            0,
-            state.positions.get(ticker, 0) - order.shares,
-        )
-
-        return TradeRecord(
-            date=day,
-            ticker=ticker,
-            direction=Direction.SELL,
-            shares=order.shares,
-            price=order.price,
-            strategy_name=strategy_name,
-            holding_period=holding_period,
-        )
+        return records
 
     def _build_result(
         self,

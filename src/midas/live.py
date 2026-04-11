@@ -20,6 +20,7 @@ from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
 from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
+from midas.strategies.trailing_stop import TrailingStop
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,22 @@ class LiveEngine:
         if portfolio.trading_restrictions:
             self._restriction_tracker = RestrictionTracker(
                 portfolio.trading_restrictions,
+            )
+
+        # Live mode does not persist per-lot state across runs, so the
+        # high-water mark passed to exit rules is derived as
+        # ``max(cost_basis, current_price)`` (see ``_tick``). Under that
+        # derivation, TrailingStop's drawdown-from-HWM check always
+        # collapses: it's 0 when in profit (current == hwm) and the
+        # in-profit gate fails when underwater. The rule never fires.
+        # Warn loudly so optimized strategies that rely on TrailingStop
+        # aren't silently neutered at deployment.
+        if any(isinstance(r, TrailingStop) for r in self._exit_rules):
+            logger.warning(
+                "TrailingStop is configured but live mode does not track a "
+                "real high-water mark — it will NOT fire. Optimized backtest "
+                "behavior will diverge from live. Remove TrailingStop from "
+                "your live config or wait for per-lot HWM persistence."
             )
 
     def run(self) -> None:

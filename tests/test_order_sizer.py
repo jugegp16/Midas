@@ -136,6 +136,43 @@ class TestSizeBuys:
         )
         assert orders == [], "held ticker fired a phantom buy after another ticker sold in the same tick"
 
+    def test_empty_contributions_suppresses_buy(self):
+        """Defensive guard: a positive delta with no positive entry-signal
+        contributions (a basis-mismatch symptom) must not emit a buy with an
+        empty source. The order is suppressed and logged instead.
+        """
+        sizer = OrderSizer(default_slippage=0.0)
+        # Hand-craft the pathological case: allocator target exceeds current
+        # weight but contributions is empty (e.g., a held ticker that should
+        # have been anchored to current_weight but wasn't).
+        allocation = _alloc_result(
+            {"A": 0.60},
+            blended={"A": 0.0},
+            contribs={"A": {}},
+        )
+        positions = {"A": 10.0}
+        prices = {"A": 100.0}
+        cash = 5000.0
+        constraints = AllocationConstraints(min_buy_delta=0.02)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
+        assert orders == [], "buy with empty positive contributions must be suppressed"
+
+    def test_all_negative_contributions_suppresses_buy(self):
+        """A buy whose only contributions are negative (shouldn't happen with
+        entry signals in [0,1], but guard for robustness) is suppressed."""
+        sizer = OrderSizer(default_slippage=0.0)
+        allocation = _alloc_result(
+            {"A": 0.60},
+            blended={"A": -0.1},
+            contribs={"A": {"Bogus": -0.5}},
+        )
+        positions = {"A": 10.0}
+        prices = {"A": 100.0}
+        cash = 5000.0
+        constraints = AllocationConstraints(min_buy_delta=0.02)
+        orders = sizer.size_buys(allocation, positions, prices, cash, constraints, total_value=10000.0)
+        assert orders == []
+
     def test_buy_source_is_strongest_contributor(self):
         """Buy attribution picks the largest positive entry-signal contributor."""
         sizer = OrderSizer(default_slippage=0.0)

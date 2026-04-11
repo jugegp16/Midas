@@ -17,6 +17,7 @@ clamping. Attribution is honest and separate.
 
 from __future__ import annotations
 
+import logging
 import math
 
 from midas.allocator import AllocationResult
@@ -26,6 +27,8 @@ from midas.models import (
     Order,
     OrderContext,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SLIPPAGE = 0.0005  # 0.05%
 DEFAULT_CIRCUIT_BREAKER_PCT = 0.25  # max 25% of portfolio value per day
@@ -55,7 +58,7 @@ class OrderSizer:
 
         Sells are not produced here — drift above target is allowed and the
         soft cap only blocks further buys. Any required sells come from
-        ``size_sells``.
+        :meth:`size_sells`.
 
         ``total_value`` must be the same portfolio basis the allocator used to
         compute ``allocation.targets``. The caller is responsible for passing a
@@ -91,6 +94,25 @@ class OrderSizer:
 
             px = prices.get(ticker, 0.0)
             if px <= 0:
+                continue
+
+            # Every buy must be attributable to a positive entry-signal
+            # contribution. Held tickers with no positive score are anchored
+            # to their current weight by the allocator (neutral=hold), so the
+            # only way we reach a positive delta here with no positive contrib
+            # is a basis mismatch between the allocator and sizer — which is
+            # exactly the phantom-buy bug. Suppress and warn instead of
+            # emitting an order with an empty source.
+            contribs = allocation.contributions.get(ticker, {})
+            positive = {k: v for k, v in contribs.items() if v > 0}
+            if not positive:
+                logger.warning(
+                    "Suppressing buy for %s: positive delta %.4f with no "
+                    "positive entry-signal contributions. Likely a basis "
+                    "mismatch between allocator and order sizer.",
+                    ticker,
+                    delta,
+                )
                 continue
 
             buy_value = delta * total_value
@@ -198,18 +220,19 @@ class OrderSizer:
         target_weight: float,
         current_weight: float,
     ) -> OrderContext:
-        """Attribute a buy to its strongest contributing entry signal."""
+        """Attribute a buy to its strongest contributing entry signal.
+
+        Callers must only invoke this after verifying that the ticker has at
+        least one positive contribution in ``allocation.contributions``.
+        ``size_buys`` enforces that check before emitting an order.
+        """
         contribs = allocation.contributions.get(ticker, {})
         blended = allocation.blended_scores.get(ticker, 0.0)
         reason = (
             f"Buy {ticker}: target {target_weight:.1%} vs current {current_weight:.1%} (blended score {blended:+.3f})"
         )
-        # Buys are always driven by entry signals — pick the largest positive
-        # contributor. Entry signals score in [0, 1], so a non-empty
-        # contributions dict guarantees at least one positive entry when this
-        # buy actually fires.
         positive = {k: v for k, v in contribs.items() if v > 0}
-        source = max(positive, key=lambda k: positive[k]) if positive else ""
+        source = max(positive, key=lambda k: positive[k])
         return OrderContext(
             contributions=contribs,
             blended_score=blended,
