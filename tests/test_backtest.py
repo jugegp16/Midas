@@ -1,5 +1,7 @@
 """Tests for the backtest engine."""
 
+import csv as csv_mod
+import json
 import math
 from datetime import date
 from pathlib import Path
@@ -13,6 +15,7 @@ from midas.allocator import Allocator
 from midas.backtest import (
     TRADING_DAYS_PER_YEAR,
     BacktestEngine,
+    BacktestResult,
     _SimState,
     compute_cagr,
     compute_max_drawdown,
@@ -136,15 +139,9 @@ def test_backtest_results_output(tmp_path: Path) -> None:
     out_dir = tmp_path / "results"
     write_backtest_results(result, out_dir)
 
-    # Directory created with all 4 files
     assert out_dir.is_dir()
-    assert (out_dir / "trades.csv").exists()
-    assert (out_dir / "equity_curve.csv").exists()
-    assert (out_dir / "summary.json").exists()
-    assert (out_dir / "strategy_breakdown.csv").exists()
-
-    # trades.csv: parseable, raw numbers, has expected columns
-    import csv as csv_mod
+    for name in ("trades.csv", "equity_curve.csv", "summary.json", "strategy_breakdown.csv"):
+        assert (out_dir / name).exists()
 
     with open(out_dir / "trades.csv") as f:
         reader = csv_mod.DictReader(f)
@@ -167,32 +164,22 @@ def test_backtest_results_output(tmp_path: Path) -> None:
         assert "%" not in row.get("return_pct", "")
         assert row["ticker"] == "AAPL"
 
-    # equity_curve.csv: parseable, has drawdown column
     with open(out_dir / "equity_curve.csv") as f:
         reader = csv_mod.DictReader(f)
         curve_rows = list(reader)
     assert len(curve_rows) > 0
-    assert "nav" in reader.fieldnames  # type: ignore[operator]
-    assert "drawdown" in reader.fieldnames  # type: ignore[operator]
     for row in curve_rows:
         assert float(row["nav"]) > 0
         assert float(row["drawdown"]) >= 0
 
-    # summary.json: parseable, has key fields
-    import json
-
     with open(out_dir / "summary.json") as f:
         summary = json.load(f)
-    assert "starting_value" in summary
-    assert "final_value" in summary
-    assert "sharpe_ratio" in summary
-    assert "split" in summary  # split was enabled
     assert isinstance(summary["starting_value"], (int, float))
+    assert "sharpe_ratio" in summary
+    assert "split" in summary
 
-    # strategy_breakdown.csv: parseable
     with open(out_dir / "strategy_breakdown.csv") as f:
-        reader = csv_mod.DictReader(f)
-        strat_rows = list(reader)
+        strat_rows = list(csv_mod.DictReader(f))
     assert len(strat_rows) > 0
 
 
@@ -200,11 +187,33 @@ def test_write_backtest_results_rejects_existing_file(tmp_path: Path) -> None:
     existing_file = tmp_path / "results"
     existing_file.write_text("oops")
 
-    portfolio, price_data = _make_backtest_data()
-    engine = _build_engine(entries=[(MeanReversion(window=20, threshold=0.05), 1.0)])
-    start = min(price_data["AAPL"].index)
-    end = max(price_data["AAPL"].index)
-    result = engine.run(portfolio, price_data, start, end)
+    result = BacktestResult(
+        trades=[],
+        final_value=0,
+        starting_value=0,
+        buy_and_hold_value=0,
+        train_trades=[],
+        test_trades=[],
+        train_return=0,
+        test_return=0,
+        train_bh_return=0,
+        test_bh_return=0,
+        split_date=None,
+        twr=0,
+        equity_curve=[],
+        cagr=0,
+        max_drawdown=0,
+        sharpe_ratio=0,
+        sortino_ratio=0,
+        win_rate=0,
+        profit_factor=0,
+        avg_win=0,
+        avg_loss=0,
+        efficiency_ratio=0,
+        strategy_stats=[],
+        unrealized_pnl=0,
+        basis_per_sell=[],
+    )
 
     with pytest.raises(FileExistsError, match="existing file"):
         write_backtest_results(result, existing_file)

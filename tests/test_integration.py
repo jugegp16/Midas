@@ -1,5 +1,6 @@
 """Integration test — full pipeline from config to backtest output."""
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -111,8 +112,6 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert (out_dir / "equity_curve.csv").exists()
     assert (out_dir / "summary.json").exists()
     assert (out_dir / "strategy_breakdown.csv").exists()
-
-    import json
 
     with open(out_dir / "summary.json") as f:
         summary = json.load(f)

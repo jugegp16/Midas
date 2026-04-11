@@ -125,19 +125,23 @@ def compute_cagr(starting: float, final: float, days: int) -> float:
     return float((final / starting) ** (1.0 / years) - 1.0)
 
 
-def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
-    """Maximum peak-to-trough percentage decline."""
-    if len(equity_curve) < 2:
-        return 0.0
+def _drawdown_series(equity_curve: list[tuple[date, float]]) -> list[float]:
+    """Per-point drawdown (fraction from running peak) for each equity curve entry."""
+    if not equity_curve:
+        return []
     peak = equity_curve[0][1]
-    max_dd = 0.0
+    result: list[float] = []
     for _, value in equity_curve:
         if value > peak:
             peak = value
-        dd = (peak - value) / peak if peak > 0 else 0.0
-        if dd > max_dd:
-            max_dd = dd
-    return max_dd
+        result.append((peak - value) / peak if peak > 0 else 0.0)
+    return result
+
+
+def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
+    """Maximum peak-to-trough percentage decline."""
+    dd = _drawdown_series(equity_curve)
+    return max(dd) if len(dd) >= 2 else 0.0
 
 
 def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
@@ -1014,7 +1018,7 @@ def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
 
 
 def _write_trades_csv(result: BacktestResult, path: Path) -> None:
-    sell_idx = 0
+    sell_basis = {id(t): b for t, b in _pair_sells_with_basis(result.trades, result.basis_per_sell)}
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -1032,51 +1036,31 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
             ]
         )
         for t in result.trades:
+            common = [
+                t.date.isoformat(),
+                t.ticker,
+                t.direction.value,
+                t.shares,
+                t.price,
+                t.strategy_name,
+                t.holding_period.value if t.holding_period else "",
+            ]
             if t.direction == Direction.SELL:
-                basis = result.basis_per_sell[sell_idx] if sell_idx < len(result.basis_per_sell) else t.price
+                basis = sell_basis.get(id(t), t.price)
                 pnl = round((t.price - basis) * t.shares, 4)
                 ret = round((t.price - basis) / basis, 6) if basis != 0 else 0.0
-                sell_idx += 1
-                writer.writerow(
-                    [
-                        t.date.isoformat(),
-                        t.ticker,
-                        t.direction.value,
-                        t.shares,
-                        t.price,
-                        t.strategy_name,
-                        t.holding_period.value if t.holding_period else "",
-                        round(basis, 4),
-                        pnl,
-                        ret,
-                    ]
-                )
+                writer.writerow([*common, round(basis, 4), pnl, ret])
             else:
-                writer.writerow(
-                    [
-                        t.date.isoformat(),
-                        t.ticker,
-                        t.direction.value,
-                        t.shares,
-                        t.price,
-                        t.strategy_name,
-                        "",
-                        "",
-                        "",
-                        "",
-                    ]
-                )
+                writer.writerow([*common, "", "", ""])
 
 
 def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
+    drawdowns = _drawdown_series(result.equity_curve)
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["date", "nav", "drawdown"])
-        peak = 0.0
-        for d, nav in result.equity_curve:
-            peak = max(peak, nav)
-            dd = round((peak - nav) / peak, 6) if peak > 0 else 0.0
-            writer.writerow([d.isoformat(), round(nav, 2), dd])
+        for (d, nav), dd in zip(result.equity_curve, drawdowns, strict=True):
+            writer.writerow([d.isoformat(), round(nav, 2), round(dd, 6)])
 
 
 def _write_summary_json(result: BacktestResult, path: Path) -> None:
