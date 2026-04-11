@@ -1169,5 +1169,5 @@ def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
 
         # Per-ticker open positions
         for ticker, pnl in sorted(result.unrealized_pnl_by_ticker.items()):
-            writer.writerow(["Open Positions", ticker, "", "", "", "", round(pnl, 2)])
-        writer.writerow(["Open Positions", "*", "", "", "", "", round(result.unrealized_pnl, 2)])
+            writer.writerow(["Open Positions (Unrealized)", ticker, "", "", "", "", round(pnl, 2)])
+        writer.writerow(["Open Positions (Unrealized)", "*", "", "", "", "", round(result.unrealized_pnl, 2)])
