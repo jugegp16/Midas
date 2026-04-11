@@ -202,7 +202,7 @@ def print_backtest_summary(result: BacktestResult) -> None:
         unr = result.unrealized_pnl
         unr_style = "green" if unr >= 0 else "red"
         agg_table.add_row(
-            "[dim]Open Positions[/dim]",
+            "[dim]Open Positions (Unrealized)[/dim]",
             "—",
             "—",
             "—",
@@ -238,7 +238,7 @@ def print_backtest_summary(result: BacktestResult) -> None:
         for ticker, pnl in sorted(result.unrealized_pnl_by_ticker.items()):
             pnl_style = "green" if pnl >= 0 else "red"
             detail_table.add_row(
-                "[dim]Open Positions[/dim]",
+                "[dim]Open Positions (Unrealized)[/dim]",
                 ticker,
                 "—",
                 "—",
