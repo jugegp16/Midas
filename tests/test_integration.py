@@ -131,6 +131,7 @@ def test_strategy_registry_complete() -> None:
         "RSIOversold",
         "VWAPReversion",
         # exit rules
+        "ChandelierStop",
         "MACDExit",
         "MovingAverageCrossoverExit",
         "ProfitTaking",

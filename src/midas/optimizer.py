@@ -100,6 +100,10 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "StopLoss": {
         "loss_threshold": (0.05, 0.25, 0.02),
     },
+    "ChandelierStop": {
+        "window": (10, 40, 2),
+        "multiplier": (1.5, 5.0, 0.25),
+    },
     "MACDExit": {
         "fast_period": (8, 16, 2),
         "slow_period": (20, 40, 2),

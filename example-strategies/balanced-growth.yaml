@@ -20,6 +20,7 @@ strategies:
     params:
       gain_threshold: 0.20
 
-  - name: TrailingStop
+  - name: ChandelierStop
     params:
-      trail_pct: 0.10
+      window: 22
+      multiplier: 3.0

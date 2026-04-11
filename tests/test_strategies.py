@@ -4,6 +4,7 @@ import numpy as np
 
 from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
+from midas.strategies.chandelier_stop import ChandelierStop
 from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.ma_crossover import MovingAverageCrossover
 from midas.strategies.ma_crossover_exit import MovingAverageCrossoverExit
@@ -198,6 +199,73 @@ class TestTrailingStop:
         assert result == 0.10
 
 
+class TestChandelierStop:
+    """Volatility-adjusted trailing stop: k x ATR below the rolling N-bar high."""
+
+    def test_fires_when_drawdown_exceeds_k_atr(self) -> None:
+        # 21 bars rising by $1 (101..121), then a 5-point jump to 125 (peak),
+        # then a 15-point crash to 110. Last 22 bars cover everything after bar 0.
+        # |diffs| over the window: 20 ones + 4 (one of the ones absorbed) + 15 = ...
+        # Concretely: close-to-close ATR ≈ 1.86, highest = 125, stop ≈ 119.4.
+        # Current = 110 < 119.4 → fire.
+        prices = np.concatenate(
+            [
+                np.arange(100.0, 121.0, 1.0),  # 21 bars: 100..120
+                np.array([125.0, 110.0]),  # peak then crash
+            ]
+        )
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        result = rule.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=125.0)
+        assert result == 0.0
+
+    def test_no_fire_on_steady_rise(self) -> None:
+        # All-increasing prices: current == highest, no drawdown at all.
+        prices = np.linspace(100.0, 125.0, 25)
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        result = rule.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=125.0)
+        assert result == 0.10
+
+    def test_fires_even_when_underwater(self) -> None:
+        # Chandelier does not gate on cost basis the way TrailingStop does —
+        # replacing StopLoss is part of the point. Peak barely clears basis,
+        # then price crashes through basis: Chandelier should still fire.
+        prices = np.concatenate(
+            [
+                np.arange(100.0, 121.0, 1.0),  # 21 bars: 100..120
+                np.array([122.0, 95.0]),
+            ]
+        )
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        # Basis 120 is above current 95, so position is underwater.
+        result = rule.clamp_target("X", 0.10, prices, cost_basis=120.0, high_water_mark=122.0)
+        assert result == 0.0
+
+    def test_higher_multiplier_widens_stop(self) -> None:
+        # Same price path; raising k should push the stop past the current
+        # price and suppress the fire.
+        prices = np.concatenate(
+            [
+                np.arange(100.0, 121.0, 1.0),
+                np.array([125.0, 110.0]),
+            ]
+        )
+        tight = ChandelierStop(window=22, multiplier=3.0)
+        wide = ChandelierStop(window=22, multiplier=15.0)
+        assert tight.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=125.0) == 0.0
+        assert wide.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=125.0) == 0.10
+
+    def test_returns_proposed_on_insufficient_history(self) -> None:
+        short = np.array([100.0, 101.0, 102.0])
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        result = rule.clamp_target("X", 0.10, short, cost_basis=100.0, high_water_mark=102.0)
+        assert result == 0.10
+
+    def test_name_and_description(self) -> None:
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        assert rule.name == "ChandelierStop"
+        assert rule.description
+
+
 class TestStopLoss:
     def test_clamps_on_loss(self, dropping_prices: np.ndarray) -> None:
         rule = StopLoss(loss_threshold=0.10)
@@ -290,6 +358,10 @@ class TestWarmupPeriod:
         assert StopLoss().warmup_period == 0
         assert ProfitTaking().warmup_period == 0
         assert TrailingStop().warmup_period == 0
+
+    def test_chandelier_stop_uses_window(self) -> None:
+        assert ChandelierStop(window=22).warmup_period == 22
+        assert ChandelierStop(window=30).warmup_period == 30
 
     def test_gap_down_recovery_needs_three_bars(self) -> None:
         assert GapDownRecovery().warmup_period == 3
