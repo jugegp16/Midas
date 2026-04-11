@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
-from midas.allocator import Allocator
+from midas.allocator import AllocationResult, Allocator
 from midas.data.provider import DataProvider
 from midas.models import (
     AllocationConstraints,
     Direction,
-    MechanicalIntent,
-    Order,
     PortfolioConfig,
 )
+from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
-from midas.rebalancer import Rebalancer
 from midas.restrictions import RestrictionTracker
-from midas.strategies.base import Strategy, max_warmup, warmup_bars_to_calendar_days
+from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
+from midas.strategies.trailing_stop import TrailingStop
+
+logger = logging.getLogger(__name__)
 
 
 class LiveEngine:
@@ -28,9 +30,9 @@ class LiveEngine:
         self,
         portfolio: PortfolioConfig,
         allocator: Allocator,
-        rebalancer: Rebalancer,
+        order_sizer: OrderSizer,
         provider: DataProvider,
-        mechanical_strategies: list[Strategy] | None = None,
+        exit_rules: list[ExitRule] | None = None,
         constraints: AllocationConstraints | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
@@ -38,8 +40,8 @@ class LiveEngine:
     ) -> None:
         self._portfolio = portfolio
         self._allocator = allocator
-        self._rebalancer = rebalancer
-        self._mechanical = mechanical_strategies or []
+        self._order_sizer = order_sizer
+        self._exit_rules = exit_rules or []
         self._constraints = constraints or AllocationConstraints()
         self._provider = provider
         self._poll_interval = poll_interval
@@ -50,7 +52,7 @@ class LiveEngine:
         if history_days is not None:
             self._history_days = history_days
         else:
-            warmup_bars = max_warmup([*allocator.strategies, *self._mechanical])
+            warmup_bars = max_warmup([*allocator.strategies, *self._exit_rules])
             self._history_days = warmup_bars_to_calendar_days(warmup_bars)
         # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
         self._last_order_keys: set[tuple[str, Direction, float]] = set()
@@ -58,6 +60,22 @@ class LiveEngine:
         if portfolio.trading_restrictions:
             self._restriction_tracker = RestrictionTracker(
                 portfolio.trading_restrictions,
+            )
+
+        # Live mode does not persist per-lot state across runs, so the
+        # high-water mark passed to exit rules is derived as
+        # ``max(cost_basis, current_price)`` (see ``_tick``). Under that
+        # derivation, TrailingStop's drawdown-from-HWM check always
+        # collapses: it's 0 when in profit (current == hwm) and the
+        # in-profit gate fails when underwater. The rule never fires.
+        # Warn loudly so optimized strategies that rely on TrailingStop
+        # aren't silently neutered at deployment.
+        if any(isinstance(r, TrailingStop) for r in self._exit_rules):
+            logger.warning(
+                "TrailingStop is configured but live mode does not track a "
+                "real high-water mark — it will NOT fire. Optimized backtest "
+                "behavior will diverge from live. Remove TrailingStop from "
+                "your live config or wait for per-lot HWM persistence."
             )
 
     def run(self) -> None:
@@ -98,17 +116,10 @@ class LiveEngine:
             print_status(f"Skipping tick: missing price data for held positions {missing_held}. Will retry next poll.")
             return
 
-        # Build context (cost_basis from portfolio config)
-        context: dict[str, dict[str, object]] = {}
         current_prices: dict[str, float] = {}
         for ticker in tickers:
             if ticker in price_data and len(price_data[ticker]) > 0:
                 current_prices[ticker] = float(price_data[ticker].iloc[-1])
-                holding = self._portfolio.get_holding(ticker)
-                ctx: dict[str, object] = {}
-                if holding and holding.cost_basis:
-                    ctx["cost_basis"] = holding.cost_basis
-                context[ticker] = ctx
 
         active_tickers = [t for t in tickers if t in price_data]
 
@@ -129,56 +140,82 @@ class LiveEngine:
         if total_value > 0:
             current_weights = {t: (positions[t] * current_prices[t]) / total_value for t in active_tickers}
 
-        # Phase 1-3: Allocate
+        # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
             active_tickers,
             price_arrays,
-            context,
             current_weights=current_weights,
         )
 
-        rebalance_orders = self._rebalancer.generate_orders(
-            allocation,
+        # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).
+        clamped_targets = dict(allocation.targets)
+        clamp_attribution: dict[str, tuple[str, str]] = {}
+        for rule in self._exit_rules:
+            for ticker in active_tickers:
+                if positions.get(ticker, 0.0) <= 0:
+                    continue
+                proposed = clamped_targets.get(ticker, 0.0)
+                if proposed <= 0:
+                    continue
+                holding = self._portfolio.get_holding(ticker)
+                if holding is None:
+                    continue
+                if holding.cost_basis is None:
+                    logger.warning(
+                        "%s: no cost_basis in portfolio config — using current "
+                        "price as fallback. Stop-loss and profit-taking exits "
+                        "are effectively disabled for this ticker until a real "
+                        "basis is recorded.",
+                        ticker,
+                    )
+                    cost_basis = current_prices[ticker]
+                else:
+                    cost_basis = holding.cost_basis
+                hwm = max(cost_basis, current_prices[ticker])
+                clamped = rule.clamp_target(ticker, proposed, price_arrays[ticker], cost_basis, hwm)
+                if clamped < proposed:
+                    clamped_targets[ticker] = clamped
+                    if ticker not in clamp_attribution:
+                        reason = rule.clamp_reason(ticker, price_arrays[ticker], cost_basis, hwm)
+                        clamp_attribution[ticker] = (rule.name, reason)
+
+        # Size sells and filter restriction-blocked sells *before* computing
+        # post-sell cash. Otherwise a blocked sell would leak phantom proceeds
+        # into the buy pass, sizing buys against cash that will never arrive.
+        exit_orders = self._order_sizer.size_sells(
+            clamped_targets,
             positions,
             current_prices,
-            self._portfolio.available_cash,
-            self._constraints,
+            total_value,
+            clamp_attribution,
+        )
+        if self._restriction_tracker:
+            exit_orders = [
+                o for o in exit_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+            ]
+        sell_proceeds = sum(o.estimated_value for o in exit_orders)
+        post_sell_cash = self._portfolio.available_cash + sell_proceeds
+
+        clamped_allocation = AllocationResult(
+            targets=clamped_targets,
+            contributions=allocation.contributions,
+            blended_scores=allocation.blended_scores,
         )
 
-        # Phase 5: Mechanical
-        mechanical_intents: list[MechanicalIntent] = []
-        for strat in self._mechanical:
-            for ticker in active_tickers:
-                if ticker in price_arrays:
-                    ticker_ctx = context.get(ticker, {})
-                    intents = strat.generate_intents(
-                        ticker,
-                        price_arrays[ticker],
-                        **ticker_ctx,
-                    )
-                    mechanical_intents.extend(intents)
-
-        sell_proceeds = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.SELL)
-        buy_cost = sum(o.estimated_value for o in rebalance_orders if o.direction == Direction.BUY)
-        post_cash = self._portfolio.available_cash + sell_proceeds - buy_cost
-        mechanical_orders = self._rebalancer.size_mechanical(
-            mechanical_intents,
-            post_cash,
+        buy_orders = self._order_sizer.size_buys(
+            clamped_allocation,
+            positions,
             current_prices,
+            post_sell_cash,
+            self._constraints,
+            total_value=total_value,
         )
+        if self._restriction_tracker:
+            buy_orders = [
+                o for o in buy_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+            ]
 
-        all_orders = rebalance_orders + mechanical_orders
-
-        # Filter restricted orders
-        filtered: list[Order] = []
-        for order in all_orders:
-            if self._restriction_tracker and self._restriction_tracker.is_blocked(
-                order.ticker,
-                order.direction,
-                today,
-            ):
-                continue
-            filtered.append(order)
+        filtered = exit_orders + buy_orders
 
         # Emit alerts only when the order set changes
         current_keys = {(o.ticker, o.direction, o.shares) for o in filtered if o.shares > 0}

@@ -1,150 +1,117 @@
 # Strategies
 
-All strategies are stateless and ticker-agnostic. They receive a price history array and return a conviction score between -1 (bearish) and +1 (bullish), or None to abstain.
+Every midas strategy is one of two disjoint types:
 
-Strategies are registered by name in `strategies/__init__.py`. To add a new strategy: implement the `Strategy` base class in a new file under `strategies/`, register it in `strategies/__init__.py`, and optionally add param ranges in `PARAM_RANGES` in `optimizer.py` to make it optimizable.
+- **EntrySignal** — receives a price history array and returns a bullish score in `[0, 1]` (or `None` to abstain). Pure buy-side: a score of 0 means "no opinion", not "sell". Multiple entry signals are blended into a single conviction per ticker, then turned into a target weight by the allocator's softmax.
+
+- **ExitRule** — a downstream override layer that clamps the allocator's proposed target weights downward. Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` returns an adjusted target weight ≤ the proposed target. Returning 0.0 means "full liquidation." Exit rules run *outside* the allocator and never participate in target-weight construction or softmax. Sells arise from negative deltas between clamped targets and current weights.
+
+The two tiers exist as separate base classes (`midas.strategies.base.EntrySignal` and `midas.strategies.base.ExitRule`). There is no shared parent and no third tier. Entry-signal logic cannot accidentally produce a sell, and exit-rule logic cannot accidentally inflate a buy. See [Architecture](architecture.md#the-two-tier-model) for the design rationale and the comparison to LEAN's AlphaModel/PortfolioConstructionModel/RiskManagementModel split.
+
+To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under `strategies/`, register it in `strategies/__init__.py`, and optionally add a search range in `PARAM_RANGES` in `optimizer.py` to make it optimizable. Entry-signal entries get a `weight` field; exit rules don't (they fire on their own conditions, not as a contributor to a blend).
 
 ## Summary
 
-| Strategy | Tier | Direction | Score Range | What it does |
-|----------|------|-----------|-------------|--------------|
-| MeanReversion | CONVICTION | Bidirectional | [-1, +1] | Buys below MA, sells above |
-| Momentum | CONVICTION | Buy-only | [0, +1] | Buys when price trends above MA |
-| ProfitTaking | CONVICTION | Sell-only | [-1, 0] | Sells when unrealized gains exceed threshold |
-| RSIOversold | CONVICTION | Buy-only | [0, +1] | Buys when RSI indicates oversold conditions |
-| RSIOverbought | CONVICTION | Sell-only | [-1, 0] | Sells when RSI indicates overbought conditions |
-| BollingerBand | CONVICTION | Bidirectional | [-1, +1] | Buys/sells based on volatility-adjusted distance from MA |
-| MACDCrossover | CONVICTION | Bidirectional | [-1, +1] | Follows trend via MACD/signal line relationship |
-| VWAPReversion | CONVICTION | Bidirectional | [-1, +1] | Mean reversion around average price |
-| MovingAverageCrossover | CONVICTION | Bidirectional | [-1, +1] | Golden cross / death cross signals |
-| GapDownRecovery | CONVICTION | Buy-only | [0, +1] | Buys gap-down events that start recovering |
-| StopLoss | PROTECTIVE | -- | -- | Vetoes position when loss exceeds threshold |
-| TrailingStop | PROTECTIVE | -- | -- | Vetoes position when drawdown from peak exceeds threshold |
-| DollarCostAveraging | MECHANICAL | Buy-only | -- | Buys on a fixed schedule regardless of price |
+| Strategy | Type | What it does |
+|----------|------|--------------|
+| BollingerBand | Entry | Bullish at the lower volatility band of the moving average |
+| GapDownRecovery | Entry | Bullish after a gap-down event starts recovering |
+| MACDCrossover | Entry | Bullish when the MACD line is above its signal line |
+| MeanReversion | Entry | Bullish when price drops below its moving average |
+| Momentum | Entry | Bullish when price is above its moving average |
+| MovingAverageCrossover | Entry | Bullish on the golden cross (short MA above long MA) |
+| RSIOversold | Entry | Bullish when RSI dips below 50 (oversold conditions) |
+| VWAPReversion | Entry | Bullish when price is below the average price (VWAP proxy) |
+| MACDExit | Exit | Clamps target to 0 on a bearish MACD crossover |
+| MovingAverageCrossoverExit | Exit | Clamps target to 0 on the death cross |
+| ProfitTaking | Exit | Clamps target to 0 when unrealized gain exceeds the threshold |
+| StopLoss | Exit | Clamps target to 0 when unrealized loss exceeds the threshold |
+| TrailingStop | Exit | Clamps target to 0 after a drawdown from the high-water mark |
 
 ## Composing Strategy Files
 
-A strategy file doesn't need every strategy -- it needs a coherent combination where the pieces complement each other. The best compositions pair entry signals with exit signals, use strategies that measure different things, and include at least one protective strategy as a safety net.
+A strategy file needs at least one entry signal and at least one exit rule. Without entries, no buys are ever generated. Without exits, the engine accumulates positions indefinitely — there is no fallback "automatic" exit and no veto-style escape hatch.
 
 **Principles for picking strategies:**
 
-- **Pair entries with exits.** Buy-only strategies (Momentum, RSIOversold, GapDownRecovery) need sell-side counterparts (RSIOverbought, ProfitTaking) or protective strategies (StopLoss, TrailingStop) to close positions. Without exits, the engine accumulates positions indefinitely.
+- **Pair entries with exits.** Every entry signal needs at least one exit rule to close the position it opens. Pick exits that match the entry's thesis: `MovingAverageCrossover` pairs naturally with `MovingAverageCrossoverExit` (same indicator, symmetric trigger), and dip-buying entries (`BollingerBand`, `RSIOversold`, `MeanReversion`) pair naturally with `StopLoss` to floor the damage when "cheap" gets cheaper.
 
-- **Mix signal types.** Strategies that measure the same thing (e.g., MeanReversion and VWAPReversion both compare price to a moving average) provide redundant signals. Strategies that measure different things (e.g., BollingerBand measures distance from MA in volatility units, RSIOversold measures the ratio of up-days to down-days) provide independent confirmation. When two independent signals agree, the conviction is more trustworthy.
+- **Mix signal types.** Strategies that measure the same thing (e.g. `MeanReversion` and `VWAPReversion` both compare price to a moving average) provide redundant signals. Strategies that measure different things (e.g. `BollingerBand` measures distance from the MA in *volatility units*; `RSIOversold` measures the up-day/down-day ratio) provide independent confirmation. When two independent signals agree, the conviction is more trustworthy.
 
-- **Match your market thesis.** Trend-following strategies (Momentum, MovingAverageCrossover, MACDCrossover) and mean-reversion strategies (MeanReversion, BollingerBand, VWAPReversion) have opposing views of how markets work. Using both isn't wrong -- their signals will partially cancel, producing more moderate positions -- but you should be intentional about it.
+- **Match your market thesis.** Trend-following entries (`Momentum`, `MovingAverageCrossover`, `MACDCrossover`) and mean-reversion entries (`MeanReversion`, `BollingerBand`, `VWAPReversion`) have opposing views of how markets work. Using both isn't wrong — their contributions partially cancel, producing more moderate positions — but be intentional about it.
 
-- **Always include protection.** StopLoss and TrailingStop serve different purposes. StopLoss caps absolute losses from cost basis. TrailingStop protects accumulated profits from drawdowns. Using both gives you a floor on losses and a ratchet on gains.
+- **Stack exits if the entry is risky.** A `StopLoss` floor and a `TrailingStop` ratchet are not redundant: stop loss caps absolute downside from cost basis, trailing stop protects accumulated gains from a drawdown. Adding `ProfitTaking` on top gives you a third independent exit at a fixed gain target.
 
 **Pre-built examples** in `example-strategies/` demonstrate these principles:
 
-- **[Trend-Following](../example-strategies/trend-following.yaml)** -- Rides sustained price trends and exits when momentum fades. Uses MovingAverageCrossover and MACDCrossover for two independent trend signals that confirm each other on different timescales, RSIOverbought to detect overextended rallies, and ProfitTaking as a fixed exit target.
+- **[Trend-Following](../example-strategies/trend-following.yaml)** — Two entry signals (`MovingAverageCrossover` + `MACDCrossover`) confirmed across timescales, paired with their symmetric exits (`MovingAverageCrossoverExit` + `MACDExit`) and a `ProfitTaking` target.
+- **[Dip-Buying](../example-strategies/dip-buying.yaml)** — `BollingerBand` and `RSIOversold` for independent confirmation that an asset is oversold, protected by a `StopLoss` floor.
+- **[Balanced Growth](../example-strategies/balanced-growth.yaml)** — `Momentum` and `MeanReversion` give entries in both trending and recovering markets; `ProfitTaking` and `TrailingStop` provide layered exits.
 
-- **[Dip-Buying](../example-strategies/dip-buying.yaml)** -- Buys when prices are statistically cheap relative to recent history. Pairs BollingerBand (volatility-adjusted cheapness) with RSIOversold (selling exhaustion) for independent confirmation that an asset is oversold, protected by a StopLoss floor to limit damage when dips keep dipping.
+## Entry Signals
 
-- **[Balanced Growth](../example-strategies/balanced-growth.yaml)** -- Two entry strategies and two exit strategies for a balanced risk profile. Momentum buys strength while RSIOversold buys exhaustion, giving entries in both trending and recovering markets. ProfitTaking harvests gains at a fixed target while TrailingStop dynamically protects profits that have accumulated beyond that target.
-
-## Conviction Strategies
-
-Conviction strategies contribute scores that are blended via weighted average and transformed into target portfolio weights. Each has a configurable `weight` (default 1.0) that controls its influence in the blend.
-
-Some conviction strategies are intentionally unidirectional -- they only produce bullish or bearish signals, never both. This prevents double-counting when complementary strategies (e.g., RSIOversold and RSIOverbought) are both active. If both sides of an indicator contributed to the blend, the signal would be counted twice.
+Entry signals score a ticker's bullishness in `[0, 1]`. They contribute to the allocator's per-ticker blend via a configurable `weight` (default 1.0). A signal returning `None` is excluded from the blend entirely — it doesn't pull the average toward zero, it simply doesn't participate. A signal returning 0 means "no opinion" — the ticker is treated as held at its current weight rather than as an active buy candidate.
 
 ---
 
 ### MeanReversion
 
-**Tier**: CONVICTION | **Direction**: Bidirectional | **Score range**: [-1, +1]
+**Type**: Entry signal
 
-Buys when price drops below its moving average, expecting it to revert back up. Sells when price stretches above the average, expecting it to come back down. The score ramps linearly with distance from the MA, reaching full conviction at the `threshold` percentage. This is a contrarian strategy -- it bets against recent price movement.
+Bullish when price drops below its moving average, expecting it to revert back up. The score ramps linearly with distance below the MA, reaching full conviction at the `threshold` percentage. This is a contrarian entry — it bets against recent price movement.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `window` | 30 | Moving average lookback period (trading days) |
-| `threshold` | 0.10 | Percentage distance from MA at which score reaches full conviction |
+| `threshold` | 0.10 | Distance below the MA at which the score reaches 1.0 |
 
 **Suited for**: Broad market ETFs, large caps
 
-**Interactions**: Natural counterweight to Momentum -- MeanReversion buys dips while Momentum buys strength, so using both produces more moderate positions. Overlaps significantly with VWAPReversion and BollingerBand since all three compare price to a moving average; using MeanReversion alongside either provides redundant rather than independent signals. Pairs well with RSIOversold, which measures a different dimension (up-day/down-day ratio vs. price distance from average).
+**Interactions**: Natural counterweight to `Momentum` — `MeanReversion` buys dips while `Momentum` buys strength, so using both produces more moderate positions. Overlaps significantly with `VWAPReversion` and `BollingerBand` since all three compare price to a moving average; using `MeanReversion` alongside either provides redundant rather than independent signals. Pairs cleanly with `RSIOversold`, which measures a different dimension (up-day/down-day ratio vs. price distance from average). Always pair with `StopLoss` — dip-buying without a floor catches falling knives.
 
 ---
 
 ### Momentum
 
-**Tier**: CONVICTION | **Direction**: Buy-only | **Score range**: [0, +1]
+**Type**: Entry signal
 
-The opposite of mean reversion -- bullish when price is above its moving average, riding the trend. Returns 0 when price is below the MA rather than going bearish, since bearish-below-MA signals are handled by dedicated strategies like MeanReversion and RSIOverbought. The score scales with how far above the MA the price has moved, reaching +1 at `momentum_scale` distance.
+The opposite of mean reversion — bullish when price is above its moving average, riding the trend. The score scales with how far above the MA the price has moved.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `window` | 20 | Moving average lookback period (trading days) |
-| `momentum_scale` | 0.05 | Distance above MA at which score reaches +1 |
+| `momentum_scale` | 0.05 | Distance above the MA at which the score reaches 1.0 |
 
 **Suited for**: All asset classes
 
-**Interactions**: Works well with RSIOversold as a complementary entry pair -- Momentum buys trending assets while RSIOversold buys beaten-down ones, covering both market conditions. Conflicts with MeanReversion since they have opposing theses (trend continuation vs. trend reversal). Aligns with MovingAverageCrossover and MACDCrossover, which are also trend-following but measure trend on different timescales.
-
----
-
-### ProfitTaking
-
-**Tier**: CONVICTION | **Direction**: Sell-only | **Score range**: [-1, 0]
-
-Encourages trimming positions that have appreciated significantly. Once unrealized gains exceed the threshold, the strategy generates a bearish score that increases with further gains. This is a conviction strategy, not a protective one -- it nudges the allocator toward reducing the position rather than forcing a liquidation. Requires cost basis context to compute unrealized gain.
-
-| Param | Default | Description |
-|-------|---------|-------------|
-| `gain_threshold` | 0.20 | Unrealized gain percentage at which selling pressure begins |
-
-**Suited for**: All asset classes
-
-**Interactions**: Complements TrailingStop -- ProfitTaking provides a fixed exit target while TrailingStop provides a dynamic one. They work on different triggers (absolute gain vs. drawdown from peak) so there's no redundancy. Pairs naturally with any buy-side strategy as the exit mechanism. Works alongside RSIOverbought, which sells based on momentum exhaustion rather than unrealized gain.
+**Interactions**: Aligns with `MovingAverageCrossover` and `MACDCrossover`, which are also trend-following but measure trend on different timescales. Conflicts with `MeanReversion` since they have opposing theses. Pairs naturally with `MovingAverageCrossoverExit` or `MACDExit` as the symmetric exit when the trend reverses.
 
 ---
 
 ### RSIOversold
 
-**Tier**: CONVICTION | **Direction**: Buy-only | **Score range**: [0, +1]
+**Type**: Entry signal
 
-Uses the Relative Strength Index to detect oversold conditions. Bullish when RSI is below 50, with the score increasing as RSI drops toward the oversold threshold. Neutral when RSI is at or above 50 -- the overbought side is handled separately by RSIOverbought.
-
-The split at 50 (rather than at the threshold) means this strategy starts contributing a mild bullish signal as soon as selling pressure outweighs buying pressure, not just in extreme oversold territory.
+Uses the Relative Strength Index to detect oversold conditions. The score increases as RSI drops toward the oversold threshold. Neutral when RSI is at or above 50.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `window` | 14 | RSI calculation period (trading days) |
-| `oversold_threshold` | 30.0 | RSI level at which the score reaches +1 |
+| `oversold_threshold` | 30.0 | RSI level at which the score reaches 1.0 |
 
 **Suited for**: All asset classes
 
-**Interactions**: Designed as a pair with RSIOverbought -- they split the RSI indicator into buy-only and sell-only halves to avoid double-counting. Provides independent confirmation alongside BollingerBand since they measure different things (up-day/down-day ratio vs. volatility-adjusted distance from MA). Good complement to Momentum since they buy in different scenarios (trending vs. oversold).
-
----
-
-### RSIOverbought
-
-**Tier**: CONVICTION | **Direction**: Sell-only | **Score range**: [-1, 0]
-
-The bearish counterpart to RSIOversold. Generates a sell signal when RSI is above 50, becoming more bearish as RSI approaches the overbought threshold. Neutral when RSI is at or below 50.
-
-| Param | Default | Description |
-|-------|---------|-------------|
-| `window` | 14 | RSI calculation period (trading days) |
-| `overbought_threshold` | 70.0 | RSI level at which the score reaches -1 |
-
-**Suited for**: All asset classes
-
-**Interactions**: Designed as a pair with RSIOversold. Works well alongside trend-following entry strategies (MovingAverageCrossover, MACDCrossover) as an exit signal that detects when a rally is overextended. Complements ProfitTaking since they sell on different triggers (momentum exhaustion vs. unrealized gain).
+**Interactions**: Provides independent confirmation alongside `BollingerBand` since they measure different things (up-day/down-day ratio vs. volatility-adjusted distance from MA). Good complement to `Momentum` since they buy in different scenarios (trending vs. oversold). Always pair with `StopLoss`.
 
 ---
 
 ### BollingerBand
 
-**Tier**: CONVICTION | **Direction**: Bidirectional | **Score range**: [-1, +1]
+**Type**: Entry signal
 
-A volatility-aware mean reversion strategy. Computes how many standard deviations the current price is from its moving average (the z-score) and maps that to a conviction score. When price touches the lower band (negative z-score), the strategy is bullish -- it expects a bounce. When price touches the upper band (positive z-score), it's bearish. The `num_std` parameter controls band width; at exactly +/- `num_std` standard deviations, the score reaches full conviction.
+A volatility-aware mean reversion entry. Computes how many standard deviations the current price is below its moving average and maps that to a conviction score. When price touches or pierces the lower band, the strategy is bullish — it expects a bounce. The `num_std` parameter controls the band width; at `-num_std` standard deviations, the score reaches 1.0.
 
-Unlike plain MeanReversion, BollingerBand adapts to the stock's recent volatility. In calm markets the bands are narrow and small moves trigger conviction; in volatile markets the bands widen and it takes a larger move to reach the same score.
+Unlike plain `MeanReversion`, `BollingerBand` adapts to the stock's recent volatility. In calm markets the bands are narrow and small moves trigger conviction; in volatile markets the bands widen and it takes a larger move to reach the same score.
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -153,19 +120,17 @@ Unlike plain MeanReversion, BollingerBand adapts to the stock's recent volatilit
 
 **Suited for**: Broad market ETFs, large caps
 
-**Interactions**: Overlaps with MeanReversion and VWAPReversion (all are MA-based mean reversion); prefer one of the three rather than stacking them. Provides strong independent confirmation when paired with RSIOversold, since they measure fundamentally different things. Conflicts with trend-following strategies (Momentum, MovingAverageCrossover) -- BollingerBand sells rallies while trend-followers buy them.
+**Interactions**: Overlaps with `MeanReversion` and `VWAPReversion` (all are MA-based mean reversion) — prefer one of the three rather than stacking them. Provides strong independent confirmation when paired with `RSIOversold`. Conflicts with trend-following entries.
 
 ---
 
 ### MACDCrossover
 
-**Tier**: CONVICTION | **Direction**: Bidirectional | **Score range**: [-1, +1]
+**Type**: Entry signal
 
-A trend-following strategy based on the convergence and divergence of two exponential moving averages. The MACD line (fast EMA minus slow EMA) measures the trend's strength and direction. The signal line (an EMA of the MACD line itself) smooths out noise. When the MACD line is above the signal line, momentum is bullish; when below, bearish.
+A trend-following entry based on the convergence and divergence of two exponential moving averages. The MACD line (fast EMA minus slow EMA) measures the trend's strength and direction; the signal line (an EMA of the MACD line itself) smooths out noise. Bullish when MACD is above the signal line.
 
 The raw difference between MACD and signal is normalized by the current price so the score is comparable across tickers at different price levels.
-
-Requires more historical data than most strategies -- at minimum `slow_period + signal_period` trading days (default 35).
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -175,56 +140,50 @@ Requires more historical data than most strategies -- at minimum `slow_period + 
 
 **Suited for**: All asset classes
 
-**Interactions**: Confirms MovingAverageCrossover on a different timescale -- both are trend-following but MACD uses exponential averages and a signal line, making it more sensitive to recent price changes. Using both together gives higher confidence when they agree. Conflicts with mean-reversion strategies (MeanReversion, BollingerBand). Pairs well with RSIOverbought as an exit signal for overextended trends.
+**Interactions**: Confirms `MovingAverageCrossover` on a different timescale. Pairs naturally with its symmetric exit `MACDExit` so the position closes on the same indicator that opened it.
 
 ---
 
 ### VWAPReversion
 
-**Tier**: CONVICTION | **Direction**: Bidirectional | **Score range**: [-1, +1]
+**Type**: Entry signal
 
-Mean reversion around the average price over a lookback window. Bullish when price is below the average (expecting reversion up), bearish when above. Functionally similar to MeanReversion but uses a different threshold scale and is intended to approximate volume-weighted average price behavior.
-
-Currently uses a simple moving average as a VWAP proxy since volume data is not available from the data provider.
+Mean reversion around the average price over a lookback window. Bullish when price is below the average. Functionally similar to `MeanReversion` but uses a different threshold scale. Currently uses a simple moving average as a VWAP proxy since volume data is not available from the data provider.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `window` | 20 | Average price lookback (trading days) |
-| `threshold` | 0.02 | Deviation from average at which score reaches full conviction |
+| `threshold` | 0.02 | Distance below the average at which the score reaches 1.0 |
 
 **Suited for**: Large caps, broad market ETFs
 
-**Interactions**: Highly redundant with MeanReversion and BollingerBand -- all three compare price to a moving average. Choose one rather than stacking. The tighter default threshold (2% vs. 10% for MeanReversion) makes it more sensitive to small deviations, which suits stable large caps but may generate excessive signals on volatile assets.
+**Interactions**: Highly redundant with `MeanReversion` and `BollingerBand` — choose one rather than stacking. The tighter default threshold (2% vs. 10% for `MeanReversion`) makes it more sensitive.
 
 ---
 
 ### MovingAverageCrossover
 
-**Tier**: CONVICTION | **Direction**: Bidirectional | **Score range**: [-1, +1]
+**Type**: Entry signal
 
-The classic golden cross / death cross strategy. Tracks two moving averages of different lengths. When the short-term MA crosses above the long-term MA (golden cross), it signals an uptrend and the score goes bullish. When the short-term crosses below (death cross), it signals a downtrend.
-
-The score doesn't just capture the crossover moment -- it scales continuously with the spread between the two averages. A wider spread means stronger trend conviction.
+The classic golden cross strategy. Tracks two moving averages of different lengths. When the short-term MA crosses above the long-term MA (golden cross), the score goes bullish and scales continuously with the spread between the two averages.
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `short_window` | 20 | Short-term moving average period (trading days) |
 | `long_window` | 50 | Long-term moving average period (trading days) |
-| `spread_scale` | 0.05 | Spread between MAs at which score reaches full conviction |
+| `spread_scale` | 0.05 | Spread between MAs at which the score reaches 1.0 |
 
 **Suited for**: All asset classes
 
-**Interactions**: Confirms MACDCrossover on a different timescale -- both measure trend but with different calculation methods (simple vs. exponential averages), so agreement between them is meaningful. Aligns with Momentum (all trend-following). Conflicts with mean-reversion strategies. Pairs well with RSIOverbought or ProfitTaking as exit mechanisms.
+**Interactions**: Confirms `MACDCrossover`. Aligns with `Momentum`. Pairs naturally with `MovingAverageCrossoverExit` so entries and exits use the same indicator on the same timescale.
 
 ---
 
 ### GapDownRecovery
 
-**Tier**: CONVICTION | **Direction**: Buy-only | **Score range**: [0, +1]
+**Type**: Entry signal
 
-A short-term opportunistic strategy that looks for gap-down events followed by recovery. When a stock opens significantly below the previous close (a gap-down) and then starts recovering, it generates a bullish signal. The score reflects how much of the gap has been recovered -- partial recovery produces a partial score.
-
-Requires at least 3 days of price data to evaluate the pattern (previous close, gap open, current price). Returns 0 when there's no qualifying gap-down or no recovery.
+A short-term opportunistic entry that looks for gap-down events followed by recovery. When a stock opens significantly below the previous close (a gap-down) and then starts recovering, the score goes bullish. The score reflects how much of the gap has been recovered — partial recovery produces a partial score.
 
 | Param | Default | Description |
 |-------|---------|-------------|
@@ -232,79 +191,97 @@ Requires at least 3 days of price data to evaluate the pattern (previous close, 
 
 **Suited for**: Individual equities, high-volatility stocks
 
-**Interactions**: Fires rarely and on specific events, so it doesn't conflict with any other strategy. Pairs well with StopLoss since gap-down buying is inherently risky -- a stop loss provides a safety net if the recovery doesn't materialize. Independent from all other strategies since no other strategy measures gap patterns.
+**Interactions**: Fires rarely and on specific events, so it doesn't conflict with anything. Always pair with `StopLoss` since gap-down buying is inherently risky.
 
 ---
 
-## Protective Strategies
+## Exit Rules
 
-Protective strategies act as safety valves. They are evaluated after conviction blending, and if their score drops to or below the configured `veto_threshold`, they force the target weight to zero -- a hard liquidation regardless of what conviction strategies say.
+Exit rules act as a downstream override/veto layer (following the LEAN `RiskManagementModel` pattern). Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` receives the allocator's proposed target weight, the position's aggregate cost basis, aggregate high-water mark, and price history. It returns an adjusted target ≤ the proposed target. Returning 0.0 triggers full liquidation.
 
-Both protective strategies require cost basis context to compute losses or drawdowns. They return None (abstain) when cost basis is unavailable.
+Exit rules evaluate at the **aggregate position level** — they see a share-weighted average cost basis and a single high-water mark per ticker, not individual lots. This matches how LEAN, Zipline, and Backtrader handle exits. Per-lot logic belongs at execution time (FIFO consumption). Exit rules are applied sequentially; the first rule to clamp a ticker wins attribution for that sell.
 
-The key difference between protective and conviction strategies: conviction strategies *nudge* the allocator (e.g., ProfitTaking reduces weight gradually), while protective strategies *override* it (StopLoss eliminates the position entirely).
+> **Note on initial cost basis in backtests.** The backtest seeds each starting position with the *start-day market price* as cost basis, not the YAML `cost_basis` value. The YAML value is the user's real purchase basis (used by the live engine and for display) — using it inside a backtest would let exit rules fire on pre-window gains and distort strategy performance. The live engine uses the YAML basis directly.
 
 ---
 
 ### StopLoss
 
-**Tier**: PROTECTIVE | **Default veto threshold**: -0.5
+**Type**: Exit rule
 
-A fixed-percentage loss limiter. Computes the unrealized loss relative to cost basis. Once the loss exceeds `loss_threshold`, the score goes negative and continues dropping as the loss deepens. If the score reaches the veto threshold, the position is liquidated.
-
-For example, with the defaults (loss_threshold=0.10, veto_threshold=-0.5), a 10% loss starts generating a negative score. The veto triggers when the loss is severe enough that the score hits -0.5, which happens at a 15% loss.
+Clamps the target weight to 0 when the position's unrealized loss (from aggregate cost basis) exceeds `loss_threshold`.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `loss_threshold` | 0.10 | Unrealized loss percentage at which the score starts going negative |
+| `loss_threshold` | 0.10 | Loss percentage at which a lot is liquidated |
 
 **Suited for**: All asset classes
 
-**Interactions**: Complements TrailingStop -- StopLoss caps absolute losses while TrailingStop protects accumulated gains. They don't overlap: StopLoss fires on losing positions, TrailingStop only fires on profitable ones (it checks that current price is above cost basis). Using both gives a floor on losses and a ratchet on gains. Essential alongside dip-buying strategies (BollingerBand, RSIOversold, MeanReversion) where you're buying into price declines.
+**Interactions**: Complements `TrailingStop` — `StopLoss` caps absolute downside from cost basis, `TrailingStop` protects accumulated gains. They don't overlap: `StopLoss` fires on losing lots, `TrailingStop` fires on profitable ones. Essential alongside any dip-buying entry (`BollingerBand`, `RSIOversold`, `MeanReversion`, `GapDownRecovery`).
 
 ---
 
 ### TrailingStop
 
-**Tier**: PROTECTIVE | **Default veto threshold**: -0.5
+**Type**: Exit rule
 
-A drawdown-based exit strategy. Tracks the high-water mark (the highest price seen since purchase, or the cost basis if higher) and measures the current drawdown from that peak. Once the drawdown exceeds `trail_pct`, the score goes negative.
-
-Unlike StopLoss which measures loss from cost basis, TrailingStop measures decline from the peak. This protects profits that have accumulated -- if a stock rallies 50% then drops 10% from the peak, TrailingStop can trigger even though the position is still profitable overall.
-
-TrailingStop only fires when the current price is above cost basis (the position is profitable). This prevents it from compounding with StopLoss on losing positions, which would make both strategies trigger simultaneously.
+Clamps the target weight to 0 when the position's drawdown from its aggregate high-water mark exceeds `trail_pct`. Only fires when the position is in profit (current price > cost basis) — this prevents `TrailingStop` from compounding with `StopLoss` on losing positions.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `trail_pct` | 0.10 | Drawdown from high-water mark at which the score starts going negative |
+| `trail_pct` | 0.10 | Drawdown from the ticker's high-water mark that triggers liquidation |
 
 **Suited for**: All asset classes
 
-**Interactions**: Complements StopLoss (see above) and ProfitTaking. ProfitTaking nudges toward selling at a fixed gain threshold; TrailingStop dynamically protects whatever gains have accumulated, even beyond the ProfitTaking threshold. Together they create layered exits: ProfitTaking gradually reduces the position, and TrailingStop catches sharp reversals that ProfitTaking's gradual pressure can't handle.
+**Interactions**: Complements `StopLoss` and `ProfitTaking`. `ProfitTaking` exits at a fixed gain threshold; `TrailingStop` dynamically protects whatever gains have accumulated, even beyond that threshold. Together they create layered exits: `ProfitTaking` harvests at the target, `TrailingStop` catches sharp reversals after gains have run further.
 
 ---
 
-## Mechanical Strategies
+### ProfitTaking
 
-Mechanical strategies bypass the allocator entirely. They don't produce conviction scores -- instead they generate independent order intents on a fixed schedule. The rebalancer sizes these intents into concrete orders using available cash.
+**Type**: Exit rule
 
-Mechanical strategy parameters are user preferences (how much to invest, how often), not performance parameters. The optimizer excludes them.
-
----
-
-### DollarCostAveraging
-
-**Tier**: MECHANICAL
-
-Generates buy intents on a fixed trading-day interval regardless of market conditions. Each intent specifies a target dollar amount, and the rebalancer converts it to shares at the current price, constrained by available cash.
-
-DCA fires when the number of trading days in the price history is evenly divisible by `frequency_days`. This means it triggers based on how many trading days have elapsed, not calendar dates.
+Clamps the target weight to 0 when the position's unrealized gain (from aggregate cost basis) exceeds `gain_threshold`.
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `frequency_days` | 14 | Buy interval in trading days |
-| `amount` | 500.0 | Dollar amount per buy |
+| `gain_threshold` | 0.20 | Gain percentage at which a lot is liquidated |
 
-**Suited for**: Broad market ETFs, large caps
+**Suited for**: All asset classes
 
-**Interactions**: Fully independent from all other strategies since it bypasses the allocator. Can be added to any strategy composition without affecting conviction-based signals. Pairs well with protective strategies (StopLoss, TrailingStop) that can exit positions DCA builds if they go wrong.
+**Interactions**: Complements `TrailingStop` — `ProfitTaking` provides a fixed exit target while `TrailingStop` provides a dynamic one. Pairs naturally with any entry signal as the gain-harvest mechanism.
+
+---
+
+### MACDExit
+
+**Type**: Exit rule
+
+Symmetric counterpart to `MACDCrossover`. Clamps the target weight to 0 when the MACD line crosses below the signal line — the bearish crossover that mirrors the bullish entry trigger. Does not use cost basis or high-water mark.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `fast_period` | 12 | Fast EMA period |
+| `slow_period` | 26 | Slow EMA period |
+| `signal_period` | 9 | Signal line EMA period |
+
+**Suited for**: All asset classes
+
+**Interactions**: Pairs with `MACDCrossover`. Use matching parameters on both so the entry and exit react to the same crossover symmetry.
+
+---
+
+### MovingAverageCrossoverExit
+
+**Type**: Exit rule
+
+Symmetric counterpart to `MovingAverageCrossover`. Clamps the target weight to 0 on a death cross — the short-term MA crossing below the long-term MA. Does not use cost basis or high-water mark.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `short_window` | 20 | Short-term moving average period (trading days) |
+| `long_window` | 50 | Long-term moving average period (trading days) |
+
+**Suited for**: All asset classes
+
+**Interactions**: Pairs with `MovingAverageCrossover`. Use matching `short_window`/`long_window` on both so the entry and exit react to the same crossover symmetry.

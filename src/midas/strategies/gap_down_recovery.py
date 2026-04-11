@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 
-class GapDownRecovery(Strategy):
+class GapDownRecovery(EntrySignal):
     def __init__(self, gap_threshold: float = 0.03) -> None:
         self._gap_threshold = gap_threshold
 

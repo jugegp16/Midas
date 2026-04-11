@@ -1,45 +1,50 @@
-"""Trailing stop strategy: sell when price falls from high-water mark."""
+"""Trailing stop exit rule: sell when price falls from high-water mark."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, StrategyTier
-from midas.strategies.base import Strategy
+from midas.models import AssetSuitability
+from midas.strategies.base import ExitRule
 
 
-class TrailingStop(Strategy):
+class TrailingStop(ExitRule):
     def __init__(self, trail_pct: float = 0.10) -> None:
         self._trail_pct = trail_pct
 
-    @property
-    def tier(self) -> StrategyTier:
-        return StrategyTier.PROTECTIVE
-
-    def score(
+    def clamp_target(
         self,
+        ticker: str,
+        proposed_target: float,
         price_history: np.ndarray,
-        *,
-        cost_basis: float | None = None,
-        **kwargs: object,
-    ) -> float | None:
-        if cost_basis is None or cost_basis <= 0:
-            return None
-
-        if len(price_history) < 2:
-            return None
-
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0:
+            return proposed_target
         current = float(price_history[-1])
-        high_water = float(max(price_history.max(), cost_basis))
-
-        if high_water == 0:
+        if current <= 0 or high_water_mark <= 0:
+            return proposed_target
+        drawdown = (high_water_mark - current) / high_water_mark
+        in_profit = current > cost_basis if cost_basis > 0 else False
+        if drawdown >= self._trail_pct and in_profit:
             return 0.0
+        return proposed_target
 
-        drawdown = (high_water - current) / high_water
-
-        if drawdown >= self._trail_pct and current > cost_basis:
-            return -self.clamp((drawdown - self._trail_pct) / self._trail_pct, 0.0, 1.0)
-        return 0.0
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
+        current = float(price_history[-1])
+        drawdown = (high_water_mark - current) / high_water_mark if high_water_mark > 0 else 0.0
+        return (
+            f"TrailingStop: {drawdown:.1%} drawdown from high "
+            f"${high_water_mark:.2f} (threshold {self._trail_pct:.0%}, "
+            f"basis ${cost_basis:.2f})"
+        )
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -47,4 +52,4 @@ class TrailingStop(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Sell when price falls {self._trail_pct:.0%} from its high-water mark (while still above cost basis)"
+        return f"Sell when price falls {self._trail_pct:.0%} from high-water mark (gain-protection only)"

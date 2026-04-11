@@ -1,4 +1,15 @@
-"""Allocator: blends strategy conviction scores into target portfolio weights."""
+"""Allocator: blends entry signal scores into target portfolio weights.
+
+Pure entry-side concern. Exits live in ``ExitRule`` strategies and never
+participate in blending. The allocator's only job is to turn N entry signal
+scores into N target weights under the configured global constraints
+(``min_cash_pct``, ``max_position_pct``, ``softmax_temperature``).
+
+Soft cap semantics: ``max_position_pct`` is enforced by *clamping* a
+ticker's softmax weight at the cap and giving the clamped survivors the
+freed budget on the next pass. The cap never produces a sell — exits are
+exclusively the responsibility of ExitRule strategies.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
 
@@ -29,15 +40,9 @@ MIN_TEMPERATURE = 1e-6
 
 
 @dataclass
-class _ScoredStrategy:
-    strategy: Strategy
+class _ScoredEntry:
+    strategy: EntrySignal
     weight: float
-
-
-@dataclass
-class _ProtectiveEntry:
-    strategy: Strategy
-    veto_threshold: float
 
 
 @dataclass
@@ -45,32 +50,23 @@ class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
-    # ticker -> "cap" when Phase 4 constraints trimmed the target. Used by the
-    # Rebalancer to label fallback attribution when no conviction strategy drove
-    # the trade.
-    trim_reasons: dict[str, str]
 
 
 class Allocator:
-    """Blends CONVICTION strategy scores into target portfolio weights.
-
-    Also evaluates PROTECTIVE strategies for vetoes.
-    """
+    """Blends ``EntrySignal`` scores into target portfolio weights via softmax."""
 
     def __init__(
         self,
-        conviction_strategies: list[tuple[Strategy, float]],
-        protective_strategies: list[tuple[Strategy, float]],
+        entries: list[tuple[EntrySignal, float]],
         constraints: AllocationConstraints,
         n_tickers: int,
     ) -> None:
-        self._conviction: list[_ScoredStrategy] = [_ScoredStrategy(s, w) for s, w in conviction_strategies]
-        self._protective: list[_ProtectiveEntry] = [_ProtectiveEntry(s, vt) for s, vt in protective_strategies]
+        self._entries: list[_ScoredEntry] = [_ScoredEntry(s, w) for s, w in entries]
         self._constraints = constraints
         self._n_tickers = n_tickers
         self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
 
-        # Auto-compute max_position_pct if not set
+        # Auto-compute max_position_pct if not set.
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)
         if constraints.max_position_pct is None:
             self._max_position_pct = min(
@@ -94,28 +90,22 @@ class Allocator:
                 )
 
     @property
-    def strategies(self) -> list[Strategy]:
-        """All strategies the allocator owns (conviction + protective)."""
-        return [s.strategy for s in self._conviction] + [e.strategy for e in self._protective]
+    def strategies(self) -> list[EntrySignal]:
+        return [e.strategy for e in self._entries]
 
     def precompute_signals(self, price_data: dict[str, np.ndarray]) -> None:
-        """Precompute strategy scores for all tickers over the full price arrays.
-
-        Call once before the simulation loop.  During ``allocate()``, cached
-        scores are looked up by array index instead of calling ``score()``.
-        """
+        """Precompute entry-signal scores for all tickers over the full price arrays."""
         self._signal_cache = {}
-        strategies = [s.strategy for s in self._conviction] + [e.strategy for e in self._protective]
-        for strat in strategies:
+        for entry in self._entries:
             cache: dict[str, np.ndarray] = {}
             for ticker, prices in price_data.items():
-                result = strat.precompute(prices)
+                result = entry.strategy.precompute(prices)
                 if result is not None:
                     cache[ticker] = result
             if cache:
-                self._signal_cache[id(strat)] = cache
+                self._signal_cache[id(entry.strategy)] = cache
 
-    def _lookup_score(self, strategy: Strategy, ticker: str, prices_len: int) -> tuple[bool, float | None]:
+    def _lookup_score(self, strategy: EntrySignal, ticker: str, prices_len: int) -> tuple[bool, float | None]:
         """Look up a precomputed score.  Returns (hit, score)."""
         strat_cache = self._signal_cache.get(id(strategy))
         if strat_cache is not None and ticker in strat_cache:
@@ -136,20 +126,20 @@ class Allocator:
             tickers: Active tickers in the portfolio.
             price_data: Ticker -> price series mapping.
             context: Per-ticker context dict (e.g. {"AAPL": {"cost_basis": 150.0}}).
-            current_weights: Ticker -> current portfolio weight. When no
-                conviction strategy scores a ticker, the allocator holds the
-                current weight instead of reverting to equal-weight (Option A:
-                neutral = hold). If omitted, falls back to equal-weight base.
+            current_weights: Ticker -> current portfolio weight. When no entry
+                signal scores a ticker, the allocator holds the current weight
+                instead of reverting to equal-weight (Option A: neutral = hold).
+                If omitted, falls back to equal-weight base.
 
         Returns:
             AllocationResult with target weights, per-ticker contributions,
-            blended scores, and trim reasons.
+            and blended scores.
         """
         ctx = context or {}
         cur_w = current_weights or {}
         n = len(tickers)
         if n == 0:
-            return AllocationResult({}, {}, {}, {})
+            return AllocationResult({}, {}, {})
 
         investable = 1.0 - self._constraints.min_cash_pct
         base_weight = investable / n  # fallback when current_weights unknown
@@ -158,11 +148,12 @@ class Allocator:
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
         targets: dict[str, float] = dict.fromkeys(tickers, 0.0)
-        trim_reasons: dict[str, str] = {}
 
-        # Phase 1: Score conviction strategies and compute blended scores.
-        # Partition tickers into `active` (at least one strategy scored) and
-        # `held` (all strategies abstained — Option A: hold current weight).
+        # Phase 1: Score entry signals and compute blended scores.
+        # Partition tickers into `active` (at least one strategy scored > 0) and
+        # `held` (all strategies abstained or scored 0 — Option A: hold current
+        # weight). A pure-zero score is treated as "no opinion", consistent with
+        # the entry-signal contract that 0 means "no contribution to budget".
         active: list[str] = []
         held: list[str] = []
 
@@ -179,54 +170,23 @@ class Allocator:
             weighted_sum = 0.0
             weight_total = 0.0
 
-            for scored in self._conviction:
-                hit, s = self._lookup_score(scored.strategy, ticker, len(prices))
+            for entry in self._entries:
+                hit, s = self._lookup_score(entry.strategy, ticker, len(prices))
                 if not hit:
-                    s = scored.strategy.score(prices, **ticker_ctx)
+                    s = entry.strategy.score(prices, **ticker_ctx)
                 if s is not None:
-                    ticker_contributions[scored.strategy.name] = s
-                    weighted_sum += scored.weight * s
-                    weight_total += scored.weight
+                    ticker_contributions[entry.strategy.name] = s
+                    weighted_sum += entry.weight * s
+                    weight_total += entry.weight
 
             contributions[ticker] = ticker_contributions
 
-            if weight_total > 0:
+            if weight_total > 0 and weighted_sum > 0:
                 blended_scores[ticker] = weighted_sum / weight_total
                 active.append(ticker)
             else:
                 blended_scores[ticker] = 0.0
                 held.append(ticker)
-
-        # Phase 2: Protective vetoes. A vetoed ticker is removed from `active`
-        # (its softmax slot vanishes and its share of budget flows to peers).
-        #
-        # KNOWN LIMITATION: the vetoed score is stored in ``contributions`` and
-        # the Rebalancer's justification/attribution picker filters by sign
-        # (``v < 0`` for SELL). A protective strategy that vetoes with a score
-        # >= 0 would therefore have its forced-exit SELL either suppressed by
-        # the justification check or mislabeled as ``Rebalancer (unknown)``.
-        # All currently shipped protective strategies (StopLoss, TrailingStop)
-        # return strictly negative scores when they veto, so this is not
-        # exploitable today. The whole protective tier is slated for removal
-        # in favor of direct EXIT_RULE order intents — see #26 — at which
-        # point this pathway (and the limitation) disappears entirely.
-        vetoed: set[str] = set()
-        for entry in self._protective:
-            for ticker in tickers:
-                prices = price_data.get(ticker)
-                if prices is None or len(prices) == 0:
-                    continue
-                hit, s = self._lookup_score(entry.strategy, ticker, len(prices))
-                if not hit:
-                    ticker_ctx = ctx.get(ticker, {})
-                    s = entry.strategy.score(prices, **ticker_ctx)
-                if s is not None and s <= entry.veto_threshold:
-                    vetoed.add(ticker)
-                    contributions.setdefault(ticker, {})[entry.strategy.name] = s
-        active = [t for t in active if t not in vetoed]
-        held = [t for t in held if t not in vetoed]
-        for t in vetoed:
-            targets[t] = 0.0
 
         # Held tickers (Option A) consume their current weight from the
         # investable budget. Remaining budget goes to the active softmax.
@@ -243,20 +203,16 @@ class Allocator:
 
         budget_for_active = max(investable - held_total, 0.0)
 
-        # Phase 3: Softmax construct-to-budget over active tickers. Sum of
-        # softmax weights is exactly budget_for_active by construction, so
-        # there is no normalize step.
+        # Phase 2: Softmax construct-to-budget over active tickers.
         self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
 
-        # Phase 4: Position cap with redistribution (Option X). Iteratively
-        # clamp any ticker exceeding max_position_pct and re-softmax the
-        # survivors over the reduced remaining budget. Usually converges in
-        # one pass; bounded by len(active) for safety.
-        self._apply_cap_with_redistribution(
-            active, blended_scores, budget_for_active, temperature, targets, trim_reasons
-        )
+        # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
+        # max_position_pct and re-softmax the survivors over the reduced
+        # remaining budget. Cap *never* forces a sell — it just refuses to
+        # allocate more budget. Sells are exclusively ExitRule territory.
+        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets)
 
-        return AllocationResult(targets, contributions, blended_scores, trim_reasons)
+        return AllocationResult(targets, contributions, blended_scores)
 
     def _softmax_allocate(
         self,
@@ -279,7 +235,6 @@ class Allocator:
             return
         t_safe = max(temperature, MIN_TEMPERATURE)
         # Subtract max for numerical stability — softmax is translation-invariant.
-        # The max-subtracted ticker contributes exp(0) = 1, so z >= 1 always.
         max_score = max(blended_scores[t] for t in tickers)
         exps = {t: math.exp((blended_scores[t] - max_score) / t_safe) for t in tickers}
         z = sum(exps.values())
@@ -293,13 +248,12 @@ class Allocator:
         initial_budget: float,
         temperature: float,
         targets: dict[str, float],
-        trim_reasons: dict[str, str],
     ) -> None:
         """Clamp targets exceeding max_position_pct; re-softmax the survivors.
 
-        Option X: when a cap trims a ticker, the freed budget is redistributed
-        to uncapped tickers in proportion to their softmax weight (achieved by
-        re-running softmax over the survivors with the reduced budget).
+        Soft cap: when a ticker hits the cap, the freed budget is redistributed
+        to uncapped tickers in proportion to their softmax weight. The cap
+        never forces a sell — it can only refuse to allocate more buy budget.
         """
         cap = self._max_position_pct
         survivors = list(active)
@@ -311,17 +265,13 @@ class Allocator:
                 return
             for t in over:
                 targets[t] = cap
-                trim_reasons[t] = "cap"
                 budget -= cap
                 survivors.remove(t)
             if not survivors or budget <= 0:
-                # Caps consumed the entire investable budget. Survivors had
-                # positive contribs (they were in `active`) so the rebalancer's
-                # justification check would suppress their SELL on a bare zero
-                # target. Tag them with "cap" so the SELL fires as
-                # `Rebalancer (cap)` and the portfolio stays consistent.
+                # Caps consumed the entire investable budget. Survivors get
+                # zero new allocation; they'll naturally drift until an
+                # ExitRule fires.
                 for t in survivors:
                     targets[t] = 0.0
-                    trim_reasons[t] = "cap"
                 return
             self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)

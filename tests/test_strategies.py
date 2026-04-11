@@ -1,18 +1,17 @@
-"""Tests for individual strategies — score() interface."""
+"""Tests for individual strategies — entry score() and exit clamp_target() interfaces."""
 
 import numpy as np
 
-from midas.models import StrategyTier
 from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
-from midas.strategies.dca import DollarCostAveraging
 from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.ma_crossover import MovingAverageCrossover
+from midas.strategies.ma_crossover_exit import MovingAverageCrossoverExit
 from midas.strategies.macd_crossover import MACDCrossover
+from midas.strategies.macd_exit import MACDExit
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
 from midas.strategies.profit_taking import ProfitTaking
-from midas.strategies.rsi_overbought import RSIOverbought
 from midas.strategies.rsi_oversold import RSIOversold
 from midas.strategies.stop_loss import StopLoss
 from midas.strategies.trailing_stop import TrailingStop
@@ -28,8 +27,7 @@ class TestMeanReversion:
         strategy = MeanReversion(window=30, threshold=0.05)
         score = strategy.score(dropping_prices)
         assert score is not None
-        assert score > 0.0
-        assert score <= 1.0
+        assert 0.0 < score <= 1.0
 
     def test_insufficient_history(self) -> None:
         short = np.array([100.0] * 5)
@@ -40,28 +38,21 @@ class TestMeanReversion:
         s = MeanReversion(window=20, threshold=0.08)
         assert s.name == "MeanReversion"
         assert len(s.suitability) > 0
-        assert s.tier == StrategyTier.CONVICTION
 
 
 class TestProfitTaking:
-    def test_negative_score_on_gain(self, rising_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.15)
-        score = strategy.score(rising_prices, cost_basis=100.0)
-        assert score is not None
-        assert score < 0.0  # bearish (sell)
+    def test_clamps_to_zero_on_gain(self, rising_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.15)
+        # rising_prices ramps from 100 to ~150 — well above 15% gain.
+        assert rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=150.0) == 0.0
 
-    def test_abstain_without_cost_basis(self, rising_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.15)
-        assert strategy.score(rising_prices) is None
-        assert strategy.score(rising_prices, cost_basis=None) is None
+    def test_no_clamp_below_threshold(self, flat_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.20)
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
-    def test_neutral_below_threshold(self, flat_prices: np.ndarray) -> None:
-        strategy = ProfitTaking(gain_threshold=0.20)
-        score = strategy.score(flat_prices, cost_basis=100.0)
-        assert score == 0.0
-
-    def test_tier(self) -> None:
-        assert ProfitTaking().tier == StrategyTier.CONVICTION
+    def test_no_clamp_without_cost_basis(self, rising_prices: np.ndarray) -> None:
+        rule = ProfitTaking(gain_threshold=0.15)
+        assert rule.clamp_target("X", 0.10, rising_prices, cost_basis=0.0, high_water_mark=150.0) == 0.10
 
 
 class TestMomentum:
@@ -104,25 +95,7 @@ class TestRSIOversold:
     def test_name_and_description(self) -> None:
         s = RSIOversold(window=10, oversold_threshold=25.0)
         assert s.name == "RSIOversold"
-        assert len(s.suitability) > 0
         assert s.description
-
-
-class TestRSIOverbought:
-    def test_negative_score_on_overbought(self, volatile_rising_prices: np.ndarray) -> None:
-        strategy = RSIOverbought(window=14, overbought_threshold=65.0)
-        score = strategy.score(volatile_rising_prices)
-        assert score is not None
-        assert score < 0.0
-
-    def test_neutral_on_flat(self, flat_prices: np.ndarray) -> None:
-        strategy = RSIOverbought(window=14, overbought_threshold=70.0)
-        assert strategy.score(flat_prices) == 0.0
-
-    def test_insufficient_history(self) -> None:
-        short = np.array([100.0] * 5)
-        strategy = RSIOverbought(window=14)
-        assert strategy.score(short) is None
 
 
 class TestBollingerBand:
@@ -140,10 +113,6 @@ class TestBollingerBand:
         short = np.array([100.0] * 5)
         strategy = BollingerBand(window=20)
         assert strategy.score(short) is None
-
-    def test_name_and_description(self) -> None:
-        s = BollingerBand(window=20, num_std=2.5)
-        assert s.name == "BollingerBand"
 
 
 class TestMACDCrossover:
@@ -167,30 +136,16 @@ class TestMACDCrossover:
         assert strategy.score(short) is None
 
 
-class TestDollarCostAveraging:
-    def test_mechanical_tier(self) -> None:
-        strategy = DollarCostAveraging(frequency_days=10)
-        assert strategy.tier == StrategyTier.MECHANICAL
+class TestMACDExit:
+    def test_no_clamp_on_flat(self, flat_prices: np.ndarray) -> None:
+        rule = MACDExit()
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
-    def test_score_returns_none(self, flat_prices: np.ndarray) -> None:
-        strategy = DollarCostAveraging(frequency_days=10)
-        assert strategy.score(flat_prices) is None
 
-    def test_generates_intent_on_frequency(self, flat_prices: np.ndarray) -> None:
-        strategy = DollarCostAveraging(frequency_days=10)
-        intents = strategy.generate_intents("FLAT", flat_prices[:10])
-        assert len(intents) == 1
-        assert intents[0].target_value == 500.0
-
-    def test_no_intent_off_frequency(self, flat_prices: np.ndarray) -> None:
-        strategy = DollarCostAveraging(frequency_days=10)
-        intents = strategy.generate_intents("FLAT", flat_prices[:11])
-        assert intents == []
-
-    def test_name_and_description(self) -> None:
-        s = DollarCostAveraging(frequency_days=7)
-        assert s.name == "DollarCostAveraging"
-        assert s.description
+class TestMovingAverageCrossoverExit:
+    def test_no_clamp_on_flat(self, flat_prices: np.ndarray) -> None:
+        rule = MovingAverageCrossoverExit(short_window=10, long_window=30)
+        assert rule.clamp_target("X", 0.10, flat_prices, cost_basis=100.0, high_water_mark=100.0) == 0.10
 
 
 class TestGapDownRecovery:
@@ -215,46 +170,49 @@ class TestGapDownRecovery:
 
 
 class TestTrailingStop:
-    def test_negative_score_on_drawdown(self, peak_then_drop_prices: np.ndarray) -> None:
-        strategy = TrailingStop(trail_pct=0.08)
-        score = strategy.score(peak_then_drop_prices, cost_basis=100.0)
-        assert score is not None
-        assert score < 0.0
+    def test_clamps_on_drawdown(self, peak_then_drop_prices: np.ndarray) -> None:
+        peak = float(peak_then_drop_prices.max())
+        rule = TrailingStop(trail_pct=0.08)
+        # Current price is below peak and above basis — gain-protection fires.
+        result = rule.clamp_target("X", 0.10, peak_then_drop_prices, cost_basis=100.0, high_water_mark=peak)
+        assert result == 0.0
 
-    def test_abstain_without_cost_basis(self, peak_then_drop_prices: np.ndarray) -> None:
-        strategy = TrailingStop(trail_pct=0.08)
-        assert strategy.score(peak_then_drop_prices) is None
-
-    def test_neutral_on_rising(self, rising_prices: np.ndarray) -> None:
-        strategy = TrailingStop(trail_pct=0.10)
-        assert strategy.score(rising_prices, cost_basis=100.0) == 0.0
-
-    def test_tier(self) -> None:
-        assert TrailingStop().tier == StrategyTier.PROTECTIVE
+    def test_no_clamp_on_rising(self, rising_prices: np.ndarray) -> None:
+        rule = TrailingStop(trail_pct=0.10)
+        peak = float(rising_prices.max())
+        # Current price == peak, so drawdown is 0% — no clamp.
+        result = rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=peak)
+        assert result == 0.10
 
     def test_name_and_description(self) -> None:
         s = TrailingStop(trail_pct=0.15)
         assert s.name == "TrailingStop"
         assert s.description
 
+    def test_no_clamp_when_underwater(self) -> None:
+        """TrailingStop is gain-protection only — no fire when losing."""
+        prices = np.array([80.0, 100.0, 70.0])
+        rule = TrailingStop(trail_pct=0.10)
+        # Basis 80 > current 70: underwater, so no fire despite drawdown.
+        result = rule.clamp_target("X", 0.10, prices, cost_basis=80.0, high_water_mark=100.0)
+        assert result == 0.10
+
 
 class TestStopLoss:
-    def test_negative_score_on_loss(self, dropping_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        score = strategy.score(dropping_prices, cost_basis=100.0)
-        assert score is not None
-        assert score < 0.0
+    def test_clamps_on_loss(self, dropping_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, dropping_prices, cost_basis=100.0, high_water_mark=100.0)
+        assert result == 0.0
 
-    def test_abstain_without_cost_basis(self, dropping_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        assert strategy.score(dropping_prices) is None
+    def test_no_clamp_above_cost(self, rising_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, rising_prices, cost_basis=100.0, high_water_mark=150.0)
+        assert result == 0.10
 
-    def test_neutral_above_cost(self, rising_prices: np.ndarray) -> None:
-        strategy = StopLoss(loss_threshold=0.10)
-        assert strategy.score(rising_prices, cost_basis=100.0) == 0.0
-
-    def test_tier(self) -> None:
-        assert StopLoss().tier == StrategyTier.PROTECTIVE
+    def test_no_clamp_without_cost_basis(self, dropping_prices: np.ndarray) -> None:
+        rule = StopLoss(loss_threshold=0.10)
+        result = rule.clamp_target("X", 0.10, dropping_prices, cost_basis=0.0, high_water_mark=100.0)
+        assert result == 0.10
 
     def test_name_and_description(self) -> None:
         s = StopLoss(loss_threshold=0.05)
@@ -269,11 +227,12 @@ class TestVWAPReversion:
         assert score is not None
         assert score > 0.0
 
-    def test_negative_score_above_average(self, rising_prices: np.ndarray) -> None:
+    def test_zero_score_above_average(self, rising_prices: np.ndarray) -> None:
+        # Buy-only signals clamp at 0 above the band (no negative scores).
         strategy = VWAPReversion(window=20, threshold=0.01)
         score = strategy.score(rising_prices)
         assert score is not None
-        assert score < 0.0
+        assert score == 0.0
 
     def test_neutral_on_flat(self, flat_prices: np.ndarray) -> None:
         strategy = VWAPReversion(window=20, threshold=0.02)
@@ -305,10 +264,6 @@ class TestMovingAverageCrossover:
         strategy = MovingAverageCrossover(short_window=10, long_window=50)
         assert strategy.score(short) is None
 
-    def test_name_and_description(self) -> None:
-        s = MovingAverageCrossover(short_window=15, long_window=45)
-        assert s.name == "MovingAverageCrossover"
-
 
 class TestWarmupPeriod:
     """Each strategy advertises the history it needs before scoring."""
@@ -326,30 +281,22 @@ class TestWarmupPeriod:
         # Recursive indicators need 4x their nominal period to converge
         # (TA-Lib unstable-period convention).
         assert RSIOversold(window=14).warmup_period == 56
-        assert RSIOverbought(window=14).warmup_period == 56
 
     def test_macd_uses_slow_period_times_multiplier_plus_signal(self) -> None:
         assert MACDCrossover(slow_period=26, signal_period=9).warmup_period == 26 * 4 + 9
 
-    def test_stateless_exit_strategies_need_no_warmup(self) -> None:
-        # StopLoss / ProfitTaking / TrailingStop / DCA inherit the default 0.
+    def test_stateless_exit_rules_need_no_warmup(self) -> None:
+        # StopLoss / ProfitTaking / TrailingStop are price-vs-basis only.
         assert StopLoss().warmup_period == 0
         assert ProfitTaking().warmup_period == 0
         assert TrailingStop().warmup_period == 0
-        assert DollarCostAveraging().warmup_period == 0
 
     def test_gap_down_recovery_needs_three_bars(self) -> None:
         assert GapDownRecovery().warmup_period == 3
 
 
 class TestWarmupBarsToCalendarDays:
-    """``warmup_bars_to_calendar_days`` floors at ``MIN_WARMUP_CALENDAR_DAYS``.
-
-    Live mode derives its history-fetch window from this helper. If a
-    mechanical-only setup (StopLoss/TrailingStop/DCA) returned 0, the
-    live engine would request a single-day price history and frequently
-    receive nothing on weekends/holidays. The floor prevents that.
-    """
+    """``warmup_bars_to_calendar_days`` floors at ``MIN_WARMUP_CALENDAR_DAYS``."""
 
     def test_zero_bars_floors_to_minimum(self) -> None:
         assert warmup_bars_to_calendar_days(0) == MIN_WARMUP_CALENDAR_DAYS

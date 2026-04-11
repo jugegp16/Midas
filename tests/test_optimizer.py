@@ -74,7 +74,7 @@ def test_optimize_rejects_no_strategies() -> None:
             price_data=price_data,
             start=start,
             end=end,
-            strategy_names=["DollarCostAveraging"],
+            strategy_names=["NotAStrategy"],
             n_trials=5,
         )
 
@@ -101,7 +101,7 @@ def test_write_strategies_yaml(tmp_path) -> None:
 
     params = {
         "MeanReversion": {"window": 20.0, "threshold": 0.1, "_weight": 1.5},
-        "TrailingStop": {"trail_pct": 0.1, "_veto_threshold": -0.5},
+        "TrailingStop": {"trail_pct": 0.1},
     }
     out = str(tmp_path / "strats.yaml")
     write_strategies_yaml(params, out)
@@ -119,7 +119,8 @@ def test_write_strategies_yaml(tmp_path) -> None:
     assert mr["params"]["window"] == 20
 
     ts = next(s for s in data["strategies"] if s["name"] == "TrailingStop")
-    assert ts["veto_threshold"] == -0.5
+    assert ts["params"]["trail_pct"] == 0.1
+    assert "weight" not in ts
 
 
 # ---------------------------------------------------------------------------

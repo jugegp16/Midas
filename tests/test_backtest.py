@@ -4,6 +4,7 @@ import math
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from conftest import make_price_series
 
@@ -11,6 +12,7 @@ from midas.allocator import Allocator
 from midas.backtest import (
     TRADING_DAYS_PER_YEAR,
     BacktestEngine,
+    _SimState,
     compute_cagr,
     compute_max_drawdown,
     compute_sharpe,
@@ -19,33 +21,45 @@ from midas.backtest import (
     compute_trade_stats,
     write_backtest_csv,
 )
-from midas.models import AllocationConstraints, CashInfusion, Direction, Holding, PortfolioConfig, TradeRecord
-from midas.rebalancer import Rebalancer
+from midas.models import (
+    AllocationConstraints,
+    CashInfusion,
+    Direction,
+    Holding,
+    HoldingPeriod,
+    Order,
+    OrderContext,
+    PortfolioConfig,
+    PositionLot,
+    TradeRecord,
+    TradingRestrictions,
+)
+from midas.order_sizer import OrderSizer
+from midas.restrictions import RestrictionTracker
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
+from midas.strategies.trailing_stop import TrailingStop
 
 
 def _build_engine(
-    conviction_strategies=None,
-    protective_strategies=None,
-    mechanical_strategies=None,
+    entries=None,
+    exit_rules=None,
     constraints=None,
     n_tickers=1,
     **kwargs,
 ):
-    """Helper to build a BacktestEngine with the new allocator system."""
-    conviction = conviction_strategies or []
-    protective = protective_strategies or []
+    """Helper to build a BacktestEngine with the new allocator + order_sizer system."""
+    entries = entries or []
     constraints = constraints or AllocationConstraints(
-        rebalance_threshold=0.01,
+        min_buy_delta=0.01,
         max_position_pct=0.95,
     )
-    allocator = Allocator(conviction, protective, constraints, n_tickers)
-    rebalancer = Rebalancer()
+    allocator = Allocator(entries, constraints, n_tickers)
+    order_sizer = OrderSizer()
     return BacktestEngine(
         allocator=allocator,
-        rebalancer=rebalancer,
-        mechanical_strategies=mechanical_strategies,
+        order_sizer=order_sizer,
+        exit_rules=exit_rules,
         constraints=constraints,
         **kwargs,
     )
@@ -75,7 +89,7 @@ def test_backtest_produces_trades() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -94,7 +108,7 @@ def test_backtest_with_split() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         train_pct=0.7,
     )
 
@@ -110,7 +124,7 @@ def test_backtest_csv_output(tmp_path: Path) -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=True,
     )
 
@@ -139,7 +153,7 @@ def test_backtest_cost_basis_uses_start_price() -> None:
 
     pt = ProfitTaking(gain_threshold=0.20)
     engine = _build_engine(
-        conviction_strategies=[(pt, 1.0)],
+        exit_rules=[pt],
         enable_split=False,
     )
 
@@ -168,7 +182,7 @@ def test_backtest_deferred_ticker() -> None:
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         n_tickers=2,
         enable_split=False,
         log_fn=log_messages.append,
@@ -212,7 +226,7 @@ def test_backtest_consumes_warmup_prefix() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
     result = engine.run(portfolio, {"AAPL": prices}, sim_start, sim_end)
@@ -238,7 +252,7 @@ def test_backtest_logs_insufficient_warmup() -> None:
     mr = MeanReversion(window=50, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
         log_fn=log_messages.append,
     )
@@ -263,7 +277,7 @@ def test_backtest_excluded_ticker() -> None:
     mr = MeanReversion(window=10, threshold=0.05)
     log_messages: list[str] = []
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
         log_fn=log_messages.append,
     )
@@ -297,7 +311,7 @@ def test_backtest_cash_infusion_credits_cash() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -329,7 +343,7 @@ def test_backtest_recurring_cash_infusion() -> None:
 
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
-        conviction_strategies=[(mr, 1.0)],
+        entries=[(mr, 1.0)],
         enable_split=False,
     )
 
@@ -597,7 +611,7 @@ def test_strategy_stats_empty() -> None:
 def test_backtest_populates_new_metrics() -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=10, threshold=-0.05)
-    engine = _build_engine(conviction_strategies=[(mr, 1.0)], enable_split=False)
+    engine = _build_engine(entries=[(mr, 1.0)], enable_split=False)
     idx = list(price_data["AAPL"].index)
     start, end = idx[0], idx[-1]
     result = engine.run(portfolio, price_data, start, end)
@@ -606,3 +620,380 @@ def test_backtest_populates_new_metrics() -> None:
     assert result.max_drawdown >= 0.0
     # Sortino must never be inf — even on a perfect run we cap to 0.
     assert not math.isinf(result.sortino_ratio)
+
+
+# --- _fifo_consumed_basis unit tests ---
+#
+# FIFO basis underpins realized-P&L attribution. These pin the contract
+# directly so regressions surface at the unit level instead of bleeding
+# through end-to-end backtests.
+
+
+def _pl(shares: float, basis: float) -> PositionLot:
+    return PositionLot(
+        shares=shares,
+        purchase_date=date(2024, 1, 1),
+        cost_basis=basis,
+    )
+
+
+def test_fifo_basis_empty_lots() -> None:
+    assert BacktestEngine._fifo_consumed_basis([], 5) == 0.0
+
+
+def test_fifo_basis_zero_shares() -> None:
+    assert BacktestEngine._fifo_consumed_basis([_pl(10, 100.0)], 0) == 0.0
+
+
+def test_fifo_basis_single_lot_partial() -> None:
+    basis = BacktestEngine._fifo_consumed_basis([_pl(10, 100.0)], 4)
+    assert basis == 100.0
+
+
+def test_fifo_basis_crosses_lot_boundary() -> None:
+    """Consume 8 shares across two lots: 5 @ $100 + 3 @ $80 → $92.50."""
+    lots = [_pl(5, 100.0), _pl(10, 80.0)]
+    basis = BacktestEngine._fifo_consumed_basis(lots, 8)
+    assert basis == (5 * 100.0 + 3 * 80.0) / 8
+
+
+def test_fifo_basis_respects_lot_order() -> None:
+    """Reversing the lot list must change the answer — this is FIFO, not LIFO."""
+    lot_a = _pl(5, 100.0)
+    lot_b = _pl(10, 80.0)
+    fifo = BacktestEngine._fifo_consumed_basis([lot_a, lot_b], 8)
+    lifo = BacktestEngine._fifo_consumed_basis([lot_b, lot_a], 8)
+    assert fifo != lifo
+    assert lifo == 80.0  # first 8 all come from the $80 lot
+
+
+def test_fifo_basis_does_not_mutate_lots() -> None:
+    lots = [_pl(5, 100.0), _pl(10, 80.0)]
+    BacktestEngine._fifo_consumed_basis(lots, 8)
+    assert lots[0].shares == 5
+    assert lots[1].shares == 10
+
+
+# --- restriction-before-sizing regression ---
+
+
+def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
+    """Restriction-before-sizing invariant: blocked sells must not inflate the
+    ``cash`` the buy pass sees.
+
+    The backtest orders Phase 3 as:
+
+        1. size sells from clamped targets
+        2. filter restriction-blocked sells
+        3. compute ``post_sell_cash = state.cash + sum(filtered)``
+        4. call ``size_buys(..., cash=post_sell_cash, ...)``
+
+    If step 2 is skipped (or moved after step 3), blocked sell proceeds
+    leak into ``post_sell_cash`` and ``size_buys`` can authorize buys
+    against cash that will never arrive in phase 5.
+
+    This test pins the order by spying on ``size_buys`` and asserting the
+    ``cash`` argument equals ``state.cash + proceeds_of_unblocked_sells``,
+    not ``state.cash + proceeds_of_all_sells``.
+    """
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    mr = MeanReversion(window=10, threshold=0.05)
+    allocator = Allocator([(mr, 1.0)], constraints, n_tickers=1)
+    sizer = OrderSizer(default_slippage=0.0)
+
+    # Spy on size_buys to capture the cash it was called with.
+    captured: dict[str, float] = {}
+    real_size_buys = sizer.size_buys
+
+    def spy_size_buys(*args, **kwargs):
+        # cash is the 4th positional arg in size_buys
+        captured["cash"] = args[3] if len(args) > 3 else kwargs["cash"]
+        return real_size_buys(*args, **kwargs)
+
+    sizer.size_buys = spy_size_buys  # type: ignore[method-assign]
+
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=sizer,
+        exit_rules=[ProfitTaking(gain_threshold=0.10)],
+        constraints=constraints,
+    )
+
+    # A single held ticker in profit → ProfitTaking fires. Round-trip
+    # restriction blocks the sell.
+    a_prices = np.array([100.0] * 15)
+
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 5.0}
+    state.lots = {
+        "A": [
+            PositionLot(
+                shares=5.0,
+                purchase_date=date(2024, 1, 1),
+                cost_basis=80.0,
+            )
+        ]
+    }
+    state.high_water_marks = {"A": 100.0}
+    state.restriction_tracker = RestrictionTracker(TradingRestrictions(round_trip_days=30))
+    state.restriction_tracker.record_trade("A", Direction.BUY, date(2024, 1, 15))
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="A", shares=5, cost_basis=80.0)],
+        available_cash=0.0,
+        trading_restrictions=TradingRestrictions(round_trip_days=30),
+    )
+
+    engine._run_day(state, portfolio, {"A": a_prices}, date(2024, 1, 16))
+
+    # post_sell_cash should equal state.cash ($0) because the single sell
+    # was blocked. If blocked proceeds leaked in, cash would be ~$500.
+    assert "cash" in captured, "size_buys was not called"
+    assert captured["cash"] == 0.0, f"blocked sell proceeds leaked into size_buys cash: {captured['cash']}"
+
+
+# --- competing exit rules: realized + unrealized reconciliation ---
+
+
+def test_competing_exit_rules_collapse_to_one_sell() -> None:
+    """Regression: ProfitTaking + TrailingStop firing the same tick over-sold.
+
+    When a held lot is in deep profit *and* its HWM has already drifted
+    below the trail threshold, both rules independently want to liquidate
+    the entire position. Pre-fix, ``size_sells`` produced two sell orders
+    each sized against the full position — the second sell drained shares
+    that no longer existed, fabricated cash, and broke the realized-P&L
+    reconciliation against ``final - start``.
+
+    Drive ``_run_day`` directly with a hand-crafted state so we can pin
+    exactly the lot/HWM/price configuration that triggers the double-fire,
+    then assert: (a) only one sell fires, (b) it's credited to the more
+    aggressive rule, and (c) ``final - start == realized + unrealized``.
+    """
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator([], constraints, n_tickers=1)
+    sizer = OrderSizer(default_slippage=0.0)
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=sizer,
+        exit_rules=[ProfitTaking(gain_threshold=0.10), TrailingStop(trail_pct=0.05)],
+        constraints=constraints,
+    )
+
+    # Lot @ $80 basis with HWM=$130 (the peak the position has seen).
+    # Today's price is $115:
+    #   PT: gain = (115-80)/80 = 43.75% > 10% → wants full liquidation
+    #   TS: drawdown = (130-115)/130 = 11.5% > 5% → wants full liquidation
+    # Both rules fire on the entire 10-share position the same tick.
+    state = _SimState(cash=0.0)
+    state.cash = 0.0
+    state.positions = {"A": 10.0}
+    state.lots = {
+        "A": [
+            PositionLot(
+                shares=10.0,
+                purchase_date=date(2024, 1, 1),
+                cost_basis=80.0,
+            )
+        ]
+    }
+    state.high_water_marks = {"A": 130.0}
+    state.starting_value = 800.0  # 10 shares at $80 basis
+    state.twr_base_value = 800.0
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="A", shares=10, cost_basis=80.0)],
+        available_cash=0.0,
+    )
+
+    # Price array with current=$115; backstop history gives the rules
+    # something to read but the only price they act on is the last bar.
+    prices = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    engine._run_day(state, portfolio, {"A": prices}, date(2024, 2, 1))
+
+    sells = [t for t in state.trades if t.direction == Direction.SELL]
+    assert len(sells) == 1, f"expected 1 sell after collapse, got {len(sells)}: {sells}"
+    assert sells[0].shares == 10  # the full position, not 20
+    # TrailingStop's intent (full liquidation at current price) ties with
+    # ProfitTaking's. Either is acceptable; what matters is one wins, not
+    # both. We assert it's one of the two configured sources.
+    assert sells[0].strategy_name in {"ProfitTaking", "TrailingStop"}
+
+    # Reconciliation: with one sell, FIFO consumed basis = real basis,
+    # state.cash exactly reflects sell proceeds, and the position is empty.
+    final_price = float(prices[-1])
+    final_value = state.cash + sum(sum(lot.shares for lot in lots) * final_price for lots in state.lots.values())
+    realized = sum(
+        (t.price - state.basis_per_sell[i]) * t.shares
+        for i, t in enumerate(t for t in state.trades if t.direction == Direction.SELL)
+    )
+    unrealized = sum(sum(lot.shares * (final_price - lot.cost_basis) for lot in lots) for lots in state.lots.values())
+    delta = final_value - state.starting_value
+    assert math.isclose(delta, realized + unrealized, abs_tol=1.0), (
+        f"reconciliation broken: final-start=${delta:,.2f} but realized+unrealized=${realized + unrealized:,.2f}"
+    )
+
+
+# --- HWM lifecycle: stale peaks must not survive a full exit ---
+
+
+def _sell_order(ticker: str, shares: float, price: float, source: str = "TestRule") -> Order:
+    return Order(
+        ticker=ticker,
+        direction=Direction.SELL,
+        shares=shares,
+        price=price,
+        estimated_value=shares * price,
+        context=OrderContext(
+            contributions={},
+            blended_score=0.0,
+            target_weight=0.0,
+            current_weight=0.0,
+            reason="test",
+            source=source,
+        ),
+    )
+
+
+def test_full_exit_clears_high_water_mark() -> None:
+    """Regression: ``state.high_water_marks[ticker]`` must be cleared when a
+    position is fully exited. Otherwise a later re-entry inherits the stale
+    peak and TrailingStop misfires on day 1 of the new lot against a price
+    the new position has never reached.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+    state.high_water_marks = {"A": 200.0}  # AAPL rallied from $100 to $200
+
+    order = _sell_order("A", 10.0, 160.0, source="TrailingStop")
+    engine._execute(order, date(2024, 2, 1), state)
+
+    assert state.positions["A"] == 0
+    assert "A" not in state.high_water_marks, "stale HWM survived a full exit — TrailingStop would misfire on re-entry"
+
+
+def test_partial_exit_preserves_high_water_mark() -> None:
+    """Partial exits leave HWM intact — the position still exists."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+    state.high_water_marks = {"A": 200.0}
+
+    order = _sell_order("A", 4.0, 180.0)
+    engine._execute(order, date(2024, 2, 1), state)
+
+    assert state.positions["A"] == 6.0
+    assert state.high_water_marks["A"] == 200.0
+
+
+# --- Mixed holding-period sells split into per-period records ---
+
+
+def test_sell_crossing_st_lt_boundary_splits_into_two_records() -> None:
+    """A FIFO sell that consumes lots straddling the 365-day boundary must
+    emit two TradeRecords — one short-term, one long-term — each with the
+    correct per-group share count, weighted cost basis, and classification.
+
+    Pre-fix, ``lots[0].purchase_date`` classified the entire sell (whichever
+    bucket the oldest lot fell into), misreporting the other portion.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    # Lot 0 is ancient (1000 days old — LT), lot 1 is fresh (30 days old — ST).
+    # FIFO consumes lot 0 first then lot 1.
+    state.positions = {"A": 15.0}
+    state.lots = {
+        "A": [
+            PositionLot(shares=5.0, purchase_date=date(2022, 1, 1), cost_basis=80.0),
+            PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=120.0),
+        ]
+    }
+    state.high_water_marks = {"A": 150.0}
+
+    # Sell 12 shares — consumes all 5 LT shares + 7 ST shares from lot 1.
+    order = _sell_order("A", 12.0, 130.0)
+    day = date(2024, 2, 1)  # lot 0: 762 days (LT), lot 1: 31 days (ST)
+    records = engine._execute(order, day, state)
+
+    assert len(records) == 2, f"expected 2 records (ST + LT), got {len(records)}"
+
+    # Records are returned ST-first, then LT.
+    st_trade, st_basis = records[0]
+    lt_trade, lt_basis = records[1]
+
+    assert st_trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert st_trade.shares == 7.0
+    assert st_basis == 120.0  # all 7 ST shares came from lot 1 @ $120
+
+    assert lt_trade.holding_period == HoldingPeriod.LONG_TERM
+    assert lt_trade.shares == 5.0
+    assert lt_basis == 80.0  # all 5 LT shares came from lot 0 @ $80
+
+    # Total shares reconcile.
+    assert st_trade.shares + lt_trade.shares == order.shares
+    # Position correctly decremented and 3 shares of lot 1 remain.
+    assert state.positions["A"] == 3.0
+    assert len(state.lots["A"]) == 1
+    assert state.lots["A"][0].shares == 3.0
+
+
+def test_sell_single_period_emits_one_record() -> None:
+    """A sell consuming only ST lots emits a single ST record."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=100.0)]}
+
+    order = _sell_order("A", 6.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert trade.shares == 6.0
+    assert basis == 100.0
+
+
+def test_sell_pure_long_term_emits_one_lt_record() -> None:
+    """A sell consuming only LT lots emits a single LT record."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {"A": [PositionLot(shares=10.0, purchase_date=date(2022, 1, 1), cost_basis=100.0)]}
+
+    order = _sell_order("A", 6.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.LONG_TERM
+    assert trade.shares == 6.0
+    assert basis == 100.0
+
+
+def test_sell_mixed_basis_within_single_period() -> None:
+    """Two ST lots at different bases aggregate into a single ST record
+    with a weighted cost basis.
+    """
+    engine = _build_engine()
+    state = _SimState(cash=0.0)
+    state.positions = {"A": 10.0}
+    state.lots = {
+        "A": [
+            PositionLot(shares=4.0, purchase_date=date(2024, 1, 1), cost_basis=80.0),
+            PositionLot(shares=6.0, purchase_date=date(2024, 1, 15), cost_basis=100.0),
+        ]
+    }
+
+    # Sell all 10: weighted basis = (4*80 + 6*100) / 10 = 92.0
+    order = _sell_order("A", 10.0, 110.0)
+    records = engine._execute(order, date(2024, 2, 1), state)
+
+    assert len(records) == 1
+    trade, basis = records[0]
+    assert trade.holding_period == HoldingPeriod.SHORT_TERM
+    assert trade.shares == 10.0
+    assert basis == 92.0

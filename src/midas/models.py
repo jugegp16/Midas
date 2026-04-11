@@ -7,11 +7,10 @@ from datetime import date, timedelta
 from enum import Enum
 
 DEFAULT_MIN_CASH_PCT = 0.05
-DEFAULT_REBALANCE_THRESHOLD = 0.02
+DEFAULT_MIN_BUY_DELTA = 0.02
 DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
-DEFAULT_CONVICTION_WEIGHT = 1
-DEFAULT_PROTECTIVE_VETO_THRESHOLD = -0.5
+DEFAULT_ENTRY_WEIGHT = 1
 
 
 class Direction(Enum):
@@ -30,12 +29,6 @@ class AssetSuitability(Enum):
     INDIVIDUAL_EQUITY = "individual-equity"
     HIGH_VOLATILITY = "high-volatility"
     ALL = "all"
-
-
-class StrategyTier(Enum):
-    CONVICTION = "conviction"
-    PROTECTIVE = "protective"
-    MECHANICAL = "mechanical"
 
 
 @dataclass
@@ -104,12 +97,17 @@ class Order:
 
 
 @dataclass(frozen=True)
-class MechanicalIntent:
-    ticker: str
-    direction: Direction
-    target_value: float
-    reason: str
-    source: str
+class PositionLot:
+    """A single tax lot for an open position.
+
+    Used by the backtest engine for FIFO sell execution, cost-basis
+    accounting, and holding-period classification. Each buy fill appends
+    a new lot; each sell consumes lots first-in-first-out.
+    """
+
+    shares: float
+    purchase_date: date | None
+    cost_basis: float
 
 
 @dataclass(frozen=True)
@@ -132,7 +130,7 @@ class TradingRestrictions:
 class AllocationConstraints:
     max_position_pct: float | None = None
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
-    rebalance_threshold: float = DEFAULT_REBALANCE_THRESHOLD
+    min_buy_delta: float = DEFAULT_MIN_BUY_DELTA
     softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
 
 
@@ -141,5 +139,4 @@ class StrategyConfig:
     name: str
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
-    weight: float = DEFAULT_CONVICTION_WEIGHT
-    veto_threshold: float = DEFAULT_PROTECTIVE_VETO_THRESHOLD
+    weight: float = DEFAULT_ENTRY_WEIGHT

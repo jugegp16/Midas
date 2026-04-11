@@ -1,37 +1,45 @@
-"""Stop loss strategy: sell when unrealized loss exceeds threshold."""
+"""Stop loss exit rule: sell when unrealized loss exceeds threshold."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from midas.models import AssetSuitability, StrategyTier
-from midas.strategies.base import Strategy
+from midas.models import AssetSuitability
+from midas.strategies.base import ExitRule
 
 
-class StopLoss(Strategy):
+class StopLoss(ExitRule):
     def __init__(self, loss_threshold: float = 0.10) -> None:
         self._loss_threshold = loss_threshold
 
-    @property
-    def tier(self) -> StrategyTier:
-        return StrategyTier.PROTECTIVE
-
-    def score(
+    def clamp_target(
         self,
+        ticker: str,
+        proposed_target: float,
         price_history: np.ndarray,
-        *,
-        cost_basis: float | None = None,
-        **kwargs: object,
-    ) -> float | None:
-        if cost_basis is None or cost_basis <= 0:
-            return None
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0 or cost_basis <= 0:
+            return proposed_target
+        current = float(price_history[-1])
+        if current <= 0:
+            return proposed_target
+        loss = (cost_basis - current) / cost_basis
+        if loss >= self._loss_threshold:
+            return 0.0
+        return proposed_target
 
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
         current = float(price_history[-1])
         loss = (cost_basis - current) / cost_basis
-
-        if loss >= self._loss_threshold:
-            return -self.clamp((loss - self._loss_threshold) / self._loss_threshold, 0.0, 1.0)
-        return 0.0
+        return f"StopLoss: {loss:.1%} loss vs cost basis ${cost_basis:.2f} (threshold {self._loss_threshold:.0%})"
 
     @property
     def suitability(self) -> list[AssetSuitability]:

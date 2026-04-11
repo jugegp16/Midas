@@ -1,100 +1,104 @@
 # Architecture
 
-Midas is a target-weight portfolio allocation engine. Strategies emit continuous conviction scores, an allocator blends them into target portfolio weights, and a rebalancer diffs against current holdings to generate trades.
+Midas is a target-weight portfolio allocation engine. Entry signals score buy candidates, an allocator blends those scores into target weights via softmax, exit rules clamp those targets downward (LEAN-style override layer), and the order sizer turns the deltas against current holdings into buy and sell orders.
+
+## The Two-Tier Model
+
+Strategies fall into exactly two disjoint tiers:
+
+- **EntrySignal** — scores ticker bullishness in `[0, 1]`. Pure buy-side. Returning 0 means "no opinion" (not "sell"). Returning `None` means "abstain" (insufficient data, missing context). Multiple entry signals are blended into a single conviction per ticker, then softmaxed into target weights.
+
+- **ExitRule** — a downstream override layer that clamps the allocator's proposed target weights downward. Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` returns an adjusted target weight that must be ≤ the proposed target. Returning 0.0 means "full liquidation." Exit rules never participate in target-weight construction or softmax; they sit downstream as a veto/reduce layer. The order sizer computes sell orders from negative deltas (clamped target < current weight).
+
+The two tiers are enforced at the type level (`EntrySignal` and `ExitRule` are separate base classes in `strategies/base.py`) and at runtime by an `isinstance` partition in the optimizer, config loader, and backtest engine. The two share a thin `Strategy` base for shared bookkeeping (`name`, `warmup_period`, `suitability`, `description`), but the scoring interfaces (`EntrySignal.score` and `ExitRule.clamp_target`) are completely disjoint. There is no third tier; entry-signal logic cannot accidentally produce a sell, and exit-rule logic cannot accidentally inflate a buy.
+
+### How this compares to LEAN
+
+QuantConnect LEAN splits the same problem across **AlphaModel** (signals), **PortfolioConstructionModel** (weights), and **RiskManagementModel** (overrides like stop loss). Midas's `EntrySignal` is the alpha + portfolio-construction half, and `ExitRule` is the risk-management half. Like LEAN's `RiskManagementModel`, midas's exit rules act as a downstream clamp — they can reduce proposed target weights but never increase them. Both systems evaluate exits at the aggregate position level (not per-lot), and sells arise from negative deltas between clamped targets and current weights.
 
 ## Core Engine
 
 The engine follows a linear pipeline on every tick (one simulated day in backtesting, one poll interval in live mode):
 
-1. **Strategies** evaluate price history and emit conviction scores between -1 (bearish) and +1 (bullish)
-2. **Allocator** blends those scores into a target weight for each ticker in the portfolio
-3. **Rebalancer** compares target weights to current holdings and generates buy/sell orders
+1. **Entry signals** score every ticker
+2. **Allocator** blends those scores into target weights (softmax construct-to-budget)
+3. **Exit rules** clamp proposed targets downward (can reduce, never increase; first clamper wins attribution)
+4. **Order sizer** sizes sells from negative deltas (clamped target < current weight), then buys from positive deltas
 
-Every component is stateless within a single tick. State management (positions, cash, trade log) is the responsibility of whichever execution mode is driving the engine.
+Sells are sized first, freeing up cash for the buy pass to use in the same tick.
 
-### Strategies
+Every component is stateless within a single tick. State management (positions, cash, lot list, trade log) is the responsibility of whichever execution mode is driving the engine.
 
-Strategies are stateless, ticker-agnostic scorers. Each receives a price history array and returns a conviction score in [-1, +1], where positive is bullish, negative is bearish, and None means abstain (insufficient data, missing context, etc.).
+### Entry Signals
 
-All strategies inherit from a common base class and are registered by name in a central registry. The CLI, optimizer, and config loader all use this registry to instantiate strategies by name from YAML configuration.
-
-#### Tiers
-
-Each strategy belongs to one of three tiers that determine how it participates in the pipeline:
-
-**CONVICTION** strategies are the core signal generators. Their scores are blended together via weighted average into a single conviction per ticker, which is then transformed into a target weight. Most strategies (10 of 13) are conviction-tier.
-
-**PROTECTIVE** strategies act as safety valves. They are evaluated after conviction blending. If a protective strategy's score falls at or below its configured veto threshold, the target weight for that ticker is forced to zero -- a hard liquidation override regardless of what conviction strategies say.
-
-**MECHANICAL** strategies bypass the allocator entirely. They generate independent order intents on a fixed schedule (e.g., dollar-cost averaging buys). The rebalancer sizes these intents into concrete orders separately from the conviction/allocation flow.
+Entry signals are stateless, ticker-agnostic scorers that return a number in `[0, 1]` (or `None` to abstain). All entry signals inherit from `EntrySignal` and are registered by name in `strategies/__init__.py`. The CLI, optimizer, and config loader all use this registry to instantiate entry signals by name from YAML.
 
 #### Precomputation
 
-For backtest performance, strategies can optionally compute scores for every day of the price series in a single vectorized pass. The allocator caches these results and looks them up by day index during simulation, avoiding per-day function calls. Strategies that need runtime context like cost basis (ProfitTaking, StopLoss, TrailingStop) cannot precompute and fall back to per-day evaluation.
+For backtest performance, entry signals can optionally compute scores for every day of the price series in a single vectorized pass. The allocator caches these results and looks them up by day index during simulation, avoiding per-day function calls.
 
 #### Warmup
 
-Each strategy declares a `warmup_period` — the bars of price history it needs before it produces a valid score. The CLI fetches a lookback buffer equal to the maximum warmup across configured strategies (plus slack for weekends/holidays) so signals are valid from day one of the simulation rather than spending the first N days in cold start. For recursive indicators (RSI, MACD), the nominal period is multiplied by a TA-Lib-style unstable-period factor so the indicator has room to converge. Live mode derives the same history window, and the walk-forward optimizer prefetches a single buffer sized for the upper bound of its parameter search space.
+Each strategy declares a `warmup_period` — the bars of price history it needs before it produces a valid score. The CLI fetches a lookback buffer equal to the maximum warmup across configured entry signals *and* exit rules (plus slack for weekends/holidays) so signals are valid from day one of the simulation rather than spending the first N days in cold start. For recursive indicators (RSI, MACD), the nominal period is multiplied by a TA-Lib-style unstable-period factor so the indicator has room to converge. Live mode derives the same history window, and the walk-forward optimizer prefetches a single buffer sized for the upper bound of its parameter search space.
 
-See [Strategies](strategies.md) for a reference of all available strategies.
+See [Strategies](strategies.md) for the full reference.
 
 ### Allocator
 
-The allocator takes conviction scores and produces target portfolio weights. It runs in four phases.
+The allocator turns entry-signal scores into target portfolio weights. It runs in three phases.
 
 #### Phase 1: Score and Blend
 
-For each ticker, the allocator collects scores from all CONVICTION strategies and computes a weighted average. Each strategy has a configurable weight (default 1.0) that controls its influence. A strategy returning None is excluded entirely -- it doesn't pull the average toward zero, it simply doesn't participate.
+For each ticker, the allocator collects scores from all entry signals and computes a weighted average. Each entry signal has a configurable `weight` (default 1.0) that controls its influence. A signal returning `None` is excluded entirely — it doesn't pull the average toward zero, it simply doesn't participate.
 
-#### Phase 2: Protective Vetoes
+Tickers fall into two buckets:
 
-Each PROTECTIVE strategy is evaluated per ticker. If its score falls at or below its veto threshold, the ticker is removed from further allocation and its target weight is forced to zero. This is a hard override -- no amount of bullish conviction can prevent a protective liquidation. This is how stop-losses and trailing stops work: they don't reduce the position, they eliminate it.
+- **Active** — at least one entry signal scored > 0. The blended score is positive.
+- **Held** — every entry signal returned 0 or `None`. The allocator treats this as "no opinion" and holds the ticker at its current weight (or the equal-weight base on the very first allocation).
 
-#### Phase 3: Softmax Budget Allocation
+#### Phase 2: Softmax Budget Allocation
 
-The blended scores need to become target portfolio weights that sum to the investable budget (1 minus the minimum cash reserve). The allocator uses softmax — the same construct-to-budget operator used by QuantConnect LEAN's `InsightWeightingPortfolioConstructionModel`, mean-variance optimizers, risk-parity libraries, and every production portfolio construction system in the literature.
+The active tickers' blended scores need to become target portfolio weights that sum to the *active* budget — that is, the investable budget (`1 − min_cash_pct`) minus whatever the held tickers consume. The allocator uses softmax — the same construct-to-budget operator used by QuantConnect LEAN's `InsightWeightingPortfolioConstructionModel`, mean-variance optimizers, and risk-parity libraries.
 
 ```
-target_i = investable_budget * exp(blended_i / T) / sum_j(exp(blended_j / T))
+target_i = active_budget * exp(blended_i / T) / sum_j(exp(blended_j / T))
 ```
 
-By construction, `sum(targets) == investable_budget` exactly, always. There is no separate normalize step because oversubscription is mathematically impossible. The `softmax_temperature` parameter `T` follows the standard ML softmax convention: low `T` concentrates budget on the highest-conviction ticker (winner-take-most, `T → 0` is argmax), `T = 1` is the unscaled softmax over raw scores, and high `T` approaches a uniform split regardless of conviction. Midas defaults to `T = 0.5`, a mild concentration bias.
+By construction, `sum(active targets) == active_budget` exactly, always. There is no separate normalize step — oversubscription is mathematically impossible. The `softmax_temperature` parameter `T` follows the standard ML softmax convention: low `T` concentrates budget on the highest-conviction ticker (winner-take-most, `T → 0` is argmax), `T = 1` is the unscaled softmax over raw scores, and high `T` approaches a uniform split. Midas defaults to `T = 0.5`, a mild concentration bias.
 
-Compared to the older "score → sigmoid → multiply by base_weight → clip → normalize" pattern, softmax eliminates a class of phantom rebalance trades that arose whenever the sum of per-ticker targets drifted past the budget and had to be scaled back proportionally. Under softmax, relative weight shifts cleanly reflect relative conviction shifts — the allocator reallocates between tickers rather than "normalizing" them.
+**Neutral = hold.** When all entry signals abstain or score 0 for a ticker, the allocator holds that ticker's current weight rather than dragging it back to equal-weight. This avoids churn from drift-correction trades on days when no signal is firing on a held position.
 
-**Neutral = hold.** When no conviction strategy produces a score for a ticker (all abstain — e.g. during warmup), the allocator holds that ticker's current weight (Option A) and excludes it from the softmax. The remaining budget `investable - sum(held)` is distributed via softmax across tickers that actually scored. This avoids churn from drift-correction trades on days when no signal is firing on a held position. On the very first allocation, with no current weights known, the allocator falls back to equal-weight as the hold target.
+#### Phase 3: Soft Position Cap
 
-#### Phase 4: Position Cap
+Any active ticker whose softmax target exceeds `max_position_pct` is pinned at the cap, and the freed budget is redistributed to the uncapped survivors by re-running softmax over them with the reduced budget. The loop runs until no survivor exceeds the cap.
 
-Softmax already enforces the budget constraint, so the only per-ticker limit the allocator enforces here is `max_position_pct`. Any ticker whose softmax target exceeds the cap is pinned at the cap, and the freed budget is redistributed to the uncapped survivors by re-running softmax over them with the reduced budget. This is mathematically equivalent to solving a quadratic program with `sum(w) = investable` as an equality constraint and `w_i <= cap` as inequality constraints — the standard approach in Markowitz-style optimizers.
+The cap is **soft**: it can refuse to allocate *more* budget to an over-target ticker, but it never forces a sell. If a ticker drifts above the cap because of price appreciation, the allocator simply stops buying more — it does not generate a corrective sell. Sells are exclusively the domain of `ExitRule` strategies. This is the cleanest way to keep the buy-only allocator from accidentally producing exits.
 
 If `max_position_pct` is not configured, it's auto-computed as 2.5x the equal-weight baseline (capped at 25%), which allows meaningful overweighting without extreme concentration.
 
-When the cap trims a target, the allocator records `cap` in the trim reasons. The rebalancer uses this to label trades that have no directionally-aligned conviction contributor: a buy/sell whose only justification is the cap-redistribution (rare) is sourced to `Rebalancer (cap)` instead of to a specific strategy. Normal reallocation trades — where one ticker's target shrinks because another's grew — attribute cleanly to the strategy that pushed the winning ticker up, because softmax produces directionally-aligned contributors on every trade.
+### Exit Rules
 
-### Rebalancer
+Exit rules run *downstream* of the allocator as a LEAN-style override/veto layer. Each rule's `clamp_target(ticker, proposed_target, price_history, cost_basis, high_water_mark)` receives the ticker's proposed target weight, aggregate cost basis, aggregate high-water mark, and price history; it returns an adjusted target ≤ the proposed target. Returning 0.0 means full liquidation.
 
-The rebalancer compares target weights from the allocator against the portfolio's current holdings and generates concrete buy/sell orders to close the gap.
+Exit rules evaluate at the **aggregate position level** — they see a single cost basis (share-weighted average of all lots) and a single high-water mark (the ticker's all-time peak since entry). This matches how LEAN, Zipline, and Backtrader handle exits. Per-lot logic belongs at execution time (FIFO consumption), not at exit-rule evaluation time.
 
-#### Order Generation
+Exit rules are applied sequentially. Each rule can only reduce a target, never increase it. The first rule to clamp a ticker wins attribution for that sell order. If multiple rules would fire on the same ticker, only the first clamper's reason and source appear on the order.
 
-The rebalancer computes the current weight of each ticker (its market value as a fraction of total portfolio value) and diffs it against the target weight. If the difference is smaller than the `rebalance_threshold` (default 2%), it's ignored -- this prevents excessive trading on tiny weight fluctuations.
+### Order Sizer
 
-**Justification check.** Before emitting an order, the rebalancer verifies the trade is either (a) driven by a conviction strategy directionally aligned with the trade direction, or (b) forced by a Phase 4 cap trim. Trades that fail both checks are pure drift-to-base artifacts — they serve no purpose and are suppressed entirely. With the softmax allocator in place this check rarely fires, since softmax + Option A together eliminate most unjustified targets at the source, but it acts as a belt-and-braces guard.
+`OrderSizer` is a stateless converter from target-weight deltas to concrete orders. It exposes two methods:
 
-Sells are processed before buys. This is intentional: sell proceeds become available cash for subsequent buy orders. Each sell is capped at the actual shares held, and each buy is constrained by available cash.
+- **`size_buys(allocation, positions, prices, cash, constraints)`** — diffs the clamped target weights against the current weights and emits buy orders for any underweight ticker whose delta exceeds `min_buy_delta`. **Buy-only.** A ticker that has drifted *above* its target never produces a sell — that's the soft-cap principle from the allocator carried through to the order sizer.
 
-#### Slippage
+- **`size_sells(clamped_targets, positions, prices, total_value, clamp_attribution)`** — computes sell orders from negative deltas (clamped target < current weight). Only tickers present in `clamp_attribution` (i.e., where an exit rule fired) produce sells. Shares are capped at actual held shares. Attribution comes from the exit rule that first clamped the target.
+
+Sells run before buys in every tick so that exit proceeds become available cash for the buy pass.
+
+#### Slippage and Circuit Breaker
 
 All orders include a slippage estimate (default 0.05%) to model realistic execution costs. Buy prices are adjusted slightly upward, sell prices slightly downward. Share counts are floored to whole numbers since fractional shares aren't supported.
 
-#### Circuit Breaker
-
-A daily deployment cap limits total buy value to 25% of portfolio value per day. This prevents the engine from going all-in during a single volatile session. If the allocator says "buy everything," the circuit breaker spreads that deployment across multiple days.
-
-#### Mechanical Order Sizing
-
-MECHANICAL strategy intents are sized separately. Each intent specifies a target dollar amount (e.g., "buy $500 of VOO"). The rebalancer converts this to a share count at the current price, constrained by available cash. Mechanical orders run after rebalancing orders, using whatever cash remains.
+A daily deployment cap limits total buy value to 25% of portfolio value per day, preventing the engine from going all-in during a single volatile session.
 
 ### Trading Restrictions
 
@@ -106,20 +110,20 @@ The core engine doesn't run itself -- it needs a driver that feeds it price data
 
 ### Optimizer
 
-The optimizer is usually the starting point. Rather than hand-tuning strategy parameters, you let the optimizer search for a combination that performs well on historical data. It outputs a strategies YAML that you can then feed into backtest or live mode.
+The optimizer is usually the starting point. Rather than hand-tuning parameters, you let the optimizer search for a combination that performs well on historical data. It outputs a strategies YAML that you can then feed into backtest or live mode.
 
-The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search over all tunable parameters. It tunes the following layers jointly:
+The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointly over:
 
 | Layer | What it controls | Search range |
 |-------|-----------------|--------------|
-| Strategy parameters | When a strategy fires and how strong | `window`, `threshold`, `loss_threshold`, etc. |
-| Strategy weights | How much influence each conviction strategy has in the blend | 0.5 to 3.0 |
-| Veto thresholds | When a protective strategy overrides the blend | -0.8 to -0.2 |
-| Softmax temperature | How aggressively the allocator concentrates budget on top conviction | 0.2 to 1.0 |
-| Rebalance threshold | Minimum weight diff to trigger a trade | 0.01 to 0.05 |
+| Entry signal parameters | When a signal fires and how strong | `window`, `threshold`, etc. |
+| Entry signal weights | How much influence each signal has in the blend | 0.5 to 3.0 |
+| Exit rule parameters | When an exit triggers | `loss_threshold`, `trail_pct`, `gain_threshold`, etc. |
+| Softmax temperature | How aggressively the allocator concentrates budget | 0.2 to 1.0 |
+| Min buy delta | Minimum weight diff to trigger a buy | 0.01 to 0.05 |
 | Max position % | Maximum weight for any single position | 0.15 to 0.50 |
 
-Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. The optimizer outputs a strategies YAML with optimized `params`, `weight`, and `veto_threshold` per strategy. MECHANICAL strategies (DCA) are excluded -- their parameters are user preferences, not performance parameters.
+Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
 
 **Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination, runs a full backtest with train/test split, and returns the training return as the optimization objective. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
@@ -145,13 +149,15 @@ See [CLI Reference](cli.md#optimize) for all optimizer options.
 
 Once you have a set of parameters (from the optimizer or hand-tuned), backtesting lets you see exactly how they would have performed over a historical period. It produces a detailed trade log, return metrics, and a comparison against a buy-and-hold baseline.
 
-The backtest engine simulates the full pipeline over historical data, stepping through one trading day at a time. On each trading day, the engine runs the complete pipeline: cash infusion (if scheduled), allocation, rebalancing, mechanical strategies, restriction filtering, and order execution. After execution, it updates positions, cost basis, cash balance, and the trade log.
+The backtest engine simulates the full pipeline over historical data, stepping through one trading day at a time. On each trading day, the engine runs the complete pipeline: cash infusion (if scheduled), entry-signal scoring, allocation, exit-rule target clamping, sell pass, buy pass, restriction filtering, and order execution. After execution, it updates positions, the lot list, cash balance, and the trade log.
+
+**Lot Tracking and Cost Basis** -- The engine tracks individual purchase lots as a `list[PositionLot]` per ticker. Every buy fill appends a new lot at the execution price; every sell consumes lots FIFO (first-in, first-out). Exit rules evaluate at the aggregate level — they see a share-weighted average cost basis and a per-ticker high-water mark, not individual lots. FIFO execution is the standard US broker default and the method used by every major backtesting framework (LEAN, Zipline, Backtrader). See [Lot Tracking](#lot-tracking) for details. Trades are classified as short-term (held less than 365 days) or long-term for tax awareness.
+
+> **Note on initial cost basis.** The backtest seeds each starting position's cost basis from the *start-day market price*, not the YAML `cost_basis`. The YAML value is the user's real purchase basis (used by the live engine and for display), but using it inside a backtest would let exit rules fire on pre-window gains, distorting strategy performance.
 
 **Train/Test Split** -- By default, the backtest splits the date range 70/30 into training and test periods. Returns are reported separately for each. The optimizer uses train return as its objective and test return to measure how well the parameters generalize to unseen data.
 
-**Time-Weighted Return** -- TWR accounts for external cash infusions (e.g., biweekly contributions) by breaking the simulation into sub-periods at each infusion point and compounding the sub-period returns. This gives an accurate measure of strategy performance independent of when cash enters the portfolio. Without TWR, a large cash infusion right before a market rally would inflate the apparent return.
-
-**Holding Period Tracking** -- The engine tracks individual purchase lots using FIFO (first-in, first-out) matching. When shares are sold, the earliest lots are consumed first. Each trade is classified as short-term (held less than 365 days) or long-term for tax awareness.
+**Time-Weighted Return** -- TWR accounts for external cash infusions (e.g., biweekly contributions) by breaking the simulation into sub-periods at each infusion point and compounding the sub-period returns. This gives an accurate measure of strategy performance independent of when cash enters the portfolio.
 
 **Deferred Holdings** -- If a portfolio ticker has no price data at the backtest start date (e.g., the company IPO'd mid-backtest), the position is deferred and automatically activated when data becomes available.
 
@@ -161,8 +167,18 @@ See [CLI Reference](cli.md#backtest) for all backtest options.
 
 After optimizing and backtesting, live mode puts the strategy to work on real-time market data. It polls current prices and tells you what trades to make right now based on your portfolio's actual holdings.
 
-The live engine polls real-time prices on a configurable interval (default 60 seconds) and emits order alerts for manual execution. On each tick, it fetches the last 120 days of price history, runs the full allocation and rebalancing pipeline, and compares the resulting order set to the previous tick. If nothing changed, it stays quiet. If new orders appear or existing ones change, it emits an alert with the ticker, price, reason, strategy scores, and suggested share count.
+The live engine polls real-time prices on a configurable interval (default 60 seconds) and emits order alerts for manual execution. On each tick, it fetches the last 120 days of price history, runs the full allocation and exit-rule pipeline, and compares the resulting order set to the previous tick. If nothing changed, it stays quiet. If new orders appear or existing ones change, it emits an alert with the ticker, price, reason, source strategy, and suggested share count.
 
-The live engine is fully stateless -- it reads current holdings from the portfolio config each tick and re-derives everything from scratch. It does not execute trades; it's designed for operators who want signal alerts and execute manually through their broker.
+The live engine is fully stateless -- it reads current holdings from the portfolio config each tick and re-derives everything from scratch. Exit rules see the `cost_basis` from the portfolio YAML and a high-water mark derived as `max(cost_basis, current_price)`. This is a synthetic HWM, not a tracked peak: it equals `current_price` whenever the position is in profit and `cost_basis` otherwise. As a consequence, **`TrailingStop` is effectively inert in live mode** — its drawdown-from-HWM check collapses to 0 when in profit and fails the in-profit gate when underwater. `LiveEngine` logs a warning at startup if `TrailingStop` is configured; remove it from live configs, or rely on `StopLoss` / `ProfitTaking` until per-lot HWM persistence is implemented. The live engine does not execute trades; it's designed for operators who execute manually through their broker.
 
 See [CLI Reference](cli.md#live) for all live options.
+
+## Lot Tracking
+
+Midas tracks individual purchase lots per ticker for FIFO execution and cost-basis accounting. This matches the approach used by LEAN, Zipline, and Backtrader.
+
+Exit rules evaluate at the **aggregate position level** — they see a share-weighted average cost basis and a single high-water mark per ticker, not individual lots. This is the industry standard: LEAN's `RiskManagementModel` operates on aggregate positions, and per-lot evaluation adds complexity without real-world value (the same exit signal that fires on lot B would fire on the aggregate position anyway).
+
+**Execution is FIFO.** When the backtest engine executes a sell order, it consumes lots first-in-first-out. This is the US broker default for equities (IRS default tax-lot identification method) and the approach used universally across backtesting frameworks. Trades are classified as short-term (held less than 365 days) or long-term based on the FIFO lot's purchase date.
+
+A future extension could add configurable lot-consumption methods (LIFO, highest-cost, specific-ID) at the execution layer, but FIFO is the correct default.

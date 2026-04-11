@@ -9,8 +9,8 @@ from typing import Any
 import yaml
 
 from midas.models import (
+    DEFAULT_MIN_BUY_DELTA,
     DEFAULT_MIN_CASH_PCT,
-    DEFAULT_REBALANCE_THRESHOLD,
     DEFAULT_SOFTMAX_TEMPERATURE,
     AllocationConstraints,
     CashInfusion,
@@ -22,10 +22,7 @@ from midas.models import (
 
 
 def load_portfolio(path: Path) -> PortfolioConfig:
-    """Load portfolio config and allocation constraints from YAML.
-
-    Returns (portfolio, constraints) tuple.
-    """
+    """Load portfolio config from YAML."""
     raw = _load_yaml(path)
 
     holdings = [
@@ -73,11 +70,12 @@ def load_strategies(
 ) -> tuple[list[StrategyConfig], AllocationConstraints]:
     """Load strategy configs and allocation-level knobs from YAML.
 
-    Returns (strategies, constraints) tuple.  softmax_temperature and
-    rebalance_threshold live at the top level of the strategies file
-    because they are meta-strategy knobs (how scores are blended/acted on).
+    Returns (strategies, constraints) tuple. ``softmax_temperature`` and
+    ``min_buy_delta`` live at the top level of the strategies file because
+    they are meta-strategy knobs (how scores are blended/acted on).
     """
     raw = _load_yaml(path)
+
     configs = []
     for s in raw["strategies"]:
         configs.append(
@@ -86,7 +84,6 @@ def load_strategies(
                 params=s.get("params", {}),
                 tickers=s.get("tickers"),
                 weight=float(s.get("weight", 1.0)),
-                veto_threshold=float(s.get("veto_threshold", -0.5)),
             )
         )
 
@@ -97,8 +94,8 @@ def load_strategies(
         softmax_temperature=float(
             raw.get("softmax_temperature", DEFAULT_SOFTMAX_TEMPERATURE),
         ),
-        rebalance_threshold=float(
-            raw.get("rebalance_threshold", DEFAULT_REBALANCE_THRESHOLD),
+        min_buy_delta=float(
+            raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
     )
     return configs, constraints

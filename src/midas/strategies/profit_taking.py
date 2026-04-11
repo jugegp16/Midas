@@ -1,33 +1,45 @@
-"""Profit taking strategy: sell when unrealized gains exceed threshold."""
+"""Profit taking exit rule: sell when unrealized gain exceeds threshold."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import ExitRule
 
 
-class ProfitTaking(Strategy):
+class ProfitTaking(ExitRule):
     def __init__(self, gain_threshold: float = 0.20) -> None:
         self._gain_threshold = gain_threshold
 
-    def score(
+    def clamp_target(
         self,
+        ticker: str,
+        proposed_target: float,
         price_history: np.ndarray,
-        *,
-        cost_basis: float | None = None,
-        **kwargs: object,
-    ) -> float | None:
-        if cost_basis is None or cost_basis <= 0:
-            return None
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> float:
+        if proposed_target <= 0 or len(price_history) == 0 or cost_basis <= 0:
+            return proposed_target
+        current = float(price_history[-1])
+        if current <= 0:
+            return proposed_target
+        gain = (current - cost_basis) / cost_basis
+        if gain >= self._gain_threshold:
+            return 0.0
+        return proposed_target
 
+    def clamp_reason(
+        self,
+        ticker: str,
+        price_history: np.ndarray,
+        cost_basis: float,
+        high_water_mark: float,
+    ) -> str:
         current = float(price_history[-1])
         gain = (current - cost_basis) / cost_basis
-
-        if gain >= self._gain_threshold:
-            return -self.clamp((gain - self._gain_threshold) / self._gain_threshold, 0.0, 1.0)
-        return 0.0
+        return f"ProfitTaking: {gain:.1%} gain vs cost basis ${cost_basis:.2f} (threshold {self._gain_threshold:.0%})"
 
     @property
     def suitability(self) -> list[AssetSuitability]:
@@ -35,4 +47,4 @@ class ProfitTaking(Strategy):
 
     @property
     def description(self) -> str:
-        return f"Sell when unrealized gains exceed {self._gain_threshold:.0%} of cost basis"
+        return f"Sell when unrealized gain exceeds {self._gain_threshold:.0%} of cost basis"

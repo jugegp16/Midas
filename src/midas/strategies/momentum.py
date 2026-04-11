@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from midas.models import AssetSuitability
-from midas.strategies.base import Strategy
+from midas.strategies.base import EntrySignal
 
 
-class Momentum(Strategy):
+class Momentum(EntrySignal):
     def __init__(self, window: int = 20, momentum_scale: float = 0.05) -> None:
         self._window = window
         self._momentum_scale = momentum_scale
@@ -49,8 +49,9 @@ class Momentum(Strategy):
 
         pct_from_ma = (current - ma) / ma
         # Momentum is buy-only: bullish when price is above MA, neutral when
-        # below. Bearish below-MA signals are left to dedicated strategies
-        # (MeanReversion, RSIOverbought) to avoid double-counting.
+        # below. The entry-signal contract requires scores in [0, 1]; bearish
+        # below-MA signals should fire via an ExitRule rather than producing a
+        # negative score here.
         if pct_from_ma <= 0:
             return 0.0
         return self.clamp(pct_from_ma / self._momentum_scale, 0.0, 1.0)

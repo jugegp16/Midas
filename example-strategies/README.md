@@ -1,43 +1,45 @@
 # Example Strategy Combinations
 
-Pre-built strategy configurations that pair well together based on complementary signal types and risk profiles.
+Pre-built strategy configurations that pair entry signals with exit rules. Every composition needs at least one of each — entry signals decide *what to buy*, exit rules decide *what to sell*. Buys and sells live in completely separate code paths and never blend.
 
 ## [Trend-Following](trend-following.yaml)
 
-Rides sustained price trends and exits when momentum fades.
+Rides sustained price trends and exits when the same trend reverses.
 
-- **Moving Average Crossover** (20/50-day) — computes two moving averages of the stock price: one over the last 20 days (short-term) and one over the last 50 days (long-term). When the short-term average crosses above the long-term average, it suggests the price is gaining momentum and trending upward. When it crosses below, the trend may be reversing. This is one of the most widely used signals for identifying whether an asset is in an uptrend or downtrend.
+- **Moving Average Crossover** (20/50-day, entry) — computes two moving averages of the stock price: one over the last 20 days (short-term) and one over the last 50 days (long-term). When the short-term average crosses above the long-term average, the price is gaining upward momentum and the strategy goes bullish. The score scales with the spread between the two averages.
 
-- **Moving Average Convergence Divergence Crossover** (12/26/9) — a more sensitive trend indicator that works by comparing two exponential moving averages (12-day and 26-day) and then smoothing the difference with a 9-day signal line. When the main line is above the signal line, momentum is building to the upside. When it falls below, momentum is fading. It confirms trend strength on a different timescale than the Moving Average Crossover, so the two strategies agreeing gives higher confidence.
+- **MACD Crossover** (12/26/9, entry) — a more sensitive trend indicator that compares two exponential moving averages and smooths the difference with a 9-day signal line. When the main line is above the signal line, momentum is building to the upside. It confirms trend strength on a different timescale than the Moving Average Crossover, so the two strategies agreeing gives higher confidence.
 
-- **Relative Strength Index Overbought** (14-period, threshold 70) — the Relative Strength Index measures how much of an asset's recent price movement has been upward versus downward over the last 14 days, producing a score from 0 to 100. When the score climbs above 70, the asset is considered "overbought" — it has risen so much, so fast, that a pullback is likely. This strategy generates a sell signal that scales in strength as the score rises past 50, reaching full conviction at 70 and above.
+- **Moving Average Crossover Exit** (20/50-day, exit) — the symmetric exit counterpart. When the short-term average crosses *below* the long-term average (the "death cross"), the trend has reversed and this rule liquidates the position. Pairing the entry and exit on the same timescale keeps the strategy internally consistent.
 
-- **Profit Taking** (20% threshold) — a simple, price-aware exit rule. When your unrealized gain on a position exceeds 20% of what you originally paid for it (your cost basis), this strategy signals to sell. It ensures you lock in profits rather than watching them evaporate during a reversal.
+- **MACD Exit** (12/26/9, exit) — fires when the MACD line crosses below the signal line, indicating that the trend the MACD entry rode in on has fizzled. Like its sibling above, it provides a cleanly symmetric exit for its entry counterpart.
 
-Best for: assets in clear uptrends or downtrends. Less effective in sideways or choppy markets where trends don't sustain.
+- **Profit Taking** (20% threshold, exit) — a price-aware exit that triggers when the unrealized gain on a lot exceeds 20% of its cost basis. Locks in profits independently of trend signals, so a trending position that's already up 20% will be trimmed before the trend has a chance to reverse.
+
+Best for: assets in clear uptrends. Less effective in sideways or choppy markets where trends don't sustain.
 
 ## [Dip-Buying](dip-buying.yaml)
 
 Buys when prices are statistically cheap relative to recent history, with a hard floor on losses.
 
-- **Bollinger Band** (20-day, 2 standard deviations) — calculates the average price over the last 20 days, then draws an upper and lower "band" two standard deviations above and below that average. Standard deviation measures how spread out prices have been — wider bands mean more volatility. When the current price drops below the lower band, the asset is unusually cheap relative to its recent trading range, which triggers a buy signal. When the price stretches above the upper band, it's unusually expensive and triggers a sell signal.
+- **Bollinger Band** (20-day, 2 standard deviations, entry) — calculates the average price over the last 20 days and draws an upper and lower "band" two standard deviations above and below that average. When the current price drops below the lower band, the asset is unusually cheap relative to its recent trading range, and the strategy goes bullish.
 
-- **Relative Strength Index Oversold** (14-period, threshold 30) — the counterpart to the overbought strategy. When the Relative Strength Index drops below 30, the asset is considered "oversold" — it has fallen so much that sellers may be exhausted and a bounce is likely. This strategy generates a buy signal that scales in strength as the score falls below 50, reaching full conviction at 30 and below. It measures something fundamentally different from the Bollinger Band (the ratio of up-days to down-days versus distance from a price average), so when both agree that an asset is cheap, the signal is more trustworthy.
+- **RSI Oversold** (14-period, threshold 30, entry) — when the Relative Strength Index drops below 50, sellers may be exhausted and a bounce is likely. The score scales as the index falls toward the 30 threshold. RSI measures something fundamentally different from Bollinger Band (the ratio of up-days to down-days versus distance from a price average), so when both agree, the signal is more trustworthy.
 
-- **Stop Loss** (10% threshold) — a protective exit that triggers when your position has lost more than 10% from your cost basis. This is essential in a dip-buying strategy because buying assets that have dropped in price means you are sometimes buying into continued declines (known as "catching a falling knife"). The stop loss puts a hard floor on how much you can lose on any single position.
+- **Stop Loss** (10% threshold, exit) — a protective exit that triggers when a lot has lost more than 10% from its cost basis. Essential in a dip-buying strategy because buying assets that have dropped sometimes means buying into continued declines. The stop loss puts a hard floor on how much you can lose on any single lot.
 
-Best for: broad market index funds and large, established companies that tend to bounce back after dips. Riskier on individual stocks in long-term decline, where cheap prices may just keep getting cheaper.
+Best for: broad market index funds and large, established companies that tend to bounce back after dips. Riskier on individual stocks in long-term decline.
 
 ## [Balanced Growth](balanced-growth.yaml)
 
-Moderately aggressive entries with disciplined exits. Two strategies push you in, two pull you out.
+Moderately aggressive entries with disciplined exits. Two entries push you in, two exits pull you out.
 
-- **Momentum** (20-day) — a buy-only signal that compares the current price to the 20-day moving average. When the price is above the average, it means the asset has been trending upward recently, and this strategy signals to buy more. When the price is below the average, it stays neutral rather than signaling to sell — that job is left to the exit strategies below. This one-sided design makes it a clean entry signal that doesn't conflict with the exit rules.
+- **Momentum** (20-day, entry) — buys when the current price is above its 20-day moving average. The score scales with how far above the average the price has moved. A clean buy-only signal — when the price drops below the average, the strategy stays neutral rather than producing a sell, leaving exits entirely to the exit rules.
 
-- **Relative Strength Index Oversold** (14-period, threshold 30) — generates buy signals when the Relative Strength Index falls below 50, indicating that recent selling pressure has outweighed buying pressure. This complements Momentum by buying in a different scenario: Momentum buys strength (price trending up), while this strategy buys exhaustion (price has been beaten down and may recover). Together, they give you entries in both trending and recovering markets.
+- **Mean Reversion** (30-day, 10% threshold, entry) — buys when the price drops below its 30-day moving average, expecting it to revert back up. Complements Momentum by buying in the opposite scenario: Momentum buys strength while Mean Reversion buys weakness, so the portfolio finds entries in both trending and recovering markets.
 
-- **Profit Taking** (20% threshold) — trims positions when your unrealized gain exceeds 20% of your cost basis. This is a fixed target that ensures you systematically harvest profits from your winners. Without it, profitable positions can ride all the way up and back down again.
+- **Profit Taking** (20% threshold, exit) — trims lots whose unrealized gain exceeds 20%. A fixed target that ensures profits get harvested from winners.
 
-- **Trailing Stop** (10% trail) — instead of using a fixed price to trigger a sell, this strategy tracks the highest price an asset reaches after you buy it (the "high-water mark") and sells if the price drops 10% from that peak — but only while you're still above your cost basis. This means it dynamically adjusts upward as the price rises, protecting more and more of your gains without capping your upside. Unlike a regular stop loss, it never forces you to sell at a loss.
+- **Trailing Stop** (10% trail, exit) — tracks the highest price each lot reaches after purchase (the "high-water mark") and sells if the price drops 10% from that peak — but only while above cost basis. Dynamically adjusts upward as the price rises, protecting gains without capping upside. Unlike a regular stop loss, it never forces a sell at a loss.
 
-Best for: a general-purpose portfolio that balances growth capture with downside protection. The symmetry of two entry and two exit signals keeps the risk profile balanced.
+Best for: a general-purpose portfolio that balances growth capture with downside protection.
