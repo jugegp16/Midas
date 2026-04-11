@@ -9,7 +9,7 @@ import click
 import pandas as pd
 
 from midas.allocator import Allocator
-from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, write_backtest_csv
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, write_backtest_results
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.models import (
@@ -116,8 +116,8 @@ def cli() -> None:
 @click.option(
     "--output",
     "-o",
-    default="backtest_results.csv",
-    help="Output CSV path.",
+    default="backtest_results",
+    help="Output directory path.",
 )
 @click.option(
     "--train-pct",
@@ -164,8 +164,8 @@ def backtest(
     result = engine.run(port, price_data, start_d, end_d)
 
     out_path = Path(output)
-    write_backtest_csv(result, out_path)
-    print_status(f"Results written to {out_path}")
+    write_backtest_results(result, out_path)
+    print_status(f"Results written to {out_path}/")
     print_backtest_summary(result)
 
 

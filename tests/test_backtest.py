@@ -1,17 +1,21 @@
 """Tests for the backtest engine."""
 
+import csv as csv_mod
+import json
 import math
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from conftest import make_price_series
 
 from midas.allocator import Allocator
 from midas.backtest import (
     TRADING_DAYS_PER_YEAR,
     BacktestEngine,
+    BacktestResult,
     _SimState,
     compute_cagr,
     compute_max_drawdown,
@@ -19,7 +23,7 @@ from midas.backtest import (
     compute_sortino,
     compute_strategy_stats,
     compute_trade_stats,
-    write_backtest_csv,
+    write_backtest_results,
 )
 from midas.models import (
     AllocationConstraints,
@@ -120,7 +124,7 @@ def test_backtest_with_split() -> None:
     assert start < result.split_date < end
 
 
-def test_backtest_csv_output(tmp_path: Path) -> None:
+def test_backtest_results_output(tmp_path: Path) -> None:
     portfolio, price_data = _make_backtest_data()
     mr = MeanReversion(window=20, threshold=0.05)
     engine = _build_engine(
@@ -132,13 +136,88 @@ def test_backtest_csv_output(tmp_path: Path) -> None:
     end = max(price_data["AAPL"].index)
     result = engine.run(portfolio, price_data, start, end)
 
-    csv_path = tmp_path / "results.csv"
-    write_backtest_csv(result, csv_path)
+    out_dir = tmp_path / "results"
+    write_backtest_results(result, out_dir)
 
-    content = csv_path.read_text()
-    assert "TRADE LOG" in content
-    assert "SUMMARY" in content
-    assert "AAPL" in content
+    assert out_dir.is_dir()
+    for name in ("trades.csv", "equity_curve.csv", "summary.json", "strategy_breakdown.csv"):
+        assert (out_dir / name).exists()
+
+    with open(out_dir / "trades.csv") as f:
+        reader = csv_mod.DictReader(f)
+        rows = list(reader)
+    assert len(rows) > 0
+    assert set(reader.fieldnames) == {  # type: ignore[arg-type]
+        "date",
+        "ticker",
+        "direction",
+        "shares",
+        "price",
+        "strategy",
+        "holding_period",
+        "cost_basis",
+        "realized_pnl",
+        "return_pct",
+    }
+    for row in rows:
+        assert "$" not in row["price"]
+        assert "%" not in row.get("return_pct", "")
+        assert row["ticker"] == "AAPL"
+
+    with open(out_dir / "equity_curve.csv") as f:
+        reader = csv_mod.DictReader(f)
+        curve_rows = list(reader)
+    assert len(curve_rows) > 0
+    for row in curve_rows:
+        assert float(row["nav"]) > 0
+        assert float(row["drawdown"]) >= 0
+
+    with open(out_dir / "summary.json") as f:
+        summary = json.load(f)
+    assert isinstance(summary["starting_value"], (int, float))
+    assert "sharpe_ratio" in summary
+    assert "split" in summary
+
+    with open(out_dir / "strategy_breakdown.csv") as f:
+        strat_rows = list(csv_mod.DictReader(f))
+    assert len(strat_rows) > 0
+
+
+def test_write_backtest_results_rejects_existing_file(tmp_path: Path) -> None:
+    existing_file = tmp_path / "results"
+    existing_file.write_text("oops")
+
+    result = BacktestResult(
+        trades=[],
+        final_value=0,
+        starting_value=0,
+        buy_and_hold_value=0,
+        train_trades=[],
+        test_trades=[],
+        train_return=0,
+        test_return=0,
+        train_bh_return=0,
+        test_bh_return=0,
+        split_date=None,
+        twr=0,
+        equity_curve=[],
+        cagr=0,
+        max_drawdown=0,
+        sharpe_ratio=0,
+        sortino_ratio=0,
+        win_rate=0,
+        profit_factor=0,
+        avg_win=0,
+        avg_loss=0,
+        efficiency_ratio=0,
+        strategy_stats=[],
+        unrealized_pnl=0,
+        unrealized_pnl_by_ticker={},
+        basis_per_sell=[],
+    )
+
+    with pytest.raises(FileExistsError, match="existing file"):
+        write_backtest_results(result, existing_file)
 
 
 def test_backtest_cost_basis_uses_start_price() -> None:

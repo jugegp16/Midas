@@ -1,5 +1,6 @@
 """Integration test — full pipeline from config to backtest output."""
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import yaml
 from conftest import make_price_series
 
 from midas.allocator import Allocator
-from midas.backtest import BacktestEngine, write_backtest_csv
+from midas.backtest import BacktestEngine, write_backtest_results
 from midas.config import load_portfolio, load_strategies
 from midas.models import Direction
 from midas.order_sizer import OrderSizer
@@ -102,14 +103,19 @@ def test_full_pipeline(tmp_path: Path) -> None:
     directions = {t.direction for t in result.trades}
     assert Direction.BUY in directions
 
-    # 8. Write CSV and verify
-    csv_path = tmp_path / "integration_results.csv"
-    write_backtest_csv(result, csv_path)
+    # 8. Write results directory and verify
+    out_dir = tmp_path / "integration_results"
+    write_backtest_results(result, out_dir)
 
-    content = csv_path.read_text()
-    assert "TRADE LOG" in content
-    assert "SUMMARY" in content
-    assert "OUT-OF-SAMPLE SPLIT" in content
+    assert out_dir.is_dir()
+    assert (out_dir / "trades.csv").exists()
+    assert (out_dir / "equity_curve.csv").exists()
+    assert (out_dir / "summary.json").exists()
+    assert (out_dir / "strategy_breakdown.csv").exists()
+
+    with open(out_dir / "summary.json") as f:
+        summary = json.load(f)
+    assert "split" in summary  # split was enabled
 
 
 def test_strategy_registry_complete() -> None:

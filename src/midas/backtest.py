@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from collections import defaultdict
 from collections.abc import Callable
@@ -30,14 +31,40 @@ from midas.strategies.base import ExitRule, max_warmup
 
 @dataclass
 class StrategyStats:
-    """Per-strategy performance breakdown."""
+    """Per-strategy performance breakdown, optionally scoped to a ticker."""
 
     name: str
+    ticker: str | None
     trades: int
     buys: int
     sells: int
     win_rate: float  # fraction of profitable sells
     pnl: float  # total realized P&L from sells
+
+
+def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[StrategyStats]:
+    """Aggregate per-(strategy, ticker) stats into per-strategy totals."""
+    by_strategy: dict[str, list[StrategyStats]] = defaultdict(list)
+    for s in stats:
+        by_strategy[s.name].append(s)
+    result: list[StrategyStats] = []
+    for name, group in sorted(by_strategy.items()):
+        total_sells = sum(s.sells for s in group)
+        total_pnl = sum(s.pnl for s in group)
+        winning = sum(round(s.win_rate * s.sells) for s in group)
+        agg_wr = winning / total_sells if total_sells > 0 else 0.0
+        result.append(
+            StrategyStats(
+                name=name,
+                ticker=None,
+                trades=sum(s.trades for s in group),
+                buys=sum(s.buys for s in group),
+                sells=total_sells,
+                win_rate=round(agg_wr, 4),
+                pnl=round(total_pnl, 2),
+            )
+        )
+    return result
 
 
 @dataclass
@@ -67,6 +94,8 @@ class BacktestResult:
     efficiency_ratio: float  # test_return / train_return (0 if no split)
     strategy_stats: list[StrategyStats]
     unrealized_pnl: float  # mark-to-market gain on positions still held at end
+    unrealized_pnl_by_ticker: dict[str, float]  # per-ticker unrealized P&L
+    basis_per_sell: list[float]  # cost basis for each SELL trade (parallel list)
 
 
 @dataclass
@@ -123,19 +152,23 @@ def compute_cagr(starting: float, final: float, days: int) -> float:
     return float((final / starting) ** (1.0 / years) - 1.0)
 
 
-def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
-    """Maximum peak-to-trough percentage decline."""
-    if len(equity_curve) < 2:
-        return 0.0
+def _drawdown_series(equity_curve: list[tuple[date, float]]) -> list[float]:
+    """Per-point drawdown (fraction from running peak) for each equity curve entry."""
+    if not equity_curve:
+        return []
     peak = equity_curve[0][1]
-    max_dd = 0.0
+    result: list[float] = []
     for _, value in equity_curve:
         if value > peak:
             peak = value
-        dd = (peak - value) / peak if peak > 0 else 0.0
-        if dd > max_dd:
-            max_dd = dd
-    return max_dd
+        result.append((peak - value) / peak if peak > 0 else 0.0)
+    return result
+
+
+def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
+    """Maximum peak-to-trough percentage decline."""
+    dd = _drawdown_series(equity_curve)
+    return max(dd) if len(dd) >= 2 else 0.0
 
 
 def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
@@ -231,15 +264,15 @@ def compute_strategy_stats(
     trades: list[TradeRecord],
     basis_per_sell: list[float],
 ) -> list[StrategyStats]:
-    """Compute per-strategy trade breakdown."""
+    """Compute per-(strategy, ticker) trade breakdown."""
     sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
 
-    by_strategy: dict[str, list[TradeRecord]] = defaultdict(list)
+    by_key: dict[tuple[str, str], list[TradeRecord]] = defaultdict(list)
     for t in trades:
-        by_strategy[t.strategy_name].append(t)
+        by_key[(t.strategy_name, t.ticker)].append(t)
 
     stats: list[StrategyStats] = []
-    for name, strades in sorted(by_strategy.items()):
+    for (name, ticker), strades in sorted(by_key.items()):
         buys = [t for t in strades if t.direction == Direction.BUY]
         sells = [t for t in strades if t.direction == Direction.SELL]
         winning_sells = 0
@@ -254,6 +287,7 @@ def compute_strategy_stats(
         stats.append(
             StrategyStats(
                 name=name,
+                ticker=ticker,
                 trades=len(strades),
                 buys=len(buys),
                 sells=len(sells),
@@ -963,11 +997,12 @@ class BacktestEngine:
         strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
         # Unrealized P&L: mark-to-market gain on positions still held at end.
-        unrealized_pnl = sum(
-            lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis)
-            for ticker, lots in state.lots.items()
-            for lot in lots
-        )
+        unrealized_pnl_by_ticker: dict[str, float] = {}
+        for ticker, lots in state.lots.items():
+            ticker_pnl = sum(lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis) for lot in lots)
+            if lots:
+                unrealized_pnl_by_ticker[ticker] = round(ticker_pnl, 2)
+        unrealized_pnl = sum(unrealized_pnl_by_ticker.values())
 
         return BacktestResult(
             trades=state.trades,
@@ -994,95 +1029,145 @@ class BacktestEngine:
             efficiency_ratio=round(efficiency, 4),
             strategy_stats=strategy_stats,
             unrealized_pnl=round(unrealized_pnl, 2),
+            unrealized_pnl_by_ticker=unrealized_pnl_by_ticker,
+            basis_per_sell=state.basis_per_sell,
         )
 
 
-def write_backtest_csv(result: BacktestResult, path: Path) -> None:
-    """Write backtest results to a CSV file."""
+def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
+    """Write backtest results to a directory of machine-readable files."""
+    if output_dir.is_file():
+        msg = f"Output path '{output_dir}' is an existing file, not a directory"
+        raise FileExistsError(msg)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_trades_csv(result, output_dir / "trades.csv")
+    _write_equity_curve_csv(result, output_dir / "equity_curve.csv")
+    _write_summary_json(result, output_dir / "summary.json")
+    _write_strategy_breakdown_csv(result, output_dir / "strategy_breakdown.csv")
+
+
+def _write_trades_csv(result: BacktestResult, path: Path) -> None:
+    sell_basis = {id(t): b for t, b in _pair_sells_with_basis(result.trades, result.basis_per_sell)}
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-
-        writer.writerow(["=== TRADE LOG ==="])
         writer.writerow(
             [
-                "Date",
-                "Ticker",
-                "Direction",
-                "Shares",
-                "Price",
-                "Strategy",
-                "Holding Period",
+                "date",
+                "ticker",
+                "direction",
+                "shares",
+                "price",
+                "strategy",
+                "holding_period",
+                "cost_basis",
+                "realized_pnl",
+                "return_pct",
             ]
         )
         for t in result.trades:
+            common = [
+                t.date.isoformat(),
+                t.ticker,
+                t.direction.value,
+                t.shares,
+                t.price,
+                t.strategy_name,
+                t.holding_period.value if t.holding_period else "",
+            ]
+            if t.direction == Direction.SELL:
+                basis = sell_basis.get(id(t), t.price)
+                pnl = round((t.price - basis) * t.shares, 4)
+                ret = round((t.price - basis) / basis, 6) if basis != 0 else 0.0
+                writer.writerow([*common, round(basis, 4), pnl, ret])
+            else:
+                writer.writerow([*common, "", "", ""])
+
+
+def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
+    drawdowns = _drawdown_series(result.equity_curve)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date", "nav", "drawdown"])
+        for (d, nav), dd in zip(result.equity_curve, drawdowns, strict=True):
+            writer.writerow([d.isoformat(), round(nav, 2), round(dd, 6)])
+
+
+def _write_summary_json(result: BacktestResult, path: Path) -> None:
+    sv = result.starting_value
+    total_return = (result.final_value - sv) / sv if sv > 0 else 0.0
+    bh_return = (result.buy_and_hold_value - sv) / sv if sv > 0 else 0.0
+
+    summary: dict[str, object] = {
+        "starting_value": sv,
+        "final_value": result.final_value,
+        "total_return": round(total_return, 6),
+        "cagr": result.cagr,
+        "twr": result.twr,
+        "buy_and_hold_value": result.buy_and_hold_value,
+        "buy_and_hold_return": round(bh_return, 6),
+        "total_trades": len(result.trades),
+        "max_drawdown": result.max_drawdown,
+        "sharpe_ratio": result.sharpe_ratio,
+        "sortino_ratio": result.sortino_ratio,
+        "win_rate": result.win_rate,
+        "profit_factor": result.profit_factor if not math.isinf(result.profit_factor) else "inf",
+        "avg_win": result.avg_win,
+        "avg_loss": result.avg_loss,
+        "unrealized_pnl": result.unrealized_pnl,
+        "efficiency_ratio": result.efficiency_ratio,
+    }
+
+    if result.split_date:
+        summary["split"] = {
+            "date": result.split_date.isoformat(),
+            "train_return": result.train_return,
+            "test_return": result.test_return,
+            "train_bh_return": result.train_bh_return,
+            "test_bh_return": result.test_bh_return,
+            "train_trades": len(result.train_trades),
+            "test_trades": len(result.test_trades),
+        }
+
+    with open(path, "w") as f:
+        json.dump(summary, f, indent=2)
+        f.write("\n")
+
+
+def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["strategy", "ticker", "trades", "buys", "sells", "win_rate", "pnl"])
+
+        # Per-(strategy, ticker) rows
+        for s in result.strategy_stats:
             writer.writerow(
                 [
-                    t.date.isoformat(),
-                    t.ticker,
-                    t.direction.value,
-                    t.shares,
-                    f"{t.price:.2f}",
-                    t.strategy_name,
-                    t.holding_period.value if t.holding_period else "",
+                    s.name,
+                    s.ticker,
+                    s.trades,
+                    s.buys,
+                    s.sells,
+                    round(s.win_rate, 4) if s.sells > 0 else "",
+                    round(s.pnl, 2) if s.sells > 0 else "",
                 ]
             )
 
-        writer.writerow([])
-        writer.writerow(["=== SUMMARY ==="])
-        writer.writerow(["Metric", "Value"])
-        sv = result.starting_value
-        total_return = (result.final_value - sv) / sv if sv > 0 else 0
-        bh_return = (result.buy_and_hold_value - sv) / sv if sv > 0 else 0
-        writer.writerow(["Starting Value", f"${sv:.2f}"])
-        writer.writerow(["Final Value", f"${result.final_value:.2f}"])
-        writer.writerow(["Total Return", f"{total_return:.2%}"])
-        writer.writerow(["CAGR", f"{result.cagr:.2%}"])
-        writer.writerow(["Time-Weighted Return", f"{result.twr:.2%}"])
-        writer.writerow(["Buy & Hold Value", f"${result.buy_and_hold_value:.2f}"])
-        writer.writerow(["Buy & Hold Return", f"{bh_return:.2%}"])
-        writer.writerow(["Total Trades", len(result.trades)])
+        # Aggregate per-strategy rows
+        for a in aggregate_strategy_stats(result.strategy_stats):
+            writer.writerow(
+                [
+                    a.name,
+                    "*",
+                    a.trades,
+                    a.buys,
+                    a.sells,
+                    a.win_rate if a.sells > 0 else "",
+                    a.pnl if a.sells > 0 else "",
+                ]
+            )
 
-        writer.writerow([])
-        writer.writerow(["=== RISK METRICS ==="])
-        writer.writerow(["Max Drawdown", f"{result.max_drawdown:.2%}"])
-        writer.writerow(["Sharpe Ratio", f"{result.sharpe_ratio:.4f}"])
-        writer.writerow(["Sortino Ratio", f"{result.sortino_ratio:.4f}"])
-
-        sells = [t for t in result.trades if t.direction == Direction.SELL]
-        if sells:
-            writer.writerow([])
-            writer.writerow(["=== TRADE QUALITY ==="])
-            writer.writerow(["Win Rate", f"{result.win_rate:.2%}"])
-            pf = f"{result.profit_factor:.4f}" if not math.isinf(result.profit_factor) else "inf"
-            writer.writerow(["Profit Factor", pf])
-            writer.writerow(["Avg Win", f"${result.avg_win:.2f}"])
-            writer.writerow(["Avg Loss", f"${result.avg_loss:.2f}"])
-
-        if result.split_date:
-            writer.writerow([])
-            writer.writerow(["=== OUT-OF-SAMPLE SPLIT ==="])
-            writer.writerow(["Split Date", result.split_date.isoformat()])
-            writer.writerow(["Train Return", f"{result.train_return:.2%}"])
-            writer.writerow(["Train B&H Return", f"{result.train_bh_return:.2%}"])
-            writer.writerow(["Train Trades", len(result.train_trades)])
-            writer.writerow(["Test Return", f"{result.test_return:.2%}"])
-            writer.writerow(["Test B&H Return", f"{result.test_bh_return:.2%}"])
-            writer.writerow(["Test Trades", len(result.test_trades)])
-            writer.writerow(["Efficiency Ratio", f"{result.efficiency_ratio:.2%}"])
-
-        if result.strategy_stats:
-            writer.writerow([])
-            writer.writerow(["=== STRATEGY BREAKDOWN ==="])
-            writer.writerow(["Strategy", "Trades", "Buys", "Sells", "Win Rate", "P&L"])
-            for s in result.strategy_stats:
-                writer.writerow(
-                    [
-                        s.name,
-                        s.trades,
-                        s.buys,
-                        s.sells,
-                        f"{s.win_rate:.2%}" if s.sells > 0 else "",
-                        f"${s.pnl:.2f}" if s.sells > 0 else "",
-                    ]
-                )
-            writer.writerow(["Open Positions", "", "", "", "", f"${result.unrealized_pnl:.2f}"])
+        # Per-ticker open positions
+        for ticker, pnl in sorted(result.unrealized_pnl_by_ticker.items()):
+            writer.writerow(["Open Positions", ticker, "", "", "", "", round(pnl, 2)])
+        writer.writerow(["Open Positions", "*", "", "", "", "", round(result.unrealized_pnl, 2)])
