@@ -83,8 +83,8 @@ class CachedYFinanceProvider(DataProvider):
         return frame
 
     def get_current_price(self, ticker: str) -> float:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="1d")
+        yf_ticker = yf.Ticker(ticker)
+        hist = yf_ticker.history(period="1d")
         if hist.empty:
             msg = f"No current price available for {ticker}"
             raise ValueError(msg)

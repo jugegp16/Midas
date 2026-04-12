@@ -70,7 +70,7 @@ class LiveEngine:
         # in-profit gate fails when underwater. The rule never fires.
         # Warn loudly so optimized strategies that rely on TrailingStop
         # aren't silently neutered at deployment.
-        if any(isinstance(r, TrailingStop) for r in self._exit_rules):
+        if any(isinstance(rule, TrailingStop) for rule in self._exit_rules):
             logger.warning(
                 "TrailingStop is configured but live mode does not track a "
                 "real high-water mark — it will NOT fire. Optimized backtest "
@@ -79,7 +79,7 @@ class LiveEngine:
             )
 
     def run(self) -> None:
-        tickers = [h.ticker for h in self._portfolio.holdings]
+        tickers = [holding.ticker for holding in self._portfolio.holdings]
         print_status(
             f"Starting {'dry run' if self._dry_run else 'live'} analysis "
             f"for {len(tickers)} tickers, polling every {self._poll_interval}s"
@@ -108,8 +108,8 @@ class LiveEngine:
                 df = self._provider.get_history(ticker, start, end)
                 price_history[ticker] = PriceHistory.from_dataframe(df)
                 price_data[ticker] = df
-            except Exception as e:
-                print_status(f"Warning: failed to fetch {ticker}: {e}")
+            except Exception as exc:
+                print_status(f"Warning: failed to fetch {ticker}: {exc}")
 
         if not price_data:
             return
@@ -117,7 +117,11 @@ class LiveEngine:
         # If any held position is missing from price_data, we can't compute an
         # accurate portfolio denominator for current_weights — skip the tick
         # rather than let Option A hold inflated weights based on partial info.
-        missing_held = [h.ticker for h in self._portfolio.holdings if h.shares > 0 and h.ticker not in price_data]
+        missing_held = [
+            holding.ticker
+            for holding in self._portfolio.holdings
+            if holding.shares > 0 and holding.ticker not in price_data
+        ]
         if missing_held:
             print_status(f"Skipping tick: missing price data for held positions {missing_held}. Will retry next poll.")
             return
@@ -127,20 +131,24 @@ class LiveEngine:
             if ticker in price_data and len(price_data[ticker]) > 0:
                 current_prices[ticker] = float(price_data[ticker]["close"].iloc[-1])
 
-        active_tickers = [t for t in tickers if t in price_data]
+        active_tickers = [ticker for ticker in tickers if ticker in price_data]
 
         # Current positions + weights (weights feed Option A: neutral=hold).
         positions = {}
-        for t in active_tickers:
-            holding = self._portfolio.get_holding(t)
-            positions[t] = holding.shares if holding else 0.0
+        for ticker in active_tickers:
+            held = self._portfolio.get_holding(ticker)
+            positions[ticker] = held.shares if held else 0.0
 
         # Pass None (not {}) when the denominator is zero so the allocator
         # falls back to its equal-weight baseline.
-        total_value = self._portfolio.available_cash + sum(positions[t] * current_prices[t] for t in active_tickers)
+        total_value = self._portfolio.available_cash + sum(
+            positions[ticker] * current_prices[ticker] for ticker in active_tickers
+        )
         current_weights: dict[str, float] | None = None
         if total_value > 0:
-            current_weights = {t: (positions[t] * current_prices[t]) / total_value for t in active_tickers}
+            current_weights = {
+                ticker: (positions[ticker] * current_prices[ticker]) / total_value for ticker in active_tickers
+            }
 
         # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
@@ -193,9 +201,11 @@ class LiveEngine:
         )
         if self._restriction_tracker:
             exit_orders = [
-                o for o in exit_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+                order
+                for order in exit_orders
+                if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
             ]
-        sell_proceeds = sum(o.estimated_value for o in exit_orders)
+        sell_proceeds = sum(order.estimated_value for order in exit_orders)
         post_sell_cash = self._portfolio.available_cash + sell_proceeds
 
         clamped_allocation = AllocationResult(
@@ -214,13 +224,15 @@ class LiveEngine:
         )
         if self._restriction_tracker:
             buy_orders = [
-                o for o in buy_orders if not self._restriction_tracker.is_blocked(o.ticker, o.direction, today)
+                order
+                for order in buy_orders
+                if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
             ]
 
         filtered = exit_orders + buy_orders
 
         # Emit alerts only when the order set changes
-        current_keys = {(o.ticker, o.direction, o.shares) for o in filtered if o.shares > 0}
+        current_keys = {(order.ticker, order.direction, order.shares) for order in filtered if order.shares > 0}
         if current_keys == self._last_order_keys:
             return
         self._last_order_keys = current_keys

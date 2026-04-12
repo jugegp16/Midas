@@ -25,21 +25,21 @@ class MovingAverageCrossover(EntrySignal):
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         prices = price_history.close
-        n = len(prices)
-        lw = self._long_window
-        sw = self._short_window
-        scores = np.full(n, np.nan)
-        if n < lw:
+        num_bars = len(prices)
+        long_win = self._long_window
+        short_win = self._short_window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < long_win:
             return scores
-        cs = np.empty(n + 1)
+        cs = np.empty(num_bars + 1)
         cs[0] = 0.0
         np.cumsum(prices, out=cs[1:])
-        short_rolling = (cs[sw:] - cs[:-sw]) / sw
-        long_rolling = (cs[lw:] - cs[:-lw]) / lw
-        short_at_day = short_rolling[lw - sw : n - sw + 1]
+        short_rolling = (cs[short_win:] - cs[:-short_win]) / short_win
+        long_rolling = (cs[long_win:] - cs[:-long_win]) / long_win
+        short_at_day = short_rolling[long_win - short_win : num_bars - short_win + 1]
         long_at_day = long_rolling
         spread = np.where(long_at_day != 0, (short_at_day - long_at_day) / long_at_day, 0.0)
-        scores[lw - 1 :] = np.clip(spread / self._spread_scale, 0.0, 1.0)
+        scores[long_win - 1 :] = np.clip(spread / self._spread_scale, 0.0, 1.0)
         return scores
 
     def score(

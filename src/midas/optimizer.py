@@ -240,7 +240,9 @@ def _run_trial(
             continue
         cls = STRATEGY_REGISTRY[name]
         weight = params.get("_weight", 1.0)
-        clean_params = {k: int(v) if k in INT_PARAMS else v for k, v in params.items() if k not in META_PARAMS}
+        clean_params = {
+            key: int(val) if key in INT_PARAMS else val for key, val in params.items() if key not in META_PARAMS
+        }
         strategy = cls(**clean_params)
 
         if isinstance(strategy, ExitRule):
@@ -252,7 +254,7 @@ def _run_trial(
             raise TypeError(msg)
 
     # Count tickers in portfolio
-    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
     constraints = AllocationConstraints(
         max_position_pct=global_params.get("max_position_pct"),
         min_cash_pct=min_cash_pct,
@@ -361,7 +363,7 @@ def max_warmup_for_search(
     ``warmup_period``.
     """
     names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
-    max_w = 0
+    max_warmup_val = 0
     for name in names:
         if name == ALLOCATION_KEY:
             continue
@@ -378,8 +380,8 @@ def max_warmup_for_search(
         # Let TypeError propagate — if a search-range key doesn't match a
         # constructor param, that's a real configuration bug we want loud.
         instance = cls(**params)
-        max_w = max(max_w, instance.warmup_period)
-    return max_w
+        max_warmup_val = max(max_warmup_val, instance.warmup_period)
+    return max_warmup_val
 
 
 def _prepare_names_and_ranges(
@@ -388,8 +390,8 @@ def _prepare_names_and_ranges(
     n_tickers: int,
 ) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
     """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
-    names = strategy_names or [k for k in PARAM_RANGES if k != ALLOCATION_KEY]
-    names = [n for n in names if n in PARAM_RANGES]
+    names = strategy_names or [key for key in PARAM_RANGES if key != ALLOCATION_KEY]
+    names = [name for name in names if name in PARAM_RANGES]
 
     if not names:
         msg = "No optimizable strategies found"
@@ -403,7 +405,7 @@ def _prepare_names_and_ranges(
     if lo >= hi:
         lo, hi = 0.10, 0.80
     step = round((hi - lo) / 8, 2) or 0.01
-    ranges = {k: dict(PARAM_RANGES[k]) for k in names if k in PARAM_RANGES}
+    ranges = {name: dict(PARAM_RANGES[name]) for name in names if name in PARAM_RANGES}
     ranges.setdefault(ALLOCATION_KEY, {})
     ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
 
@@ -430,12 +432,12 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
     names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
 
     max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
 
-    strat_names = [n for n in names if n != ALLOCATION_KEY]
+    strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Optimizing {len(strat_names)} strategies over {start} to {end}")
     log(f"  {n_trials} trials across {max_workers} workers")
 
@@ -548,13 +550,13 @@ def walk_forward_optimize(
     """
     log = log_fn or (lambda _: None)
 
-    n_tickers = sum(1 for h in portfolio.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
     names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
 
     # Collect trading days across all tickers.
     all_dates: set[date] = set()
     for df in price_data.values():
-        all_dates.update(d for d in df.index if start <= d <= end)
+        all_dates.update(dt for dt in df.index if start <= dt <= end)
     trading_days = sorted(all_dates)
 
     n_days = len(trading_days)
@@ -575,7 +577,7 @@ def walk_forward_optimize(
     trials_per_fold = max(n_trials // n_folds, 10)
     max_workers = min((os.cpu_count() or 4) // 2, trials_per_fold) or 1
 
-    strat_names = [n for n in names if n != ALLOCATION_KEY]
+    strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Walk-forward optimization — {len(strat_names)} strategies, {start} to {end}")
     log(f"  {n_folds} folds, ~{test_size} trading days per test window, {trials_per_fold} trials/fold")
 
@@ -689,42 +691,42 @@ def walk_forward_optimize(
     finally:
         pool.shutdown(wait=True)
 
-    test_returns = [f.test_return for f in fold_results]
+    test_returns = [fold.test_return for fold in fold_results]
     mean_test = sum(test_returns) / len(test_returns)
-    variance = sum((r - mean_test) ** 2 for r in test_returns) / max(len(test_returns) - 1, 1)
+    variance = sum((ret - mean_test) ** 2 for ret in test_returns) / max(len(test_returns) - 1, 1)
     std_test = variance**0.5
 
     # CAGR: compound per-fold returns, then annualize over the OOS period.
     compounded = 1.0
-    for r in test_returns:
-        compounded *= 1.0 + r
+    for ret in test_returns:
+        compounded *= 1.0 + ret
     first_test_start = fold_results[0].test_start
     last_test_end = fold_results[-1].test_end
     years = (last_test_end - first_test_start).days / 365.25
     annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
 
-    winning_folds = sum(1 for r in test_returns if r > 0)
+    winning_folds = sum(1 for ret in test_returns if ret > 0)
     best_fold = max(test_returns)
     worst_fold = min(test_returns)
 
     # Efficiency ratio: how much in-sample performance survives out-of-sample.
     # Anchored IS windows overlap so we can't annualize them apples-to-apples
     # with OOS — only the ratio of mean raw returns is reported.
-    train_returns = [f.train_return for f in fold_results]
+    train_returns = [fold.train_return for fold in fold_results]
     mean_train = sum(train_returns) / len(train_returns)
     efficiency = mean_test / mean_train if mean_train != 0 else 0.0
 
-    n = len(fold_results)
-    mean_dd = sum(f.max_drawdown for f in fold_results) / n
-    mean_sharpe = sum(f.sharpe_ratio for f in fold_results) / n
-    mean_sortino = sum(f.sortino_ratio for f in fold_results) / n
-    mean_wr = sum(f.win_rate for f in fold_results) / n
+    num_folds = len(fold_results)
+    mean_dd = sum(fold.max_drawdown for fold in fold_results) / num_folds
+    mean_sharpe = sum(fold.sharpe_ratio for fold in fold_results) / num_folds
+    mean_sortino = sum(fold.sortino_ratio for fold in fold_results) / num_folds
+    mean_wr = sum(fold.win_rate for fold in fold_results) / num_folds
 
     log("")
     log("Walk-forward complete")
     log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
     log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
-    log(f"  Winning folds: {winning_folds}/{n} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
+    log(f"  Winning folds: {winning_folds}/{num_folds} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
     log(f"  Efficiency ratio: {efficiency:.0%}")
     log(f"  Mean max drawdown: {mean_dd:.2%} | Mean Sharpe: {mean_sharpe:.2f}")
 
@@ -738,7 +740,7 @@ def walk_forward_optimize(
         worst_fold_return=round(worst_fold, 4),
         efficiency_ratio=round(efficiency, 4),
         best_params=fold_results[-1].best_params,
-        total_trials=sum(f.trials_run for f in fold_results),
+        total_trials=sum(fold.trials_run for fold in fold_results),
         mean_max_drawdown=round(mean_dd, 4),
         mean_sharpe=round(mean_sharpe, 4),
         mean_sortino=round(mean_sortino, 4),
@@ -756,25 +758,25 @@ def write_strategies_yaml(
 
     # Emit global allocation knobs as top-level keys
     if ALLOCATION_KEY in params:
-        for k, v in params[ALLOCATION_KEY].items():
-            output[k] = round(v, 4)
+        for key, val in params[ALLOCATION_KEY].items():
+            output[key] = round(val, 4)
 
     # min_cash_pct is not optimized — preserve the user's configured value
     output["min_cash_pct"] = round(min_cash_pct, 4)
 
     strategies = []
-    for name, p in params.items():
+    for name, param_dict in params.items():
         if name == ALLOCATION_KEY:
             continue
         entry: dict[str, object] = {"name": name}
         clean_params: dict[str, object] = {}
-        for k, v in p.items():
-            if k == "_weight":
-                entry["weight"] = round(v, 4)
-            elif k in INT_PARAMS:
-                clean_params[k] = int(v)
+        for key, val in param_dict.items():
+            if key == "_weight":
+                entry["weight"] = round(val, 4)
+            elif key in INT_PARAMS:
+                clean_params[key] = int(val)
             else:
-                clean_params[k] = round(v, 4)
+                clean_params[key] = round(val, 4)
         if clean_params:
             entry["params"] = clean_params
         strategies.append(entry)

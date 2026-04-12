@@ -66,9 +66,9 @@ def print_strategy_table(strategies: list[Strategy]) -> None:
     table.add_column("Description")
     table.add_column("Suitability", style="cyan")
 
-    for s in strategies:
-        tags = ", ".join(t.value for t in s.suitability)
-        table.add_row(s.name, s.tier_label, s.description, tags)
+    for strat in strategies:
+        tags = ", ".join(tag.value for tag in strat.suitability)
+        table.add_row(strat.name, strat.tier_label, strat.description, tags)
 
     console.print(table, justify="center")
 
@@ -107,8 +107,8 @@ def print_centered(table: Table) -> None:
 def print_run_info(rows: list[tuple[str, str]], title: str = "Run Info") -> None:
     """Render a small key/value table for run metadata (trials, output path, etc)."""
     table = make_metric_table(title)
-    for k, v in rows:
-        table.add_row(k, v)
+    for label, value in rows:
+        table.add_row(label, value)
     print_centered(table)
 
 
@@ -125,25 +125,27 @@ def print_params_table(
     table = make_wide_table(title)
     table.add_column("Strategy", style="bold")
     table.add_column("Parameters")
-    for name, p in params.items():
+    for name, param_dict in params.items():
         display = "Global" if global_key is not None and name == global_key else name
-        table.add_row(display, ", ".join(f"{k}={v}" for k, v in p.items()))
+        table.add_row(display, ", ".join(f"{key}={val}" for key, val in param_dict.items()))
     print_centered(table)
 
 
 def print_backtest_summary(result: BacktestResult) -> None:
-    sv, fv, bhv = result.starting_value, result.final_value, result.buy_and_hold_value
-    total_return = (fv - sv) / sv if sv > 0 else 0
-    bh_return = (bhv - sv) / sv if sv > 0 else 0
+    starting_val = result.starting_value
+    final_val = result.final_value
+    bh_val = result.buy_and_hold_value
+    total_return = (final_val - starting_val) / starting_val if starting_val > 0 else 0
+    bh_return = (bh_val - starting_val) / starting_val if starting_val > 0 else 0
 
     # --- Performance ---
     perf = make_metric_table("Performance")
-    perf.add_row("Starting Value", f"${sv:,.2f}")
-    perf.add_row("Final Value", f"${fv:,.2f}")
+    perf.add_row("Starting Value", f"${starting_val:,.2f}")
+    perf.add_row("Final Value", f"${final_val:,.2f}")
     perf.add_row("Total Return", color_signed(total_return))
     perf.add_row("CAGR", color_signed(result.cagr))
     perf.add_row("Time-Weighted Return", color_signed(result.twr))
-    perf.add_row("Buy & Hold Value", f"${bhv:,.2f}")
+    perf.add_row("Buy & Hold Value", f"${bh_val:,.2f}")
     perf.add_row("Buy & Hold Return", color_signed(bh_return))
     perf.add_row("Total Trades", str(len(result.trades)))
     print_centered(perf)
@@ -169,7 +171,7 @@ def print_backtest_summary(result: BacktestResult) -> None:
     print_centered(risk_table)
 
     # --- Trade Quality ---
-    if any(t.direction == Direction.SELL for t in result.trades):
+    if any(trade.direction == Direction.SELL for trade in result.trades):
         trade_table = make_metric_table("Trade Quality")
         trade_table.add_row("Win Rate", color_signed(result.win_rate))
         pf_str = f"{result.profit_factor:.2f}" if not math.isinf(result.profit_factor) else "∞"
@@ -188,15 +190,15 @@ def print_backtest_summary(result: BacktestResult) -> None:
         agg_table.add_column("Win Rate", justify="right")
         agg_table.add_column("P&L", justify="right")
 
-        for a in aggregate_strategy_stats(result.strategy_stats):
-            pnl_style = "green" if a.pnl >= 0 else "red"
+        for agg in aggregate_strategy_stats(result.strategy_stats):
+            pnl_style = "green" if agg.pnl >= 0 else "red"
             agg_table.add_row(
-                a.name,
-                str(a.trades),
-                str(a.buys),
-                str(a.sells),
-                f"{a.win_rate:.0%}" if a.sells > 0 else "—",
-                f"[{pnl_style}]${a.pnl:,.2f}[/{pnl_style}]" if a.sells > 0 else "—",
+                agg.name,
+                str(agg.trades),
+                str(agg.buys),
+                str(agg.sells),
+                f"{agg.win_rate:.0%}" if agg.sells > 0 else "—",
+                f"[{pnl_style}]${agg.pnl:,.2f}[/{pnl_style}]" if agg.sells > 0 else "—",
             )
 
         unr = result.unrealized_pnl
@@ -222,16 +224,16 @@ def print_backtest_summary(result: BacktestResult) -> None:
         detail_table.add_column("Win Rate", justify="right")
         detail_table.add_column("P&L", justify="right")
 
-        for s in result.strategy_stats:
-            pnl_style = "green" if s.pnl >= 0 else "red"
+        for stat in result.strategy_stats:
+            pnl_style = "green" if stat.pnl >= 0 else "red"
             detail_table.add_row(
-                s.name,
-                s.ticker,
-                str(s.trades),
-                str(s.buys),
-                str(s.sells),
-                f"{s.win_rate:.0%}" if s.sells > 0 else "—",
-                f"[{pnl_style}]${s.pnl:,.2f}[/{pnl_style}]" if s.sells > 0 else "—",
+                stat.name,
+                stat.ticker,
+                str(stat.trades),
+                str(stat.buys),
+                str(stat.sells),
+                f"{stat.win_rate:.0%}" if stat.sells > 0 else "—",
+                f"[{pnl_style}]${stat.pnl:,.2f}[/{pnl_style}]" if stat.sells > 0 else "—",
             )
 
         detail_table.add_section()

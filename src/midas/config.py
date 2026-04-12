@@ -27,11 +27,11 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
     holdings = [
         Holding(
-            ticker=h["ticker"],
-            shares=float(h["shares"]),
-            cost_basis=float(h["cost_basis"]) if "cost_basis" in h else None,
+            ticker=entry["ticker"],
+            shares=float(entry["shares"]),
+            cost_basis=float(entry["cost_basis"]) if "cost_basis" in entry else None,
         )
-        for h in raw["portfolio"]
+        for entry in raw["portfolio"]
     ]
 
     infusion = None
@@ -77,13 +77,13 @@ def load_strategies(
     raw = _load_yaml(path)
 
     configs = []
-    for s in raw["strategies"]:
+    for strat in raw["strategies"]:
         configs.append(
             StrategyConfig(
-                name=s["name"],
-                params=s.get("params", {}),
-                tickers=s.get("tickers"),
-                weight=float(s.get("weight", 1.0)),
+                name=strat["name"],
+                params=strat.get("params", {}),
+                tickers=strat.get("tickers"),
+                weight=float(strat.get("weight", 1.0)),
             )
         )
 

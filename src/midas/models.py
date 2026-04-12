@@ -70,7 +70,7 @@ class PortfolioConfig:
     trading_restrictions: TradingRestrictions | None = None
 
     def __post_init__(self) -> None:
-        self._by_ticker = {h.ticker: h for h in self.holdings}
+        self._by_ticker = {holding.ticker: holding for holding in self.holdings}
 
     def get_holding(self, ticker: str) -> Holding | None:
         return self._by_ticker.get(ticker)

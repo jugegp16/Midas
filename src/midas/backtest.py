@@ -47,22 +47,22 @@ class StrategyStats:
 def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[StrategyStats]:
     """Aggregate per-(strategy, ticker) stats into per-strategy totals."""
     by_strategy: dict[str, list[StrategyStats]] = defaultdict(list)
-    for s in stats:
-        by_strategy[s.name].append(s)
+    for stat in stats:
+        by_strategy[stat.name].append(stat)
     result: list[StrategyStats] = []
     for name, group in sorted(by_strategy.items()):
-        total_sells = sum(s.sells for s in group)
-        total_pnl = sum(s.pnl for s in group)
-        winning = sum(round(s.win_rate * s.sells) for s in group)
-        agg_wr = winning / total_sells if total_sells > 0 else 0.0
+        total_sells = sum(stat.sells for stat in group)
+        total_pnl = sum(stat.pnl for stat in group)
+        winning = sum(round(stat.win_rate * stat.sells) for stat in group)
+        agg_win_rate = winning / total_sells if total_sells > 0 else 0.0
         result.append(
             StrategyStats(
                 name=name,
                 ticker=None,
-                trades=sum(s.trades for s in group),
-                buys=sum(s.buys for s in group),
+                trades=sum(stat.trades for stat in group),
+                buys=sum(stat.buys for stat in group),
                 sells=total_sells,
-                win_rate=round(agg_wr, 4),
+                win_rate=round(agg_win_rate, 4),
                 pnl=round(total_pnl, 2),
             )
         )
@@ -144,17 +144,19 @@ class _Decision:
 
     def filtered(self, available: set[str]) -> _Decision | None:
         """Return a copy keeping only tickers in *available*, or None if empty."""
-        active = [t for t in self.active_tickers if t in available]
+        active = [ticker for ticker in self.active_tickers if ticker in available]
         if not active:
             return None
         keep = set(active)
         return _Decision(
             allocation=AllocationResult(
-                targets={t: w for t, w in self.allocation.targets.items() if t in keep},
-                contributions={t: v for t, v in self.allocation.contributions.items() if t in keep},
-                blended_scores={t: v for t, v in self.allocation.blended_scores.items() if t in keep},
+                targets={ticker: weight for ticker, weight in self.allocation.targets.items() if ticker in keep},
+                contributions={ticker: val for ticker, val in self.allocation.contributions.items() if ticker in keep},
+                blended_scores={
+                    ticker: val for ticker, val in self.allocation.blended_scores.items() if ticker in keep
+                },
             ),
-            clamp_attribution={k: v for k, v in self.clamp_attribution.items() if k in keep},
+            clamp_attribution={key: val for key, val in self.clamp_attribution.items() if key in keep},
             active_tickers=active,
             decision_day=self.decision_day,
         )
@@ -200,7 +202,9 @@ class _SimState:
     def portfolio_value(self, close_prices: dict[str, float]) -> float:
         """Cash + mark-to-market of held positions at *close_prices*."""
         return self.cash + sum(
-            shares * close_prices[t] for t, shares in self.positions.items() if shares > 0 and t in close_prices
+            shares * close_prices[ticker]
+            for ticker, shares in self.positions.items()
+            if shares > 0 and ticker in close_prices
         )
 
     def close_twr_period(self, current_value: float) -> None:
@@ -212,7 +216,7 @@ class _SimState:
 
 def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
     """Latest close price for every ticker in *current_data*."""
-    return {t: float(current_data[t].close[-1]) for t in current_data}
+    return {ticker: float(current_data[ticker].close[-1]) for ticker in current_data}
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -249,16 +253,16 @@ def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
     """Annualized Sharpe ratio (risk-free = 0) from daily returns."""
     if len(equity_curve) < 3:
         return 0.0
-    values = [v for _, v in equity_curve]
+    values = [val for _, val in equity_curve]
     daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
     if len(daily_returns) < 2:
         return 0.0
-    mean_r = sum(daily_returns) / len(daily_returns)
-    variance = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
-    std_r = math.sqrt(variance) if variance > 0 else 0.0
-    if std_r == 0:
+    mean_ret = sum(daily_returns) / len(daily_returns)
+    variance = sum((ret - mean_ret) ** 2 for ret in daily_returns) / (len(daily_returns) - 1)
+    std_ret = math.sqrt(variance) if variance > 0 else 0.0
+    if std_ret == 0:
         return 0.0
-    return (mean_r / std_r) * math.sqrt(TRADING_DAYS_PER_YEAR)
+    return (mean_ret / std_ret) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
 def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
@@ -271,19 +275,19 @@ def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
     """
     if len(equity_curve) < 3:
         return 0.0
-    values = [v for _, v in equity_curve]
+    values = [val for _, val in equity_curve]
     daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
     if len(daily_returns) < 2:
         return 0.0
-    mean_r = sum(daily_returns) / len(daily_returns)
-    downside = [r for r in daily_returns if r < 0]
+    mean_ret = sum(daily_returns) / len(daily_returns)
+    downside = [ret for ret in daily_returns if ret < 0]
     if not downside:
         return 0.0
-    downside_var = sum(r**2 for r in downside) / len(daily_returns)
+    downside_var = sum(ret**2 for ret in downside) / len(daily_returns)
     downside_dev = math.sqrt(downside_var) if downside_var > 0 else 0.0
     if downside_dev == 0:
         return 0.0
-    return (mean_r / downside_dev) * math.sqrt(TRADING_DAYS_PER_YEAR)
+    return (mean_ret / downside_dev) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
 def _pair_sells_with_basis(
@@ -295,11 +299,11 @@ def _pair_sells_with_basis(
     Falls back to the trade price (zero P&L) for any sell beyond the recorded
     basis list — defensive only; the lists should always be the same length.
     """
-    sells = [t for t in trades if t.direction == Direction.SELL]
+    sells = [trade for trade in trades if trade.direction == Direction.SELL]
     paired: list[tuple[TradeRecord, float]] = []
-    for i, t in enumerate(sells):
-        basis = basis_per_sell[i] if i < len(basis_per_sell) else t.price
-        paired.append((t, basis))
+    for idx, trade in enumerate(sells):
+        basis = basis_per_sell[idx] if idx < len(basis_per_sell) else trade.price
+        paired.append((trade, basis))
     return paired
 
 
@@ -317,8 +321,8 @@ def compute_trade_stats(
 
     wins: list[float] = []
     losses: list[float] = []
-    for t, basis in paired:
-        pnl = (t.price - basis) * t.shares
+    for trade, basis in paired:
+        pnl = (trade.price - basis) * trade.shares
         if pnl >= 0:
             wins.append(pnl)
         else:
@@ -328,7 +332,12 @@ def compute_trade_stats(
     win_rate = len(wins) / total if total > 0 else 0.0
     gross_wins = sum(wins) if wins else 0.0
     gross_losses = abs(sum(losses)) if losses else 0.0
-    profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0.0
+    if gross_losses > 0:
+        profit_factor = gross_wins / gross_losses
+    elif gross_wins > 0:
+        profit_factor = float("inf")
+    else:
+        profit_factor = 0.0
     avg_win = gross_wins / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0  # negative number
     return win_rate, profit_factor, avg_win, avg_loss
@@ -339,21 +348,21 @@ def compute_strategy_stats(
     basis_per_sell: list[float],
 ) -> list[StrategyStats]:
     """Compute per-(strategy, ticker) trade breakdown."""
-    sell_basis: dict[int, float] = {id(t): b for t, b in _pair_sells_with_basis(trades, basis_per_sell)}
+    sell_basis: dict[int, float] = {id(trade): basis for trade, basis in _pair_sells_with_basis(trades, basis_per_sell)}
 
     by_key: dict[tuple[str, str], list[TradeRecord]] = defaultdict(list)
-    for t in trades:
-        by_key[(t.strategy_name, t.ticker)].append(t)
+    for trade in trades:
+        by_key[(trade.strategy_name, trade.ticker)].append(trade)
 
     stats: list[StrategyStats] = []
-    for (name, ticker), strades in sorted(by_key.items()):
-        buys = [t for t in strades if t.direction == Direction.BUY]
-        sells = [t for t in strades if t.direction == Direction.SELL]
+    for (name, ticker), strategy_trades in sorted(by_key.items()):
+        buys = [trade for trade in strategy_trades if trade.direction == Direction.BUY]
+        sells = [trade for trade in strategy_trades if trade.direction == Direction.SELL]
         winning_sells = 0
         total_pnl = 0.0
-        for t in sells:
-            basis = sell_basis.get(id(t), t.price)
-            pnl = (t.price - basis) * t.shares
+        for trade in sells:
+            basis = sell_basis.get(id(trade), trade.price)
+            pnl = (trade.price - basis) * trade.shares
             total_pnl += pnl
             if pnl >= 0:
                 winning_sells += 1
@@ -362,7 +371,7 @@ def compute_strategy_stats(
             StrategyStats(
                 name=name,
                 ticker=ticker,
-                trades=len(strades),
+                trades=len(strategy_trades),
                 buys=len(buys),
                 sells=len(sells),
                 win_rate=round(win_rate, 4),
@@ -376,6 +385,12 @@ DEFAULT_TRAIN_PCT = 0.70
 
 
 class BacktestEngine:
+    """Replays historical price data through strategies to evaluate performance.
+
+    Orchestrates allocation, exit rules, order sizing, and trade execution
+    across a date range, producing a BacktestResult with performance metrics.
+    """
+
     def __init__(
         self,
         allocator: Allocator,
@@ -403,6 +418,19 @@ class BacktestEngine:
         start: date,
         end: date,
     ) -> BacktestResult:
+        """Execute a full backtest over the given date range.
+
+        Args:
+            portfolio: Holdings, cash, and configuration.
+            price_data: Per-ticker OHLCV DataFrames keyed by
+                ticker symbol.
+            start: First calendar date of the simulation window.
+            end: Last calendar date of the simulation window.
+
+        Returns:
+            A BacktestResult containing trades, metrics, and the
+            equity curve.
+        """
         trading_days = self._collect_trading_days(price_data, start, end)
         _, split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
@@ -441,7 +469,7 @@ class BacktestEngine:
     ) -> list[date]:
         all_dates: set[date] = set()
         for df in price_data.values():
-            all_dates.update(d for d in df.index if start <= d <= end)
+            all_dates.update(dt for dt in df.index if start <= dt <= end)
         days = sorted(all_dates)
         if not days:
             msg = "No trading days found in date range"
@@ -530,33 +558,32 @@ class BacktestEngine:
             )
         first_dates = self._first_data_dates(price_data, start)
 
-        for h in portfolio.holdings:
-            if h.shares <= 0:
+        for holding in portfolio.holdings:
+            if holding.shares <= 0:
                 continue
 
-            if h.ticker not in first_dates:
-                self._log(f"{h.ticker}: no price data in backtest range ({start} to {end}) — excluded")
+            if holding.ticker not in first_dates:
+                self._log(f"{holding.ticker}: no price data in backtest range ({start} to {end}) — excluded")
                 continue
 
-            ticker_start = first_dates[h.ticker]
+            ticker_start = first_dates[holding.ticker]
             if ticker_start <= trading_days[0]:
-                # Backtest seeds the cost basis from the start-day market
-                # price, not the YAML ``cost_basis``. The YAML value is the
-                # user's real purchase basis (used by the live engine and for
-                # display) — using it here would let exit rules fire on
+                # Backtest seeds the cost basis from the start-day market price, not the YAML
+                # ``cost_basis``. The YAML value is the user's real purchase basis (used by the
+                # live engine and for display) — using it here would let exit rules fire on
                 # pre-backtest gains, distorting strategy performance.
-                entry_df = price_data[h.ticker][price_data[h.ticker].index >= start]
+                entry_df = price_data[holding.ticker][price_data[holding.ticker].index >= start]
                 entry_price = float(entry_df["close"].iloc[0])
-                state.positions[h.ticker] = h.shares
-                state.bh_positions[h.ticker] = h.shares
-                state.lots[h.ticker] = [
+                state.positions[holding.ticker] = holding.shares
+                state.bh_positions[holding.ticker] = holding.shares
+                state.lots[holding.ticker] = [
                     PositionLot(
-                        shares=h.shares,
+                        shares=holding.shares,
                         purchase_date=trading_days[0],
                         cost_basis=entry_price,
                     )
                 ]
-                state.high_water_marks[h.ticker] = entry_price
+                state.high_water_marks[holding.ticker] = entry_price
 
         state.starting_value = state.cash + sum(
             lot.shares * lot.cost_basis for lots in state.lots.values() for lot in lots
@@ -575,16 +602,15 @@ class BacktestEngine:
         first_dates = self._first_data_dates(price_data, start)
         deferred: dict[str, float] = {}
 
-        for h in portfolio.holdings:
-            if h.shares <= 0 or h.ticker not in first_dates:
+        for holding in portfolio.holdings:
+            if holding.shares <= 0 or holding.ticker not in first_dates:
                 continue
-            ticker_start = first_dates[h.ticker]
+            ticker_start = first_dates[holding.ticker]
             if ticker_start > trading_days[0]:
-                deferred[h.ticker] = h.shares
+                deferred[holding.ticker] = holding.shares
                 self._log(
-                    f"{h.ticker}: data starts {ticker_start} "
-                    f"(after backtest start {start}) — "
-                    f"position deferred until first available date"
+                    f"{holding.ticker}: data starts {ticker_start} (after backtest start {start})"
+                    f" — position deferred until first available date"
                 )
         return deferred
 
@@ -628,7 +654,7 @@ class BacktestEngine:
                 closes = _close_prices(current_data)
                 state.split_value = state.portfolio_value(closes)
                 state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(t, 0) * closes.get(t, 0) for t in state.bh_positions
+                    state.bh_positions.get(ticker, 0) * closes.get(ticker, 0) for ticker in state.bh_positions
                 )
                 state.close_twr_period(state.split_value)
                 state.twr_split_idx = len(state.twr_periods)
@@ -652,11 +678,10 @@ class BacktestEngine:
                 entry_price = float(current_data[ticker].close[-1])
                 added_value = shares * entry_price
 
-                # Treat deferred activation like a capital infusion for TWR:
-                # close the current sub-period on existing positions (excluding
-                # the newly activated ticker), then reset the base to include
-                # the new position. Otherwise the new capital would be counted
-                # as pure return by the closing final_value / twr_base ratio.
+                # Treat deferred activation like a capital infusion for TWR: close the current
+                # sub-period on existing positions (excluding the newly activated ticker), then
+                # reset the base to include the new position. Otherwise the new capital would be
+                # counted as pure return by the closing final_value / twr_base ratio.
                 pre_activation_value = state.portfolio_value(_close_prices(current_data))
                 state.close_twr_period(pre_activation_value)
                 state.twr_base_value = pre_activation_value + added_value
@@ -696,7 +721,9 @@ class BacktestEngine:
             pending = state.pending.filtered(set(current_data))
             if pending is not None:
                 price_field = "open" if self._execution_mode == "next_open" else "close"
-                exec_prices = {t: float(getattr(current_data[t], price_field)[-1]) for t in pending.active_tickers}
+                exec_prices = {
+                    ticker: float(getattr(current_data[ticker], price_field)[-1]) for ticker in pending.active_tickers
+                }
                 self._size_and_execute(state, pending, exec_prices, day)
             state.pending = None
 
@@ -746,8 +773,8 @@ class BacktestEngine:
         """
         for ticker, pos in state.positions.items():
             if pos > 0 and ticker in current_data:
-                px = float(current_data[ticker].close[-1])
-                state.high_water_marks[ticker] = max(px, state.high_water_marks.get(ticker, 0.0))
+                price = float(current_data[ticker].close[-1])
+                state.high_water_marks[ticker] = max(price, state.high_water_marks.get(ticker, 0.0))
 
     def _decide(
         self,
@@ -763,8 +790,10 @@ class BacktestEngine:
         ``clamp_attribution`` identifies which exit rule drove each
         clamp for sell-side attribution.
         """
-        active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
-        active_tickers = [t for t in active_tickers if t in current_data]
+        active_tickers = [
+            ticker for ticker in state.positions if state.positions.get(ticker, 0) > 0 or ticker in current_data
+        ]
+        active_tickers = [ticker for ticker in active_tickers if ticker in current_data]
 
         if not active_tickers:
             return None
@@ -776,9 +805,14 @@ class BacktestEngine:
         # Pass ``None`` (not ``{}``) when the denominator is zero so the
         # allocator falls back to its equal-weight baseline rather than
         # anchoring held tickers at 0.
-        total_value = state.cash + sum(state.positions.get(t, 0.0) * current_prices[t] for t in active_tickers)
+        total_value = state.cash + sum(
+            state.positions.get(ticker, 0.0) * current_prices[ticker] for ticker in active_tickers
+        )
         current_weights: dict[str, float] | None = (
-            {t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers}
+            {
+                ticker: (state.positions.get(ticker, 0.0) * current_prices[ticker]) / total_value
+                for ticker in active_tickers
+            }
             if total_value > 0
             else None
         )
@@ -804,11 +838,22 @@ class BacktestEngine:
                     continue
                 cost_basis = self._aggregate_cost_basis(state.lots.get(ticker, []))
                 hwm = state.high_water_marks.get(ticker, 0.0)
-                clamped = rule.clamp_target(ticker, proposed, current_data[ticker], cost_basis, hwm)
+                clamped = rule.clamp_target(
+                    ticker,
+                    proposed,
+                    current_data[ticker],
+                    cost_basis,
+                    hwm,
+                )
                 if clamped < proposed:
                     clamped_targets[ticker] = clamped
                     if ticker not in clamp_attribution:
-                        reason = rule.clamp_reason(ticker, current_data[ticker], cost_basis, hwm)
+                        reason = rule.clamp_reason(
+                            ticker,
+                            current_data[ticker],
+                            cost_basis,
+                            hwm,
+                        )
                         clamp_attribution[ticker] = (rule.name, reason)
 
         clamped_allocation = AllocationResult(
@@ -839,8 +884,8 @@ class BacktestEngine:
         so the delta math is self-consistent with what will actually fill.
         """
         active_tickers = decision.active_tickers
-        positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
-        total_value = state.cash + sum(positions[t] * exec_prices[t] for t in active_tickers)
+        positions = {ticker: state.positions.get(ticker, 0.0) for ticker in active_tickers}
+        total_value = state.cash + sum(positions[ticker] * exec_prices[ticker] for ticker in active_tickers)
 
         # Preserve "hold" semantics across price drift between decision and
         # fill.  A pure-hold ticker (no positive entry-signal contributions,
@@ -853,7 +898,7 @@ class BacktestEngine:
             if ticker in decision.clamp_attribution:
                 continue
             contribs = contribs_map.get(ticker, {})
-            if any(v > 0 for v in contribs.values()):
+            if any(val > 0 for val in contribs.values()):
                 continue
             if total_value <= 0:
                 rebalanced_targets[ticker] = 0.0
@@ -872,7 +917,11 @@ class BacktestEngine:
         def unrestricted(orders: list[Order]) -> list[Order]:
             if not state.restriction_tracker:
                 return orders
-            return [o for o in orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
+            return [
+                order
+                for order in orders
+                if not state.restriction_tracker.is_blocked(order.ticker, order.direction, day)
+            ]
 
         exit_orders = unrestricted(
             self._order_sizer.size_sells(
@@ -883,7 +932,7 @@ class BacktestEngine:
                 decision.clamp_attribution,
             )
         )
-        post_sell_cash = state.cash + sum(o.estimated_value for o in exit_orders)
+        post_sell_cash = state.cash + sum(order.estimated_value for order in exit_orders)
 
         buy_orders = unrestricted(
             self._order_sizer.size_buys(
@@ -1094,19 +1143,19 @@ class BacktestEngine:
                 final_prices[ticker] = float(in_range["close"].iloc[-1])
         final_value = state.portfolio_value(final_prices)
         bh_value = portfolio.available_cash + sum(
-            state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
+            state.bh_positions.get(ticker, 0) * final_prices.get(ticker, 0) for ticker in state.bh_positions
         )
 
         # Close the final TWR sub-period and compound all periods.
         state.close_twr_period(final_value)
         twr = math.prod(state.twr_periods) - 1.0
 
-        sv = state.starting_value
-        spbh = state.split_bh_value
+        starting_val = state.starting_value
+        split_bh_val = state.split_bh_value
 
         if split_date:
-            train_trades = [t for t in state.trades if t.date < split_date]
-            test_trades = [t for t in state.trades if t.date >= split_date]
+            train_trades = [trade for trade in state.trades if trade.date < split_date]
+            test_trades = [trade for trade in state.trades if trade.date >= split_date]
         else:
             train_trades = list(state.trades)
             test_trades = []
@@ -1115,12 +1164,12 @@ class BacktestEngine:
         split_idx = state.twr_split_idx
         if split_idx is not None:
             train_twr = 1.0
-            for p in state.twr_periods[:split_idx]:
-                train_twr *= p
+            for period in state.twr_periods[:split_idx]:
+                train_twr *= period
             train_twr -= 1.0
             test_twr = 1.0
-            for p in state.twr_periods[split_idx:]:
-                test_twr *= p
+            for period in state.twr_periods[split_idx:]:
+                test_twr *= period
             test_twr -= 1.0
         else:
             train_twr = twr
@@ -1128,15 +1177,23 @@ class BacktestEngine:
 
         train_return = train_twr
         test_return = test_twr
-        train_bh_return = (spbh - sv) / sv if spbh is not None and sv > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
-        test_bh_return = (
-            (bh_value - spbh) / spbh if spbh is not None and spbh > 0 else (bh_value - sv) / sv if sv > 0 else 0.0
-        )
+        if split_bh_val is not None and starting_val > 0:
+            train_bh_return = (split_bh_val - starting_val) / starting_val
+        elif starting_val > 0:
+            train_bh_return = (bh_value - starting_val) / starting_val
+        else:
+            train_bh_return = 0.0
+        if split_bh_val is not None and split_bh_val > 0:
+            test_bh_return = (bh_value - split_bh_val) / split_bh_val
+        elif starting_val > 0:
+            test_bh_return = (bh_value - starting_val) / starting_val
+        else:
+            test_bh_return = 0.0
 
         # New metrics
         equity_curve = state.equity_curve
         total_days = (trading_days[-1] - trading_days[0]).days if len(trading_days) > 1 else 0
-        cagr = compute_cagr(sv, final_value, total_days)
+        cagr = compute_cagr(starting_val, final_value, total_days)
         max_drawdown = compute_max_drawdown(equity_curve)
         sharpe = compute_sharpe(equity_curve)
         sortino = compute_sortino(equity_curve)
@@ -1155,7 +1212,7 @@ class BacktestEngine:
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
-            starting_value=round(sv, 2),
+            starting_value=round(starting_val, 2),
             buy_and_hold_value=round(bh_value, 2),
             train_trades=train_trades,
             test_trades=test_trades,
@@ -1171,7 +1228,7 @@ class BacktestEngine:
             sharpe_ratio=round(sharpe, 4),
             sortino_ratio=round(sortino, 4),
             win_rate=round(win_rate, 4),
-            profit_factor=round(profit_factor, 4) if not math.isinf(profit_factor) else float("inf"),
+            profit_factor=(round(profit_factor, 4) if not math.isinf(profit_factor) else float("inf")),
             avg_win=round(avg_win, 2),
             avg_loss=round(avg_loss, 2),
             efficiency_ratio=round(efficiency, 4),
@@ -1196,7 +1253,7 @@ def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
 
 
 def _write_trades_csv(result: BacktestResult, path: Path) -> None:
-    sell_basis = {id(t): b for t, b in _pair_sells_with_basis(result.trades, result.basis_per_sell)}
+    sell_basis = {id(trade): basis for trade, basis in _pair_sells_with_basis(result.trades, result.basis_per_sell)}
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -1213,20 +1270,20 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
                 "return_pct",
             ]
         )
-        for t in result.trades:
+        for trade in result.trades:
             common = [
-                t.date.isoformat(),
-                t.ticker,
-                t.direction.value,
-                t.shares,
-                t.price,
-                t.strategy_name,
-                t.holding_period.value if t.holding_period else "",
+                trade.date.isoformat(),
+                trade.ticker,
+                trade.direction.value,
+                trade.shares,
+                trade.price,
+                trade.strategy_name,
+                trade.holding_period.value if trade.holding_period else "",
             ]
-            if t.direction == Direction.SELL:
-                basis = sell_basis.get(id(t), t.price)
-                pnl = round((t.price - basis) * t.shares, 4)
-                ret = round((t.price - basis) / basis, 6) if basis != 0 else 0.0
+            if trade.direction == Direction.SELL:
+                basis = sell_basis.get(id(trade), trade.price)
+                pnl = round((trade.price - basis) * trade.shares, 4)
+                ret = round((trade.price - basis) / basis, 6) if basis != 0 else 0.0
                 writer.writerow([*common, round(basis, 4), pnl, ret])
             else:
                 writer.writerow([*common, "", "", ""])
@@ -1237,17 +1294,17 @@ def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["date", "nav", "drawdown"])
-        for (d, nav), dd in zip(result.equity_curve, drawdowns, strict=True):
-            writer.writerow([d.isoformat(), round(nav, 2), round(dd, 6)])
+        for (dt, nav), drawdown in zip(result.equity_curve, drawdowns, strict=True):
+            writer.writerow([dt.isoformat(), round(nav, 2), round(drawdown, 6)])
 
 
 def _write_summary_json(result: BacktestResult, path: Path) -> None:
-    sv = result.starting_value
-    total_return = (result.final_value - sv) / sv if sv > 0 else 0.0
-    bh_return = (result.buy_and_hold_value - sv) / sv if sv > 0 else 0.0
+    starting_val = result.starting_value
+    total_return = (result.final_value - starting_val) / starting_val if starting_val > 0 else 0.0
+    bh_return = (result.buy_and_hold_value - starting_val) / starting_val if starting_val > 0 else 0.0
 
     summary: dict[str, object] = {
-        "starting_value": sv,
+        "starting_value": starting_val,
         "final_value": result.final_value,
         "total_return": round(total_return, 6),
         "cagr": result.cagr,
@@ -1288,30 +1345,30 @@ def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
         writer.writerow(["strategy", "ticker", "trades", "buys", "sells", "win_rate", "pnl"])
 
         # Per-(strategy, ticker) rows
-        for s in result.strategy_stats:
+        for stat in result.strategy_stats:
             writer.writerow(
                 [
-                    s.name,
-                    s.ticker,
-                    s.trades,
-                    s.buys,
-                    s.sells,
-                    round(s.win_rate, 4) if s.sells > 0 else "",
-                    round(s.pnl, 2) if s.sells > 0 else "",
+                    stat.name,
+                    stat.ticker,
+                    stat.trades,
+                    stat.buys,
+                    stat.sells,
+                    round(stat.win_rate, 4) if stat.sells > 0 else "",
+                    round(stat.pnl, 2) if stat.sells > 0 else "",
                 ]
             )
 
         # Aggregate per-strategy rows
-        for a in aggregate_strategy_stats(result.strategy_stats):
+        for agg in aggregate_strategy_stats(result.strategy_stats):
             writer.writerow(
                 [
-                    a.name,
+                    agg.name,
                     "*",
-                    a.trades,
-                    a.buys,
-                    a.sells,
-                    a.win_rate if a.sells > 0 else "",
-                    a.pnl if a.sells > 0 else "",
+                    agg.trades,
+                    agg.buys,
+                    agg.sells,
+                    agg.win_rate if agg.sells > 0 else "",
+                    agg.pnl if agg.sells > 0 else "",
                 ]
             )
 

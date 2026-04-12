@@ -20,9 +20,9 @@ class GapDownRecovery(EntrySignal):
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         close = price_history.close
         opens = price_history.open
-        n = len(close)
-        scores = np.full(n, np.nan)
-        if n < 2:
+        num_bars = len(close)
+        scores = np.full(num_bars, np.nan)
+        if num_bars < 2:
             return scores
         prev_close = close[:-1]
         today_open = opens[1:]

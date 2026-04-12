@@ -55,7 +55,7 @@ MIN_WARMUP_CALENDAR_DAYS = 30
 
 def max_warmup(strategies: Iterable[Strategy]) -> int:
     """Largest ``warmup_period`` across an iterable of strategies (0 if empty)."""
-    return max((s.warmup_period for s in strategies), default=0)
+    return max((strat.warmup_period for strat in strategies), default=0)
 
 
 def warmup_bars_to_calendar_days(bars: int) -> int:

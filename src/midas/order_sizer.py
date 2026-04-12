@@ -75,8 +75,8 @@ class OrderSizer:
         current_weights: dict[str, float] = {}
         for ticker in allocation.targets:
             pos = positions.get(ticker, 0.0)
-            px = prices.get(ticker, 0.0)
-            current_weights[ticker] = (pos * px) / total_value
+            price = prices.get(ticker, 0.0)
+            current_weights[ticker] = (pos * price) / total_value
 
         # Circuit breaker: cap daily deployment.
         max_deploy = total_value * self._circuit_breaker_pct
@@ -92,8 +92,8 @@ class OrderSizer:
             if delta < constraints.min_buy_delta:
                 continue
 
-            px = prices.get(ticker, 0.0)
-            if px <= 0:
+            price = prices.get(ticker, 0.0)
+            if price <= 0:
                 continue
 
             # Every buy must be attributable to a positive entry-signal
@@ -104,7 +104,7 @@ class OrderSizer:
             # exactly the phantom-buy bug. Suppress and warn instead of
             # emitting an order with an empty source.
             contribs = allocation.contributions.get(ticker, {})
-            positive = {k: v for k, v in contribs.items() if v > 0}
+            positive = {name: val for name, val in contribs.items() if val > 0}
             if not positive:
                 logger.warning(
                     "Suppressing buy for %s: positive delta %.4f with no "
@@ -116,8 +116,8 @@ class OrderSizer:
                 continue
 
             buy_value = delta * total_value
-            slip_price = px * (1 + self._default_slippage)
-            shares = math.floor(buy_value / px)
+            slip_price = price * (1 + self._default_slippage)
+            shares = math.floor(buy_value / price)
 
             # Cash constraint.
             affordable = math.floor(available / slip_price)
@@ -177,18 +177,18 @@ class OrderSizer:
                 continue
 
             pos = positions.get(ticker, 0.0)
-            px = prices.get(ticker, 0.0)
-            if pos <= 0 or px <= 0:
+            price = prices.get(ticker, 0.0)
+            if pos <= 0 or price <= 0:
                 continue
 
-            current_w = (pos * px) / total_value
+            current_w = (pos * price) / total_value
             delta = current_w - clamped_w
             if delta <= 0:
                 continue
 
             sell_value = delta * total_value
-            slip_price = px * (1 - self._default_slippage)
-            shares = math.floor(sell_value / px)
+            slip_price = price * (1 - self._default_slippage)
+            shares = math.floor(sell_value / price)
             shares = min(shares, math.floor(pos))
             if shares <= 0:
                 continue
@@ -231,8 +231,8 @@ class OrderSizer:
         reason = (
             f"Buy {ticker}: target {target_weight:.1%} vs current {current_weight:.1%} (blended score {blended:+.3f})"
         )
-        positive = {k: v for k, v in contribs.items() if v > 0}
-        source = max(positive, key=lambda k: positive[k])
+        positive = {name: val for name, val in contribs.items() if val > 0}
+        source = max(positive, key=lambda name: positive[name])
         return OrderContext(
             contributions=contribs,
             blended_score=blended,
