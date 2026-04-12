@@ -21,18 +21,18 @@ class DonchianBreakout(EntrySignal):
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         highs = price_history.high
         close = price_history.close
-        n = len(close)
-        w = self._window
-        scores = np.full(n, np.nan)
-        if n < w + 1:
+        num_bars = len(close)
+        window = self._window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < window + 1:
             return scores
-        windows = np.lib.stride_tricks.sliding_window_view(highs[:-1], w)
+        windows = np.lib.stride_tricks.sliding_window_view(highs[:-1], window)
         prior_highs = windows.max(axis=1)
-        current = close[w:]
+        current = close[window:]
         with np.errstate(divide="ignore", invalid="ignore"):
             excess_pct = np.where(prior_highs > 0, (current - prior_highs) / prior_highs, 0.0)
         raw = np.where(current > prior_highs, excess_pct / self._breakout_scale, 0.0)
-        scores[w:] = np.clip(raw, 0.0, 1.0)
+        scores[window:] = np.clip(raw, 0.0, 1.0)
         return scores
 
     def score(

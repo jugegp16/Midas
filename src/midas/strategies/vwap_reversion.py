@@ -34,42 +34,42 @@ class VWAPReversion(EntrySignal):
         typical price.
         """
         close = price_history.close
-        n = len(close)
-        w = self._window
-        if n < w:
+        num_bars = len(close)
+        window = self._window
+        if num_bars < window:
             return None
         typical = (price_history.high + price_history.low + close) / 3.0
-        cs_t = np.empty(n + 1)
+        cs_t = np.empty(num_bars + 1)
         cs_t[0] = 0.0
         np.cumsum(typical, out=cs_t[1:])
-        typical_sum = cs_t[w:] - cs_t[:-w]
+        typical_sum = cs_t[window:] - cs_t[:-window]
         if price_history.volume is None:
-            return typical_sum / w
+            return typical_sum / window
         volume = price_history.volume
-        cs_pv = np.empty(n + 1)
+        cs_pv = np.empty(num_bars + 1)
         cs_pv[0] = 0.0
         np.cumsum(typical * volume, out=cs_pv[1:])
-        cs_v = np.empty(n + 1)
+        cs_v = np.empty(num_bars + 1)
         cs_v[0] = 0.0
         np.cumsum(volume, out=cs_v[1:])
-        pv_sum = cs_pv[w:] - cs_pv[:-w]
-        v_sum = cs_v[w:] - cs_v[:-w]
-        sma = typical_sum / w
+        pv_sum = cs_pv[window:] - cs_pv[:-window]
+        v_sum = cs_v[window:] - cs_v[:-window]
+        sma = typical_sum / window
         return np.where(v_sum > 0, pv_sum / np.where(v_sum > 0, v_sum, 1.0), sma)
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         close = price_history.close
-        n = len(close)
-        w = self._window
-        scores = np.full(n, np.nan)
-        if n < w:
+        num_bars = len(close)
+        window = self._window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < window:
             return scores
         vwap = self._rolling_vwap(price_history)
-        assert vwap is not None  # n >= w
-        current = close[w - 1 :]
+        assert vwap is not None  # num_bars >= window
+        current = close[window - 1 :]
         with np.errstate(divide="ignore", invalid="ignore"):
             deviation = np.where(vwap != 0, (current - vwap) / vwap, 0.0)
-        scores[w - 1 :] = np.clip(-deviation / self._threshold, 0.0, 1.0)
+        scores[window - 1 :] = np.clip(-deviation / self._threshold, 0.0, 1.0)
         return scores
 
     def score(

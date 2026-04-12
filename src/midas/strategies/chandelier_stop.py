@@ -35,16 +35,16 @@ class ChandelierStop(ExitRule):
         simple mean (no iteration). With more, the exponential decay tail
         matches Wilder's original definition and most charting tools.
         """
-        n = len(close)
-        tr = np.empty(n)
+        num_bars = len(close)
+        tr = np.empty(num_bars)
         tr[0] = high[0] - low[0]
-        if n > 1:
+        if num_bars > 1:
             prev_c = close[:-1]
             tr[1:] = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - prev_c), np.abs(low[1:] - prev_c)])
-        w = self._window
-        atr = float(tr[:w].mean())
-        for t in range(w, n):
-            atr = ((w - 1) * atr + float(tr[t])) / w
+        window = self._window
+        atr = float(tr[:window].mean())
+        for idx in range(window, num_bars):
+            atr = ((window - 1) * atr + float(tr[idx])) / window
         return atr
 
     def _stop_level(self, price_history: PriceHistory) -> tuple[float, float, float] | None:

@@ -70,7 +70,7 @@ class PriceHistory:
         objects (provider contract). Values are copied into numpy arrays.
         """
         required = ("open", "high", "low", "close")
-        missing = [c for c in required if c not in df.columns]
+        missing = [col for col in required if col not in df.columns]
         if missing:
             msg = f"PriceHistory requires columns {required}; missing: {missing}"
             raise ValueError(msg)

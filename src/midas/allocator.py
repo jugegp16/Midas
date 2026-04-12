@@ -62,7 +62,7 @@ class Allocator:
         constraints: AllocationConstraints,
         n_tickers: int,
     ) -> None:
-        self._entries: list[_ScoredEntry] = [_ScoredEntry(s, w) for s, w in entries]
+        self._entries: list[_ScoredEntry] = [_ScoredEntry(strat, wt) for strat, wt in entries]
         self._constraints = constraints
         self._n_tickers = n_tickers
         self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
@@ -92,7 +92,7 @@ class Allocator:
 
     @property
     def strategies(self) -> list[EntrySignal]:
-        return [e.strategy for e in self._entries]
+        return [entry.strategy for entry in self._entries]
 
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
         """Precompute entry-signal scores for all tickers over the full price arrays."""
@@ -137,13 +137,13 @@ class Allocator:
             and blended scores.
         """
         ctx = context or {}
-        cur_w = current_weights or {}
-        n = len(tickers)
-        if n == 0:
+        cur_weights = current_weights or {}
+        num_tickers = len(tickers)
+        if num_tickers == 0:
             return AllocationResult({}, {}, {})
 
         investable = 1.0 - self._constraints.min_cash_pct
-        base_weight = investable / n  # fallback when current_weights unknown
+        base_weight = investable / num_tickers  # fallback when current_weights unknown
         temperature = self._constraints.softmax_temperature
 
         contributions: dict[str, dict[str, float]] = {}
@@ -172,12 +172,12 @@ class Allocator:
             weight_total = 0.0
 
             for entry in self._entries:
-                hit, s = self._lookup_score(entry.strategy, ticker, len(history))
+                hit, score = self._lookup_score(entry.strategy, ticker, len(history))
                 if not hit:
-                    s = entry.strategy.score(history, **ticker_ctx)
-                if s is not None:
-                    ticker_contributions[entry.strategy.name] = s
-                    weighted_sum += entry.weight * s
+                    score = entry.strategy.score(history, **ticker_ctx)
+                if score is not None:
+                    ticker_contributions[entry.strategy.name] = score
+                    weighted_sum += entry.weight * score
                     weight_total += entry.weight
 
             contributions[ticker] = ticker_contributions
@@ -194,13 +194,13 @@ class Allocator:
         def _held_target(ticker: str) -> float:
             if current_weights is None:
                 return base_weight
-            return cur_w.get(ticker, 0.0)
+            return cur_weights.get(ticker, 0.0)
 
         held_total = 0.0
-        for t in held:
-            w = _held_target(t)
-            targets[t] = w
-            held_total += w
+        for ticker in held:
+            weight = _held_target(ticker)
+            targets[ticker] = weight
+            held_total += weight
 
         budget_for_active = max(investable - held_total, 0.0)
 
@@ -231,16 +231,16 @@ class Allocator:
             T → ∞   uniform split regardless of conviction
         """
         if not tickers or budget <= 0:
-            for t in tickers:
-                targets[t] = 0.0
+            for ticker in tickers:
+                targets[ticker] = 0.0
             return
-        t_safe = max(temperature, MIN_TEMPERATURE)
+        temp_safe = max(temperature, MIN_TEMPERATURE)
         # Subtract max for numerical stability — softmax is translation-invariant.
-        max_score = max(blended_scores[t] for t in tickers)
-        exps = {t: math.exp((blended_scores[t] - max_score) / t_safe) for t in tickers}
-        z = sum(exps.values())
-        for t in tickers:
-            targets[t] = budget * exps[t] / z
+        max_score = max(blended_scores[ticker] for ticker in tickers)
+        exps = {ticker: math.exp((blended_scores[ticker] - max_score) / temp_safe) for ticker in tickers}
+        total_exp = sum(exps.values())
+        for ticker in tickers:
+            targets[ticker] = budget * exps[ticker] / total_exp
 
     def _apply_cap_with_redistribution(
         self,
@@ -261,18 +261,18 @@ class Allocator:
         budget = initial_budget
         # At most one iteration per ticker (each pass pins at least one).
         for _ in range(len(active) + 1):
-            over = [t for t in survivors if targets[t] > cap + 1e-12]
+            over = [ticker for ticker in survivors if targets[ticker] > cap + 1e-12]
             if not over:
                 return
-            for t in over:
-                targets[t] = cap
+            for ticker in over:
+                targets[ticker] = cap
                 budget -= cap
-                survivors.remove(t)
+                survivors.remove(ticker)
             if not survivors or budget <= 0:
                 # Caps consumed the entire investable budget. Survivors get
                 # zero new allocation; they'll naturally drift until an
                 # ExitRule fires.
-                for t in survivors:
-                    targets[t] = 0.0
+                for ticker in survivors:
+                    targets[ticker] = 0.0
                 return
             self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)

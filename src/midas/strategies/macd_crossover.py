@@ -43,10 +43,10 @@ class MACDCrossover(EntrySignal):
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         prices = price_history.close
-        n = len(prices)
+        num_bars = len(prices)
         min_len = self._slow_period + self._signal_period
-        scores = np.full(n, np.nan)
-        if n < min_len:
+        scores = np.full(num_bars, np.nan)
+        if num_bars < min_len:
             return scores
         fast_ema = ema(prices, self._fast_period)
         slow_ema = ema(prices, self._slow_period)

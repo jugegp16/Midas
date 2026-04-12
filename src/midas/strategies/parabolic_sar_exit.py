@@ -35,8 +35,8 @@ class ParabolicSARExit(ExitRule):
         downtrend extreme point, and flips the trend when SAR crosses LOW
         (uptrend) or HIGH (downtrend).
         """
-        n = len(high)
-        if n < 2:
+        num_bars = len(high)
+        if num_bars < 2:
             return None
 
         h0, h1 = float(high[0]), float(high[1])
@@ -50,7 +50,7 @@ class ParabolicSARExit(ExitRule):
             ep = min(l0, l1)
         af = self._af_start
 
-        for i in range(2, n):
+        for i in range(2, num_bars):
             sar = sar + af * (ep - sar)
             hi = float(high[i])
             lo = float(low[i])

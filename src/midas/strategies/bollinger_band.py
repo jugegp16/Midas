@@ -20,25 +20,25 @@ class BollingerBand(EntrySignal):
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         prices = price_history.close
-        n = len(prices)
-        w = self._window
-        scores = np.full(n, np.nan)
-        if n < w:
+        num_bars = len(prices)
+        window = self._window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < window:
             return scores
-        cs = np.empty(n + 1)
+        cs = np.empty(num_bars + 1)
         cs[0] = 0.0
         np.cumsum(prices, out=cs[1:])
-        sq_cs = np.empty(n + 1)
+        sq_cs = np.empty(num_bars + 1)
         sq_cs[0] = 0.0
         np.cumsum(prices**2, out=sq_cs[1:])
-        rolling_sum = cs[w:] - cs[:-w]
-        rolling_sq = sq_cs[w:] - sq_cs[:-w]
-        ma = rolling_sum / w
-        variance = (rolling_sq / w - ma**2) * w / (w - 1)
+        rolling_sum = cs[window:] - cs[:-window]
+        rolling_sq = sq_cs[window:] - sq_cs[:-window]
+        ma = rolling_sum / window
+        variance = (rolling_sq / window - ma**2) * window / (window - 1)
         std = np.sqrt(np.maximum(variance, 0.0))
-        current = prices[w - 1 :]
-        z = np.where(std != 0, (current - ma) / std, 0.0)
-        scores[w - 1 :] = np.clip(-z / self._num_std, 0.0, 1.0)
+        current = prices[window - 1 :]
+        z_score = np.where(std != 0, (current - ma) / std, 0.0)
+        scores[window - 1 :] = np.clip(-z_score / self._num_std, 0.0, 1.0)
         return scores
 
     def score(
@@ -62,8 +62,8 @@ class BollingerBand(EntrySignal):
         # negative z (below MA) ramps from 0 at the MA to 1 at the lower band.
         # The bearish "above upper band" half is dropped — exits are handled
         # by ExitRule strategies.
-        z = (current - ma) / std
-        return self.clamp(-z / self._num_std, 0.0, 1.0)
+        z_score = (current - ma) / std
+        return self.clamp(-z_score / self._num_std, 0.0, 1.0)
 
     @property
     def suitability(self) -> list[AssetSuitability]:

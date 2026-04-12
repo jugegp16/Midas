@@ -20,19 +20,19 @@ class Momentum(EntrySignal):
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         prices = price_history.close
-        n = len(prices)
-        w = self._window
-        scores = np.full(n, np.nan)
-        if n < w:
+        num_bars = len(prices)
+        window = self._window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < window:
             return scores
-        cs = np.empty(n + 1)
+        cs = np.empty(num_bars + 1)
         cs[0] = 0.0
         np.cumsum(prices, out=cs[1:])
-        ma = (cs[w:] - cs[:-w]) / w
-        current = prices[w - 1 :]
+        ma = (cs[window:] - cs[:-window]) / window
+        current = prices[window - 1 :]
         pct_from_ma = np.where(ma != 0, (current - ma) / ma, 0.0)
         raw = np.where(pct_from_ma > 0, pct_from_ma / self._momentum_scale, 0.0)
-        scores[w - 1 :] = np.clip(raw, 0.0, 1.0)
+        scores[window - 1 :] = np.clip(raw, 0.0, 1.0)
         return scores
 
     def score(

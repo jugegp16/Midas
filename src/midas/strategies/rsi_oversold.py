@@ -22,10 +22,10 @@ class RSIOversold(EntrySignal):
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
         prices = price_history.close
-        n = len(prices)
-        w = self._window
-        scores = np.full(n, np.nan)
-        if n < w + 1:
+        num_bars = len(prices)
+        window = self._window
+        scores = np.full(num_bars, np.nan)
+        if num_bars < window + 1:
             return scores
         deltas = np.diff(prices)
         gains = np.where(deltas > 0, deltas, 0.0)
@@ -36,8 +36,8 @@ class RSIOversold(EntrySignal):
         l_cs = np.empty(len(losses) + 1)
         l_cs[0] = 0.0
         np.cumsum(losses, out=l_cs[1:])
-        avg_gain = (g_cs[w:] - g_cs[:-w]) / w
-        avg_loss = (l_cs[w:] - l_cs[:-w]) / w
+        avg_gain = (g_cs[window:] - g_cs[:-window]) / window
+        avg_loss = (l_cs[window:] - l_cs[:-window]) / window
         result = np.zeros(len(avg_gain))
         valid = avg_loss != 0
         rs = np.where(valid, avg_gain / np.where(valid, avg_loss, 1.0), 0.0)
@@ -47,7 +47,7 @@ class RSIOversold(EntrySignal):
         if scale != 0:
             below_mid = valid & (rsi < midpoint)
             result[below_mid] = np.clip((midpoint - rsi[below_mid]) / scale, 0.0, 1.0)
-        scores[w:] = result
+        scores[window:] = result
         return scores
 
     def score(

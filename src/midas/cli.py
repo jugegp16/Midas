@@ -79,15 +79,15 @@ def _fetch_prices(
     """
     provider = CachedYFinanceProvider()
     price_data: dict[str, pd.DataFrame] = {}
-    tickers = [h.ticker for h in portfolio.holdings]
+    tickers = [holding.ticker for holding in portfolio.holdings]
     buffer_days = warmup_bars_to_calendar_days(warmup_bars)
     fetch_start = start - timedelta(days=buffer_days)
     print_status(f"Fetching data for {', '.join(tickers)} (with {buffer_days}-day warmup buffer from {fetch_start})...")
     for ticker in tickers:
         try:
             price_data[ticker] = provider.get_history(ticker, fetch_start, end)
-        except Exception as e:
-            print_status(f"Skipping {ticker}: {e}")
+        except Exception as exc:
+            print_status(f"Skipping {ticker}: {exc}")
     return price_data
 
 
@@ -153,7 +153,7 @@ def backtest(
 
     start_d, end_d = _to_date(start), _to_date(end)
 
-    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
@@ -213,7 +213,7 @@ def live(
     strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
     provider = CachedYFinanceProvider()
 
-    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
@@ -330,11 +330,11 @@ def optimize(
     min_cash_pct = AllocationConstraints().min_cash_pct
     if strategies:
         strat_configs, strat_constraints = load_strategies(Path(strategies))
-        strategy_names = [c.name for c in strat_configs]
+        strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
-    n_tickers = sum(1 for h in port.holdings if h.shares > 0)
+    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, n_tickers)
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
@@ -378,17 +378,17 @@ def optimize(
         fold_table.add_column("Sharpe", justify="right")
         fold_table.add_column("Sortino", justify="right")
         fold_table.add_column("Win Rate", justify="right")
-        for f in wf_result.folds:
+        for fold in wf_result.folds:
             fold_table.add_row(
-                str(f.fold),
-                f"{f.train_start} → {f.train_end}",
-                f"{f.test_start} → {f.test_end}",
-                f"{f.train_return:.2%}",
-                color_signed(f.test_return),
-                f"[red]{f.max_drawdown:.2%}[/red]",
-                color_signed(f.sharpe_ratio, fmt=".2f"),
-                color_signed(f.sortino_ratio, fmt=".2f"),
-                f"{f.win_rate:.0%}" if f.win_rate > 0 else "—",
+                str(fold.fold),
+                f"{fold.train_start} → {fold.train_end}",
+                f"{fold.test_start} → {fold.test_end}",
+                f"{fold.train_return:.2%}",
+                color_signed(fold.test_return),
+                f"[red]{fold.max_drawdown:.2%}[/red]",
+                color_signed(fold.sharpe_ratio, fmt=".2f"),
+                color_signed(fold.sortino_ratio, fmt=".2f"),
+                f"{fold.win_rate:.0%}" if fold.win_rate > 0 else "—",
             )
         print_centered(fold_table)
 
