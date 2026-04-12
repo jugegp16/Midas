@@ -151,6 +151,13 @@ Once you have a set of parameters (from the optimizer or hand-tuned), backtestin
 
 The backtest engine simulates the full pipeline over historical data, stepping through one trading day at a time. On each trading day, the engine runs the complete pipeline: cash infusion (if scheduled), entry-signal scoring, allocation, exit-rule target clamping, sell pass, buy pass, restriction filtering, and order execution. After execution, it updates positions, the lot list, cash balance, and the trade log.
 
+**Execution Lag** -- By default the backtest fills at the **next bar's open** (`--execution-mode=next_open`). Signals read at day T's close can only be acted on after the bell rings again, so orders computed from T's history fill at T+1's open price. This matches what a real operator can actually do: see the close, compute a decision overnight, send the order, let it fill at the open. Two other modes are available:
+
+- `next_close` — fill at T+1's close (market-on-close at the next session). Useful when you model end-of-day rebalancing.
+- `close` — fill at T's close, same bar the signal was computed from. **Optimistic.** This is the old default, preserved for regression pinning and for comparing against the lookahead bias in prior reports — not a realistic live simulation.
+
+Under lagged modes the decision computed on the *final* simulated bar never executes — there is no T+1 bar inside the window. That matches reality: an order placed after the last session cannot fill inside the backtest. Switching from `close` to `next_open` typically trims 50–200 bps/yr off reported returns depending on how quickly strategies react to closes (mean reversion and RSI-family signals lose the most).
+
 **Lot Tracking and Cost Basis** -- The engine tracks individual purchase lots as a `list[PositionLot]` per ticker. Every buy fill appends a new lot at the execution price; every sell consumes lots FIFO (first-in, first-out). Exit rules evaluate at the aggregate level — they see a share-weighted average cost basis and a per-ticker high-water mark, not individual lots. FIFO execution is the standard US broker default and the method used by every major backtesting framework (LEAN, Zipline, Backtrader). See [Lot Tracking](#lot-tracking) for details. Trades are classified as short-term (held less than 365 days) or long-term for tax awareness.
 
 > **Note on initial cost basis.** The backtest seeds each starting position's cost basis from the *start-day market price*, not the YAML `cost_basis`. The YAML value is the user's real purchase basis (used by the live engine and for display), but using it inside a backtest would let exit rules fire on pre-window gains, distorting strategy performance.

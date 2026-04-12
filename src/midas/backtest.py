@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -99,6 +100,22 @@ class BacktestResult:
     basis_per_sell: list[float]  # cost basis for each SELL trade (parallel list)
 
 
+ExecutionMode = Literal["close", "next_open", "next_close"]
+"""When orders computed on day T actually execute.
+
+- ``"close"`` — day T close (legacy, optimistic; signals see the bar they
+  trade on). Useful for pinning regression tests but not a realistic
+  simulation of live trading.
+- ``"next_open"`` — day T+1 open (honest default; orders submitted at T's
+  close fill at the next session's open).
+- ``"next_close"`` — day T+1 close (market-on-close at the next session).
+
+Under lagged modes the last simulated day's decision never executes —
+there is no T+1 bar in the window. That matches reality: an order placed
+after the final session can't fill inside the backtest.
+"""
+
+
 @dataclass
 class _TickerIndex:
     """Pre-computed PriceHistory and cursor for a single ticker's price data."""
@@ -106,6 +123,41 @@ class _TickerIndex:
     dates: list[date]
     history: PriceHistory
     ptr: int = 0
+
+
+@dataclass
+class _Decision:
+    """Allocator+exit-rule output, deferred for later execution under lag.
+
+    ``allocation.targets`` is the *clamped* target weight dict (after
+    exit rules reduced the raw allocator proposal). ``clamp_attribution``
+    records which exit rule fired per ticker for sell-side attribution.
+    Under ``execution_mode="close"`` the decision is sized and executed
+    the same tick; under lagged modes it is stored on ``_SimState.pending``
+    and re-sized against the next bar's prices when it fills.
+    """
+
+    allocation: AllocationResult
+    clamp_attribution: dict[str, tuple[str, str]]
+    active_tickers: list[str]
+    decision_day: date
+
+    def filtered(self, available: set[str]) -> _Decision | None:
+        """Return a copy keeping only tickers in *available*, or None if empty."""
+        active = [t for t in self.active_tickers if t in available]
+        if not active:
+            return None
+        keep = set(active)
+        return _Decision(
+            allocation=AllocationResult(
+                targets={t: w for t, w in self.allocation.targets.items() if t in keep},
+                contributions={t: v for t, v in self.allocation.contributions.items() if t in keep},
+                blended_scores={t: v for t, v in self.allocation.blended_scores.items() if t in keep},
+            ),
+            clamp_attribution={k: v for k, v in self.clamp_attribution.items() if k in keep},
+            active_tickers=active,
+            decision_day=self.decision_day,
+        )
 
 
 @dataclass
@@ -140,6 +192,27 @@ class _SimState:
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    # Decision made at the previous decision day, waiting to execute on
+    # the current bar under ``execution_mode="next_open"|"next_close"``.
+    # Always ``None`` under legacy ``execution_mode="close"``.
+    pending: _Decision | None = None
+
+    def portfolio_value(self, close_prices: dict[str, float]) -> float:
+        """Cash + mark-to-market of held positions at *close_prices*."""
+        return self.cash + sum(
+            shares * close_prices[t] for t, shares in self.positions.items() if shares > 0 and t in close_prices
+        )
+
+    def close_twr_period(self, current_value: float) -> None:
+        """Close a TWR sub-period and reset the base for the next one."""
+        if self.twr_base_value > 0:
+            self.twr_periods.append(current_value / self.twr_base_value)
+        self.twr_base_value = current_value
+
+
+def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
+    """Latest close price for every ticker in *current_data*."""
+    return {t: float(current_data[t].close[-1]) for t in current_data}
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -312,6 +385,7 @@ class BacktestEngine:
         train_pct: float = DEFAULT_TRAIN_PCT,
         enable_split: bool = True,
         log_fn: Callable[[str], None] | None = None,
+        execution_mode: ExecutionMode = "next_open",
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -320,6 +394,7 @@ class BacktestEngine:
         self._train_pct = train_pct
         self._enable_split = enable_split
         self._log = log_fn or (lambda _msg: None)
+        self._execution_mode: ExecutionMode = execution_mode
 
     def run(
         self,
@@ -529,8 +604,7 @@ class BacktestEngine:
         deferred_activated: set[str] = set()
 
         for day in trading_days:
-            if state.last_day != day:
-                state.last_day = day
+            state.last_day = day
 
             # Advance pointers and build current slices
             current_data: dict[str, PriceHistory] = {}
@@ -551,29 +625,17 @@ class BacktestEngine:
 
             # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
-                split_val = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
-                )
-                state.split_value = split_val
+                closes = _close_prices(current_data)
+                state.split_value = state.portfolio_value(closes)
                 state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
+                    state.bh_positions.get(t, 0) * closes.get(t, 0) for t in state.bh_positions
                 )
-                # Close current TWR sub-period at the split boundary.
-                if state.twr_base_value > 0:
-                    state.twr_periods.append(split_val / state.twr_base_value)
-                    state.twr_base_value = split_val
+                state.close_twr_period(state.split_value)
                 state.twr_split_idx = len(state.twr_periods)
 
-            # Phased allocator flow
             self._run_day(state, portfolio, current_data, day)
 
-            # Record equity curve snapshot
-            day_value = state.cash + sum(
-                state.positions.get(t, 0) * float(current_data[t].close[-1])
-                for t in current_data
-                if state.positions.get(t, 0) > 0
-            )
-            state.equity_curve.append((day, day_value))
+            state.equity_curve.append((day, state.portfolio_value(_close_prices(current_data))))
 
     def _activate_deferred(
         self,
@@ -595,13 +657,8 @@ class BacktestEngine:
                 # the newly activated ticker), then reset the base to include
                 # the new position. Otherwise the new capital would be counted
                 # as pure return by the closing final_value / twr_base ratio.
-                pre_activation_value = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t].close[-1])
-                    for t in current_data
-                    if state.positions.get(t, 0) > 0
-                )
-                if state.twr_base_value > 0:
-                    state.twr_periods.append(pre_activation_value / state.twr_base_value)
+                pre_activation_value = state.portfolio_value(_close_prices(current_data))
+                state.close_twr_period(pre_activation_value)
                 state.twr_base_value = pre_activation_value + added_value
 
                 state.positions[ticker] = shares
@@ -624,67 +681,117 @@ class BacktestEngine:
         current_data: dict[str, PriceHistory],
         day: date,
     ) -> None:
-        # Credit cash infusion if it lands on or before today.
-        # For TWR: snapshot portfolio value before the infusion to close
-        # the current sub-period, then reset the base after the infusion.
-        infusion = portfolio.cash_infusion
-        if infusion and infusion.next_date <= day:
-            pre_infusion_value = state.cash + sum(
-                state.positions.get(t, 0) * float(current_data[t].close[-1])
-                for t in current_data
-                if state.positions.get(t, 0) > 0
-            )
-            if state.twr_base_value > 0:
-                state.twr_periods.append(pre_infusion_value / state.twr_base_value)
-            state.cash += infusion.amount
-            state.twr_base_value = pre_infusion_value + infusion.amount
-            infusion.advance()
+        """Single-day tick: credit cash, execute any pending, decide, maybe execute.
 
-        # Build price arrays and current prices for active tickers
+        Under ``close`` mode, today's decision executes immediately at
+        today's close.  Under ``next_open``/``next_close``, today's
+        decision is stashed as ``pending`` and fills on the next bar.
+        The last simulated day's decision under lag modes intentionally
+        never executes — there is no T+1 bar in the window.
+        """
+        self._credit_cash_infusion(state, portfolio, current_data, day)
+
+        # Execute yesterday's pending decision at today's prices.
+        if state.pending is not None:
+            pending = state.pending.filtered(set(current_data))
+            if pending is not None:
+                price_field = "open" if self._execution_mode == "next_open" else "close"
+                exec_prices = {t: float(getattr(current_data[t], price_field)[-1]) for t in pending.active_tickers}
+                self._size_and_execute(state, pending, exec_prices, day)
+            state.pending = None
+
+        self._update_high_water_marks(state, current_data)
+        decision = self._decide(state, current_data, day)
+        if decision is None:
+            return
+
+        if self._execution_mode == "close":
+            self._size_and_execute(state, decision, _close_prices(current_data), day)
+        else:
+            state.pending = decision
+
+    def _credit_cash_infusion(
+        self,
+        state: _SimState,
+        portfolio: PortfolioConfig,
+        current_data: dict[str, PriceHistory],
+        day: date,
+    ) -> None:
+        """Credit a due cash infusion, closing the current TWR sub-period.
+
+        A fresh deposit is indistinguishable from return unless we
+        snapshot portfolio value *before* crediting and reset the TWR
+        base *after*. Otherwise the final_value / twr_base ratio rolls
+        the infusion into return, inflating the sim's reported TWR.
+        """
+        infusion = portfolio.cash_infusion
+        if not infusion or infusion.next_date > day:
+            return
+        pre_infusion_value = state.portfolio_value(_close_prices(current_data))
+        state.close_twr_period(pre_infusion_value)
+        state.cash += infusion.amount
+        state.twr_base_value = pre_infusion_value + infusion.amount
+        infusion.advance()
+
+    def _update_high_water_marks(
+        self,
+        state: _SimState,
+        current_data: dict[str, PriceHistory],
+    ) -> None:
+        """Bump per-ticker HWM to today's close on still-held positions.
+
+        Read by ``TrailingStop`` and any other HWM-driven exit rule when
+        it clamps. Must run *before* ``_decide`` so today's decision sees
+        a fresh peak.
+        """
+        for ticker, pos in state.positions.items():
+            if pos > 0 and ticker in current_data:
+                px = float(current_data[ticker].close[-1])
+                state.high_water_marks[ticker] = max(px, state.high_water_marks.get(ticker, 0.0))
+
+    def _decide(
+        self,
+        state: _SimState,
+        current_data: dict[str, PriceHistory],
+        day: date,
+    ) -> _Decision | None:
+        """Run allocator (phase 1) and exit clamps (phase 2).
+
+        Returns ``None`` when there are no active tickers — nothing to
+        decide and nothing to execute. Otherwise returns a ``_Decision``
+        whose ``allocation.targets`` is the clamped weight dict and whose
+        ``clamp_attribution`` identifies which exit rule drove each
+        clamp for sell-side attribution.
+        """
         active_tickers = [t for t in state.positions if state.positions.get(t, 0) > 0 or t in current_data]
-        # Only include tickers that have price data
         active_tickers = [t for t in active_tickers if t in current_data]
 
         if not active_tickers:
-            return
+            return None
 
-        current_prices: dict[str, float] = {}
-        for ticker in active_tickers:
-            current_prices[ticker] = float(current_data[ticker].close[-1])
+        current_prices = _close_prices(current_data)
 
-        # Compute current portfolio weights so the allocator can hold
-        # (not drift-correct) tickers whose entry signals don't score today.
-        # Pass None (not {}) when the denominator is zero so the allocator
-        # falls back to its equal-weight baseline rather than anchoring held
-        # tickers at 0.
+        # Current portfolio weights so the allocator can hold (not
+        # drift-correct) tickers whose entry signals don't score today.
+        # Pass ``None`` (not ``{}``) when the denominator is zero so the
+        # allocator falls back to its equal-weight baseline rather than
+        # anchoring held tickers at 0.
         total_value = state.cash + sum(state.positions.get(t, 0.0) * current_prices[t] for t in active_tickers)
-        current_weights: dict[str, float] | None = None
-        if total_value > 0:
-            current_weights = {
-                t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers
-            }
+        current_weights: dict[str, float] | None = (
+            {t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers}
+            if total_value > 0
+            else None
+        )
 
-        # Update aggregate per-ticker high-water marks before exit rules
-        # evaluate. TrailingStop reads HWM to size its drawdown threshold.
-        for ticker in active_tickers:
-            if state.positions.get(ticker, 0.0) <= 0:
-                continue
-            px = current_prices[ticker]
-            prev = state.high_water_marks.get(ticker, 0.0)
-            if px > prev:
-                state.high_water_marks[ticker] = px
-
-        # Phase 1: Allocator scores entry signals and blends to target weights.
+        # Phase 1: allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
             active_tickers,
             current_data,
             current_weights=current_weights,
         )
 
-        positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
-
-        # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).
-        # Each rule can only reduce a target, never increase. First clamper
+        # Phase 2: exit rules clamp targets downward (LEAN pattern). Each
+        # rule can only reduce a target, never increase. First clamper
         # wins attribution for that ticker.
         clamped_targets = dict(allocation.targets)
         clamp_attribution: dict[str, tuple[str, str]] = {}
@@ -704,52 +811,95 @@ class BacktestEngine:
                         reason = rule.clamp_reason(ticker, current_data[ticker], cost_basis, hwm)
                         clamp_attribution[ticker] = (rule.name, reason)
 
-        # Phase 3: Size sells from clamped targets and filter restriction-blocked
-        # sells *before* computing post-sell cash. Otherwise a blocked sell would
-        # leak phantom proceeds into the buy pass and the cash balance could
-        # go negative when the buy fills but the sell didn't.
-        exit_orders = self._order_sizer.size_sells(
-            clamped_targets,
-            positions,
-            current_prices,
-            total_value,
-            clamp_attribution,
-        )
-        if state.restriction_tracker:
-            exit_orders = [
-                o for o in exit_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)
-            ]
-        sell_proceeds = sum(o.estimated_value for o in exit_orders)
-        post_sell_cash = state.cash + sell_proceeds
-
-        # Build clamped allocation for buy sizing so that buy-side doesn't
-        # try to buy tickers that were just clamped to 0.
         clamped_allocation = AllocationResult(
             targets=clamped_targets,
             contributions=allocation.contributions,
             blended_scores=allocation.blended_scores,
         )
-
-        # Phase 4: Size buys against post-sell cash, then filter restrictions.
-        # ``total_value`` is the same denominator the allocator used for
-        # ``current_weights``; passing it through keeps the per-ticker delta
-        # math consistent so held tickers don't fire phantom buys when sells
-        # earlier in the tick freed cash and shifted post-sell weights.
-        buy_orders = self._order_sizer.size_buys(
-            clamped_allocation,
-            positions,
-            current_prices,
-            post_sell_cash,
-            self._constraints,
-            total_value=total_value,
+        return _Decision(
+            allocation=clamped_allocation,
+            clamp_attribution=clamp_attribution,
+            active_tickers=active_tickers,
+            decision_day=day,
         )
-        if state.restriction_tracker:
-            buy_orders = [o for o in buy_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
 
-        # Phase 5: Execute sells first (so proceeds land in cash before buys),
-        # then buys. ``_execute`` emits one TradeRecord per holding-period
-        # group on sells, so mixed-lot sells crossing the 365-day boundary
-        # split into separate ST and LT records with per-group cost basis.
+    def _size_and_execute(
+        self,
+        state: _SimState,
+        decision: _Decision,
+        exec_prices: dict[str, float],
+        day: date,
+    ) -> None:
+        """Run sell/buy sizing (phases 3-4) and execute (phase 5).
+
+        ``exec_prices`` is the per-ticker fill price for this execution —
+        today's close under ``execution_mode="close"``, today's open under
+        ``next_open``, or today's close under ``next_close``. The sizer
+        re-derives ``total_value`` / ``current_weights`` from these prices
+        so the delta math is self-consistent with what will actually fill.
+        """
+        active_tickers = decision.active_tickers
+        positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
+        total_value = state.cash + sum(positions[t] * exec_prices[t] for t in active_tickers)
+
+        # Preserve "hold" semantics across price drift between decision and
+        # fill.  A pure-hold ticker (no positive entry-signal contributions,
+        # no exit clamp) gets its target rewritten to the current weight at
+        # exec_prices so the delta collapses to zero.  Under ``close`` mode
+        # exec_prices == decision prices so this is a no-op.
+        rebalanced_targets = dict(decision.allocation.targets)
+        contribs_map = decision.allocation.contributions
+        for ticker in active_tickers:
+            if ticker in decision.clamp_attribution:
+                continue
+            contribs = contribs_map.get(ticker, {})
+            if any(v > 0 for v in contribs.values()):
+                continue
+            if total_value <= 0:
+                rebalanced_targets[ticker] = 0.0
+                continue
+            rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
+
+        rebalanced_allocation = AllocationResult(
+            targets=rebalanced_targets,
+            contributions=contribs_map,
+            blended_scores=decision.allocation.blended_scores,
+        )
+
+        # Phase 3: size sells and filter restriction-blocked ones *before*
+        # computing post-sell cash. Leaking blocked proceeds would let
+        # ``size_buys`` authorize buys against cash that never arrives.
+        def unrestricted(orders: list[Order]) -> list[Order]:
+            if not state.restriction_tracker:
+                return orders
+            return [o for o in orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
+
+        exit_orders = unrestricted(
+            self._order_sizer.size_sells(
+                rebalanced_targets,
+                positions,
+                exec_prices,
+                total_value,
+                decision.clamp_attribution,
+            )
+        )
+        post_sell_cash = state.cash + sum(o.estimated_value for o in exit_orders)
+
+        buy_orders = unrestricted(
+            self._order_sizer.size_buys(
+                rebalanced_allocation,
+                positions,
+                exec_prices,
+                post_sell_cash,
+                self._constraints,
+                total_value=total_value,
+            )
+        )
+
+        # Phase 5: sells first (proceeds land before buys), then buys.
+        # ``_execute`` emits one TradeRecord per holding-period group on
+        # sells, so mixed-lot sells crossing the 365-day boundary split
+        # into separate ST and LT records with per-group cost basis.
         for order in exit_orders:
             if order.shares <= 0:
                 continue
@@ -942,18 +1092,14 @@ class BacktestEngine:
             in_range = df[df.index <= end_day]
             if len(in_range) > 0:
                 final_prices[ticker] = float(in_range["close"].iloc[-1])
-        final_value = state.cash + sum(state.positions.get(t, 0) * p for t, p in final_prices.items())
+        final_value = state.portfolio_value(final_prices)
         bh_value = portfolio.available_cash + sum(
             state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
         )
 
         # Close the final TWR sub-period and compound all periods.
-        if state.twr_base_value > 0:
-            state.twr_periods.append(final_value / state.twr_base_value)
-        twr = 1.0
-        for period_return in state.twr_periods:
-            twr *= period_return
-        twr -= 1.0
+        state.close_twr_period(final_value)
+        twr = math.prod(state.twr_periods) - 1.0
 
         sv = state.starting_value
         spbh = state.split_bh_value
