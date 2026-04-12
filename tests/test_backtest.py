@@ -16,6 +16,7 @@ from midas.backtest import (
     TRADING_DAYS_PER_YEAR,
     BacktestEngine,
     BacktestResult,
+    ExecutionMode,
     _SimState,
     compute_cagr,
     compute_max_drawdown,
@@ -43,6 +44,7 @@ from midas.restrictions import RestrictionTracker
 from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
+from midas.strategies.stop_loss import StopLoss
 from midas.strategies.trailing_stop import TrailingStop
 
 
@@ -193,7 +195,7 @@ def _gap_fill_frame(
     distinguish ``next_open`` and ``next_close`` execution modes by the
     trade price they record.
     """
-    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    dates = [d.date() for d in pd.bdate_range(start=date(2024, 1, 2), periods=n)]
     opens = np.full(n, 100.0)
     highs = np.full(n, 100.0)
     lows = np.full(n, 100.0)
@@ -216,7 +218,7 @@ def _gap_fill_frame(
     )
 
 
-def _lag_test_engine(execution_mode: str) -> BacktestEngine:
+def _lag_test_engine(execution_mode: ExecutionMode) -> BacktestEngine:
     constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
     allocator = Allocator([(GapDownRecovery(gap_threshold=0.03), 1.0)], constraints, n_tickers=1)
     return BacktestEngine(
@@ -225,7 +227,7 @@ def _lag_test_engine(execution_mode: str) -> BacktestEngine:
         exit_rules=[],
         constraints=constraints,
         enable_split=False,
-        execution_mode=execution_mode,  # type: ignore[arg-type]
+        execution_mode=execution_mode,
     )
 
 
@@ -293,7 +295,7 @@ def test_execution_lag_no_drift_warning_for_held_tickers() -> None:
     """
     # Flat series — GapDownRecovery never fires, every tick is pure hold.
     n = 30
-    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    dates = [d.date() for d in pd.bdate_range(start=date(2024, 1, 2), periods=n)]
     closes = 100.0 + np.arange(n, dtype=float)  # slow drift, $100 -> $129
     opens = closes - 0.5
     highs = closes + 0.5
@@ -335,7 +337,7 @@ def test_execution_lag_last_day_decision_never_executes() -> None:
     # 22 bars, gap on bar 21 (the last). Under ``next_open`` the decision
     # is stored as pending but the loop ends — no trade should land.
     n = 22
-    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    dates = [d.date() for d in pd.bdate_range(start=date(2024, 1, 2), periods=n)]
     opens = np.full(n, 100.0)
     highs = np.full(n, 100.0)
     lows = np.full(n, 100.0)
@@ -355,6 +357,66 @@ def test_execution_lag_last_day_decision_never_executes() -> None:
 
     buys = [t for t in result.trades if t.direction == Direction.BUY]
     assert buys == [], f"final-bar signal must not execute under lag=1, got: {buys}"
+
+
+def test_execution_lag_with_exit_rule_stop_loss() -> None:
+    """Exit rule (StopLoss) under lag fills at next bar's open, not decision close.
+
+    The stop fires on the decision bar when price drops below cost basis by
+    the threshold. Under ``next_open``, the sell should execute at the *next*
+    bar's open price, and the clamp_attribution should survive drift
+    neutralization (i.e. the sell is not suppressed).
+    """
+    n = 30
+    dates = [d.date() for d in pd.bdate_range(start=date(2024, 1, 2), periods=n)]
+    # Flat at $100 until day 20 where price drops to $90 (10% loss).
+    closes = np.full(n, 100.0)
+    opens = np.full(n, 100.0)
+    highs = np.full(n, 100.0)
+    lows = np.full(n, 100.0)
+    volumes = np.full(n, 1_000_000.0)
+    drop_day = 20
+    opens[drop_day] = 92.0
+    highs[drop_day] = 93.0
+    lows[drop_day] = 88.0
+    closes[drop_day] = 90.0
+    # Next bar (fill bar) has distinct open/close for price verification.
+    opens[drop_day + 1] = 89.0
+    highs[drop_day + 1] = 91.0
+    lows[drop_day + 1] = 88.0
+    closes[drop_day + 1] = 91.0
+    frame = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator(
+        [(GapDownRecovery(gap_threshold=0.03), 1.0)],
+        constraints,
+        n_tickers=1,
+    )
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=OrderSizer(default_slippage=0.0),
+        exit_rules=[StopLoss(loss_threshold=0.05)],
+        constraints=constraints,
+        enable_split=False,
+        execution_mode="next_open",
+    )
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="GAPCO", shares=5, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+
+    result = engine.run(portfolio, {"GAPCO": frame}, dates[0], dates[-1])
+
+    sells = [t for t in result.trades if t.direction == Direction.SELL]
+    assert len(sells) >= 1, f"StopLoss should trigger a sell, got trades: {result.trades}"
+    # Under next_open, the sell fills at the fill bar's open ($89), not the
+    # decision bar's close ($90).
+    assert sells[0].date == dates[drop_day + 1]
+    assert sells[0].price == 89.0, f"expected fill at next open ($89), got ${sells[0].price}"
 
 
 def test_backtest_with_split() -> None:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import click
 import pandas as pd
 
 from midas.allocator import Allocator
-from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, write_backtest_results
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, ExecutionMode, write_backtest_results
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.models import (
@@ -171,7 +172,7 @@ def backtest(
         train_pct=train_pct,
         enable_split=not no_split,
         log_fn=print_status,
-        execution_mode=execution_mode,  # type: ignore[arg-type]
+        execution_mode=cast(ExecutionMode, execution_mode),
     )
 
     print_status("Running backtest...")

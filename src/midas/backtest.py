@@ -853,30 +853,27 @@ class BacktestEngine:
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
         total_value = state.cash + sum(positions[t] * exec_prices[t] for t in active_tickers)
 
-        # Preserve "hold" semantics across overnight price drift. The
-        # allocator's Option-A rule is that a ticker with no positive
-        # entry-signal contribution holds its *decision-day* weight; it's
-        # not an instruction to rebalance. Under lag, by the time we fill
-        # at T+1's open the ticker's actual weight has drifted — re-sizing
-        # against the stale target would ask the sizer to buy (on drops)
-        # or sell (on pops) for no reason, and ``size_buys`` would fire
-        # its "no positive contributions" suppression warning for every
-        # held ticker every tick. Rewrite pure-hold targets to today's
-        # current weight so the delta collapses to zero. Tickers with a
-        # live exit-clamp verdict are exempt — their target is an
-        # explicit sell decision that must survive drift.
+        # Preserve "hold" semantics across overnight price drift. Under
+        # lag modes the fill happens at T+1's open/close, so a held
+        # ticker's actual weight has drifted from the decision-day target.
+        # Rewrite pure-hold targets to the current weight so the delta
+        # collapses to zero. Tickers with an exit-clamp verdict are
+        # exempt — their target is an explicit sell that must survive
+        # drift. Under ``close`` mode exec_prices == decision prices so
+        # this is a no-op, but we skip it entirely for clarity.
         rebalanced_targets = dict(decision.allocation.targets)
         contribs_map = decision.allocation.contributions
-        for ticker in active_tickers:
-            if ticker in decision.clamp_attribution:
-                continue
-            contribs = contribs_map.get(ticker, {})
-            if any(v > 0 for v in contribs.values()):
-                continue
-            if total_value <= 0:
-                rebalanced_targets[ticker] = 0.0
-                continue
-            rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
+        if self._execution_mode != "close":
+            for ticker in active_tickers:
+                if ticker in decision.clamp_attribution:
+                    continue
+                contribs = contribs_map.get(ticker, {})
+                if any(v > 0 for v in contribs.values()):
+                    continue
+                if total_value <= 0:
+                    rebalanced_targets[ticker] = 0.0
+                    continue
+                rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
         rebalanced_allocation = AllocationResult(
             targets=rebalanced_targets,
             contributions=contribs_map,
@@ -978,9 +975,10 @@ class BacktestEngine:
             contributions=pending.allocation.contributions,
             blended_scores=pending.allocation.blended_scores,
         )
+        filtered_clamps = {k: v for k, v in pending.clamp_attribution.items() if k in current_data}
         return _Decision(
             allocation=projected,
-            clamp_attribution=pending.clamp_attribution,
+            clamp_attribution=filtered_clamps,
             active_tickers=active,
             decision_day=pending.decision_day,
         )
