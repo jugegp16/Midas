@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import click
 import pandas as pd
@@ -146,7 +145,7 @@ def backtest(
     output: str,
     train_pct: float,
     no_split: bool,
-    execution_mode: str,
+    execution_mode: ExecutionMode,
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
@@ -172,7 +171,7 @@ def backtest(
         train_pct=train_pct,
         enable_split=not no_split,
         log_fn=print_status,
-        execution_mode=cast(ExecutionMode, execution_mode),
+        execution_mode=execution_mode,
     )
 
     print_status("Running backtest...")

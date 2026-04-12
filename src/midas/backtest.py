@@ -898,8 +898,9 @@ class BacktestEngine:
         post_sell_cash = state.cash + sell_proceeds
 
         # Phase 4: size buys against post-sell cash, then filter restrictions.
-        # ``total_value`` is the same denominator ``_decide`` used for
-        # ``current_weights`` so per-ticker delta math stays consistent.
+        # ``total_value`` is derived from exec_prices, not the decision-day
+        # prices.  Under lag modes these differ; re-deriving from fill prices
+        # keeps the delta math self-consistent with the actual fill.
         buy_orders = self._order_sizer.size_buys(
             rebalanced_allocation,
             positions,
@@ -970,10 +971,11 @@ class BacktestEngine:
         if not active:
             return None
         targets = {t: w for t, w in pending.allocation.targets.items() if t in current_data}
+        active_set = set(active)
         projected = AllocationResult(
             targets=targets,
-            contributions=pending.allocation.contributions,
-            blended_scores=pending.allocation.blended_scores,
+            contributions={t: v for t, v in pending.allocation.contributions.items() if t in active_set},
+            blended_scores={t: v for t, v in pending.allocation.blended_scores.items() if t in active_set},
         )
         filtered_clamps = {k: v for k, v in pending.clamp_attribution.items() if k in current_data}
         return _Decision(
