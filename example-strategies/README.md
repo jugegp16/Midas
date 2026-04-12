@@ -43,3 +43,45 @@ Moderately aggressive entries with disciplined exits. Two entries push you in, t
 - **Chandelier Stop** (22-day window, 3.0× ATR, exit) — a volatility-adjusted trailing stop. Tracks the highest close over the last 22 days and sells if the current price falls more than 3× the recent average true range below that high. Unlike a fixed-percent trailing stop, the stop distance breathes with realized volatility — tighter in calm markets, wider in choppy ones — and the rolling-window reference high keeps the stop responsive to recent price action instead of anchoring to a months-old peak. Fires on both profitable and underwater positions, so it subsumes the role of a separate stop loss.
 
 Best for: a general-purpose portfolio that balances growth capture with downside protection.
+
+## [Turtle Breakout](turtle-breakout.yaml)
+
+The classic "buy new highs" system from Richard Dennis's Turtle Trading experiment, updated with a modern trailing-stop exit.
+
+- **Donchian Breakout** (20-day, entry) — buys when the current close exceeds the highest close of the prior 20 days. This is the short Turtle system — it fires on fresh breakouts and is silent the rest of the time. The score ramps linearly once the breakout happens, so a small poke above the prior high gets partial conviction while a 2%+ push gets full conviction.
+
+- **Keltner Channel** (20-day, 2.0× ATR, entry) — confirms the breakout from a different angle. Rather than comparing the current price to a prior high, Keltner compares it to the moving average plus two times recent average true range. Donchian fires on raw price level; Keltner fires on volatility-adjusted distance from the average. When both agree, the breakout is both "new" and "large relative to normal noise" — independent confirmation that isn't just two copies of the same signal.
+
+- **Parabolic SAR Exit** (AF 0.02 → 0.20, exit) — Wilder's self-accelerating trailing stop. Starts loose right after the breakout (small acceleration factor, SAR trails far below price) and ratchets tighter every time the price makes a new high, until the stop is hugging price late in the trend. The result is a stop that gives breakouts room to develop but locks down the exit once the move has had time to play out — a natural pairing with breakout entries.
+
+- **Profit Taking** (30% threshold, exit) — an absolute ceiling on how long to hold a single breakout. Even with a trailing stop still loose, any lot up 30% gets trimmed so winners don't round-trip back to the basis.
+
+Best for: trending, high-momentum assets (growth stocks, momentum ETFs, commodities-like assets). Poor fit for range-bound assets where repeated false breakouts chop the strategy.
+
+## [Volatility Momentum](volatility-momentum.yaml)
+
+A trend-following system built entirely on volatility-adjusted signals. Every component scales with realized ATR, so the strategy adapts its sensitivity as market conditions change.
+
+- **Keltner Channel** (20-day, 2.0× ATR, entry) — bullish when the price breaks above the SMA + 2 × ATR upper band. In calm markets the band is tight and small moves trigger conviction; in volatile markets the band is wide and it takes a bigger move to fire. This auto-calibration keeps the entry from getting trigger-happy during chop and from missing real breakouts during high-volatility regimes.
+
+- **Momentum** (20-day, entry) — buys when the price is above its 20-day moving average. Provides continuation support: once Keltner fires on a breakout, Momentum keeps scoring bullish as long as the price stays elevated, so the allocator won't prematurely drain the position just because the initial breakout excess has compressed back into the band.
+
+- **Chandelier Stop** (22-day, 3.0× ATR, exit) — a volatility-matched trailing stop. Since the entries are calibrated in ATR units, it only makes sense for the exit to use the same yardstick: a 3× ATR trailing stop sits at roughly the same "distance in normal-noise terms" regardless of the ticker. The whole strategy speaks one consistent volatility language end-to-end.
+
+- **Profit Taking** (25% threshold, exit) — a fixed-gain harvest to complement the volatility-relative trailing stop. Even if Chandelier is trailing at a wide ATR multiple, Profit Taking still ensures any lot up 25% is trimmed on schedule.
+
+Best for: assets with stable, measurable volatility (index ETFs, large-cap tech). Less suited to micro-caps or post-earnings-spike situations where ATR is noisy or non-stationary.
+
+## [Long Trend](long-trend.yaml)
+
+A patient system built for capturing multi-month trends without getting shaken out by short-term pullbacks.
+
+- **Donchian Breakout** (55-day, 3% breakout scale, entry) — the long Turtle system. A 55-day window demands a genuine regime change before firing, so the strategy sits out noise and false starts and only engages when a meaningful trend has formed. The wider 3% breakout scale means the score takes a larger push to reach full conviction, reflecting that long-window breakouts are higher-stakes commitments than short-window ones.
+
+- **MACD Crossover** (12/26/9, entry) — trend confirmation on a completely different timescale and indicator family. Donchian is a binary event (new N-bar high, yes or no); MACD is a continuous measure of momentum strength. Together they fire when both the level (new multi-month high) and the acceleration (bullish MACD) agree the trend is real.
+
+- **Parabolic SAR Exit** (AF 0.01 → 0.15, exit) — a deliberately slow version of Wilder's SAR. The smaller starting and step AFs mean the stop acceptance far more slack in the early weeks of a trend — exactly when Donchian has just fired and the trend needs room to breathe — and only tightens well after the position is deep in profit. The capped 0.15 max AF keeps the stop from ever getting so tight that normal pullbacks close the position.
+
+- **Profit Taking** (35% threshold, exit) — a generous ceiling that reflects the long-trend thesis: these are meant to be multi-month holds, so trimming at 20% would cut winners off just as they're getting started.
+
+Best for: secular bull markets and long-duration uptrends where the thesis is measured in months rather than weeks. A poor fit for fast-moving, mean-reverting assets where a 55-day lookback means you're always buying the top.

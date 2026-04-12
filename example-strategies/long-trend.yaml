@@ -1,0 +1,29 @@
+softmax_temperature: 0.5
+min_buy_delta: 0.02
+min_cash_pct: 0.05
+
+strategies:
+  # -- Entry signals --
+  - name: DonchianBreakout
+    weight: 1.0
+    params:
+      window: 55
+      breakout_scale: 0.03
+
+  - name: MACDCrossover
+    weight: 1.0
+    params:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9
+
+  # -- Exit rules --
+  - name: ParabolicSARExit
+    params:
+      af_start: 0.01
+      af_step: 0.01
+      af_max: 0.15
+
+  - name: ProfitTaking
+    params:
+      gain_threshold: 0.35

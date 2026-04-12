@@ -5,13 +5,16 @@ import numpy as np
 from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
 from midas.strategies.bollinger_band import BollingerBand
 from midas.strategies.chandelier_stop import ChandelierStop
+from midas.strategies.donchian_breakout import DonchianBreakout
 from midas.strategies.gap_down_recovery import GapDownRecovery
+from midas.strategies.keltner_channel import KeltnerChannel
 from midas.strategies.ma_crossover import MovingAverageCrossover
 from midas.strategies.ma_crossover_exit import MovingAverageCrossoverExit
 from midas.strategies.macd_crossover import MACDCrossover
 from midas.strategies.macd_exit import MACDExit
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
+from midas.strategies.parabolic_sar_exit import ParabolicSARExit
 from midas.strategies.profit_taking import ProfitTaking
 from midas.strategies.rsi_oversold import RSIOversold
 from midas.strategies.stop_loss import StopLoss
@@ -199,6 +202,126 @@ class TestTrailingStop:
         assert result == 0.10
 
 
+class TestDonchianBreakout:
+    """Turtle-style breakout: buy when current close exceeds the prior N-bar high."""
+
+    def test_zero_on_flat_prices(self, flat_prices: np.ndarray) -> None:
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        assert strategy.score(flat_prices) == 0.0
+
+    def test_insufficient_history(self) -> None:
+        # Needs window + 1 bars (N prior + 1 current).
+        short = np.full(20, 100.0)
+        strategy = DonchianBreakout(window=20)
+        assert strategy.score(short) is None
+
+    def test_full_conviction_on_scale_breakout(self) -> None:
+        # 20 flat bars at 100, then break to 102 (2% above the prior high).
+        prices = np.concatenate([np.full(20, 100.0), np.array([102.0])])
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        score = strategy.score(prices)
+        assert score == 1.0
+
+    def test_partial_score_on_partial_breakout(self) -> None:
+        # 20 flat bars at 100, then break to 101 — half of the 2% scale.
+        prices = np.concatenate([np.full(20, 100.0), np.array([101.0])])
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        score = strategy.score(prices)
+        assert score is not None
+        assert 0.4 < score < 0.6
+
+    def test_zero_when_below_prior_high(self) -> None:
+        # Current close below the prior high — no breakout, no score.
+        prices = np.concatenate([np.full(20, 100.0), np.array([99.0])])
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        assert strategy.score(prices) == 0.0
+
+    def test_tie_with_prior_high_does_not_fire(self) -> None:
+        # Equalling the prior high is not a "breakout".
+        prices = np.concatenate([np.full(20, 100.0), np.array([100.0])])
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        assert strategy.score(prices) == 0.0
+
+    def test_name_and_description(self) -> None:
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        assert strategy.name == "DonchianBreakout"
+        assert strategy.description
+
+    def test_precompute_matches_score(self) -> None:
+        # Vectorized precompute must match the per-bar score() exactly for
+        # every prefix — the backtest engine relies on this equivalence.
+        rng = np.random.default_rng(seed=11)
+        prices = 100.0 + np.cumsum(rng.normal(0, 1.0, size=80))
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        precomputed = strategy.precompute(prices)
+        assert precomputed is not None
+        for i in range(len(prices)):
+            expected = strategy.score(prices[: i + 1])
+            actual = precomputed[i]
+            if expected is None:
+                assert np.isnan(actual)
+            else:
+                assert np.isclose(actual, expected, rtol=1e-9), f"mismatch at i={i}: {actual} vs {expected}"
+
+
+class TestKeltnerChannel:
+    """Breakout entry: bullish when price breaks above EMA + k x ATR upper band."""
+
+    def test_zero_on_flat_prices(self, flat_prices: np.ndarray) -> None:
+        strategy = KeltnerChannel(window=20, multiplier=2.0)
+        assert strategy.score(flat_prices) == 0.0
+
+    def test_insufficient_history(self) -> None:
+        short = np.full(10, 100.0)
+        strategy = KeltnerChannel(window=20)
+        assert strategy.score(short) is None
+
+    def test_positive_score_on_breakout(self) -> None:
+        # Strong uptrend: centerline trails far behind current, ATR rises
+        # with the linear ramp — current ends well above the upper band.
+        prices = np.linspace(100.0, 140.0, 25)
+        strategy = KeltnerChannel(window=20, multiplier=1.0)
+        score = strategy.score(prices)
+        assert score is not None
+        assert score > 0.0
+
+    def test_zero_when_inside_bands(self) -> None:
+        # Noise around a flat level — current close barely above the mean,
+        # far below the upper band.
+        rng = np.random.default_rng(seed=7)
+        prices = 100.0 + rng.normal(0, 0.5, size=25)
+        prices[-1] = 100.1
+        strategy = KeltnerChannel(window=20, multiplier=2.0)
+        assert strategy.score(prices) == 0.0
+
+    def test_higher_multiplier_suppresses_breakout(self) -> None:
+        # Same path, wider band → no longer a breakout.
+        prices = np.linspace(100.0, 140.0, 25)
+        tight = KeltnerChannel(window=20, multiplier=1.0)
+        wide = KeltnerChannel(window=20, multiplier=50.0)
+        assert tight.score(prices) > 0.0  # type: ignore[operator]
+        assert wide.score(prices) == 0.0
+
+    def test_name_and_description(self) -> None:
+        strategy = KeltnerChannel(window=20, multiplier=2.0)
+        assert strategy.name == "KeltnerChannel"
+        assert strategy.description
+
+    def test_precompute_matches_score(self) -> None:
+        rng = np.random.default_rng(seed=13)
+        prices = 100.0 + np.cumsum(rng.normal(0, 1.2, size=80))
+        strategy = KeltnerChannel(window=20, multiplier=2.0)
+        precomputed = strategy.precompute(prices)
+        assert precomputed is not None
+        for i in range(len(prices)):
+            expected = strategy.score(prices[: i + 1])
+            actual = precomputed[i]
+            if expected is None:
+                assert np.isnan(actual)
+            else:
+                assert np.isclose(actual, expected, rtol=1e-9), f"mismatch at i={i}: {actual} vs {expected}"
+
+
 class TestChandelierStop:
     """Volatility-adjusted trailing stop: k x ATR below the rolling N-bar high."""
 
@@ -263,6 +386,67 @@ class TestChandelierStop:
     def test_name_and_description(self) -> None:
         rule = ChandelierStop(window=22, multiplier=3.0)
         assert rule.name == "ChandelierStop"
+        assert rule.description
+
+
+class TestParabolicSARExit:
+    """Wilder's self-accelerating SAR trailing stop: fire when SAR flips above price."""
+
+    def test_no_clamp_on_steady_rise(self, rising_prices: np.ndarray) -> None:
+        rule = ParabolicSARExit()
+        result = rule.clamp_target(
+            "X",
+            0.10,
+            rising_prices,
+            cost_basis=100.0,
+            high_water_mark=float(rising_prices.max()),
+        )
+        assert result == 0.10
+
+    def test_clamps_on_reversal(self, peak_then_drop_prices: np.ndarray) -> None:
+        rule = ParabolicSARExit()
+        peak = float(peak_then_drop_prices.max())
+        result = rule.clamp_target(
+            "X",
+            0.10,
+            peak_then_drop_prices,
+            cost_basis=100.0,
+            high_water_mark=peak,
+        )
+        assert result == 0.0
+
+    def test_returns_proposed_on_insufficient_history(self) -> None:
+        short = np.array([100.0])
+        rule = ParabolicSARExit()
+        result = rule.clamp_target(
+            "X",
+            0.10,
+            short,
+            cost_basis=100.0,
+            high_water_mark=100.0,
+        )
+        assert result == 0.10
+
+    def test_higher_af_max_flips_faster(self) -> None:
+        # A rise then sharp pullback — a faster-accelerating SAR will catch
+        # the reversal, while a slow one may not yet have crossed price.
+        prices = np.concatenate(
+            [
+                np.linspace(100.0, 120.0, 15),
+                np.array([119.0, 115.0]),
+            ]
+        )
+        slow = ParabolicSARExit(af_start=0.02, af_step=0.001, af_max=0.005)
+        fast = ParabolicSARExit(af_start=0.02, af_step=0.02, af_max=0.20)
+        slow_res = slow.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=120.0)
+        fast_res = fast.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=120.0)
+        # Fast SAR must flip on the pullback; slow SAR trailing far below may not.
+        assert fast_res == 0.0
+        assert slow_res == 0.10
+
+    def test_name_and_description(self) -> None:
+        rule = ParabolicSARExit()
+        assert rule.name == "ParabolicSARExit"
         assert rule.description
 
 
@@ -359,9 +543,22 @@ class TestWarmupPeriod:
         assert ProfitTaking().warmup_period == 0
         assert TrailingStop().warmup_period == 0
 
+    def test_parabolic_sar_needs_two_bars(self) -> None:
+        assert ParabolicSARExit().warmup_period == 2
+
+    def test_keltner_channel_uses_window(self) -> None:
+        assert KeltnerChannel(window=20).warmup_period == 20
+        assert KeltnerChannel(window=50).warmup_period == 50
+
     def test_chandelier_stop_uses_window(self) -> None:
         assert ChandelierStop(window=22).warmup_period == 22
         assert ChandelierStop(window=30).warmup_period == 30
+
+    def test_donchian_breakout_needs_window_plus_one(self) -> None:
+        # Donchian compares current to the prior N bars, so it needs
+        # N + 1 bars total before it can score.
+        assert DonchianBreakout(window=20).warmup_period == 21
+        assert DonchianBreakout(window=55).warmup_period == 56
 
     def test_gap_down_recovery_needs_three_bars(self) -> None:
         assert GapDownRecovery().warmup_period == 3
