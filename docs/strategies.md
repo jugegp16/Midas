@@ -15,7 +15,9 @@ To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under
 | Strategy | Type | What it does |
 |----------|------|--------------|
 | BollingerBand | Entry | Bullish at the lower volatility band of the moving average |
+| DonchianBreakout | Entry | Bullish when price breaks above the rolling N-bar high (Turtle-style) |
 | GapDownRecovery | Entry | Bullish after a gap-down event starts recovering |
+| KeltnerChannel | Entry | Bullish on a breakout above the SMA + k x ATR upper band |
 | MACDCrossover | Entry | Bullish when the MACD line is above its signal line |
 | MeanReversion | Entry | Bullish when price drops below its moving average |
 | Momentum | Entry | Bullish when price is above its moving average |
@@ -25,6 +27,7 @@ To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under
 | ChandelierStop | Exit | Clamps target to 0 when price falls k x ATR below the rolling N-bar high |
 | MACDExit | Exit | Clamps target to 0 on a bearish MACD crossover |
 | MovingAverageCrossoverExit | Exit | Clamps target to 0 on the death cross |
+| ParabolicSARExit | Exit | Clamps target to 0 when Wilder's Parabolic SAR flips above price |
 | ProfitTaking | Exit | Clamps target to 0 when unrealized gain exceeds the threshold |
 | StopLoss | Exit | Clamps target to 0 when unrealized loss exceeds the threshold |
 | TrailingStop | Exit | Clamps target to 0 after a drawdown from the high-water mark |
@@ -125,6 +128,25 @@ Unlike plain `MeanReversion`, `BollingerBand` adapts to the stock's recent volat
 
 ---
 
+### KeltnerChannel
+
+**Type**: Entry signal
+
+A volatility-adjusted breakout entry. Computes an SMA centerline and an ATR-based band half-width, then fires when the current close breaks above the upper band (centerline + `multiplier` x ATR). The score is measured in ATR units of excess above the band: 1 ATR above the band reaches full conviction. ATR is approximated from close-to-close absolute differences since the engine's price history is close-only.
+
+Unlike `BollingerBand` — which is a *mean-reversion* entry that fires at the *lower* band — `KeltnerChannel` is trend-following and fires at the *upper* band. Their signals are symmetric but opposite: `BollingerBand` buys the dip to the bottom band, `KeltnerChannel` buys the breakout above the top band. Keltner also uses ATR rather than standard deviation, which makes the bands smoother and less sensitive to single outliers.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `window` | 20 | SMA and ATR lookback (trading days) |
+| `multiplier` | 2.0 | ATR multiple defining the upper band distance above the centerline |
+
+**Suited for**: All asset classes, especially trending markets
+
+**Interactions**: Aligns with `Momentum`, `MovingAverageCrossover`, `MACDCrossover`, and `DonchianBreakout` (all trend-following). Conflicts with `BollingerBand` and other mean-reversion entries — they'd fight each other. Pairs naturally with `ChandelierStop`, which uses the same ATR-based volatility framing for its exit distance.
+
+---
+
 ### MACDCrossover
 
 **Type**: Entry signal
@@ -177,6 +199,25 @@ The classic golden cross strategy. Tracks two moving averages of different lengt
 **Suited for**: All asset classes
 
 **Interactions**: Confirms `MACDCrossover`. Aligns with `Momentum`. Pairs naturally with `MovingAverageCrossoverExit` so entries and exits use the same indicator on the same timescale.
+
+---
+
+### DonchianBreakout
+
+**Type**: Entry signal
+
+The classic Turtle Trading entry. Bullish when the current close exceeds the highest close over the prior `window` bars — a strict breakout. Once the breakout fires, the score ramps linearly with the excess over the prior high, reaching full conviction at `breakout_scale` (default 2%). Before the breakout the score is 0; no partial credit for approaching the level.
+
+Unlike MA-based trend entries (`Momentum`, `MovingAverageCrossover`) which score continuously along a gradient, Donchian is binary-then-linear: either you're making a new high or you're not. This makes it late to enter trends but immune to whipsaws inside the lookback range.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `window` | 20 | Lookback for the prior high (trading days). The classical Turtle values are 20 (short system) and 55 (long system) |
+| `breakout_scale` | 0.02 | Excess over the prior high at which the score reaches 1.0 |
+
+**Suited for**: All asset classes, especially trending equities and commodities-like assets
+
+**Interactions**: Aligns with `Momentum` and `MovingAverageCrossover` (all trend-following) but measures a different thing — price vs. prior high rather than price vs. moving average — so it adds independent confirmation rather than redundancy. Conflicts with mean-reversion entries. Pairs naturally with `ChandelierStop`, which also uses a rolling-window high as its reference point.
 
 ---
 
@@ -254,6 +295,26 @@ Unlike `TrailingStop`, `ChandelierStop` uses a rolling window high rather than a
 **Suited for**: All asset classes
 
 **Interactions**: Generally substitutes for the `StopLoss` + `TrailingStop` pair — stacking all three produces overlapping protection with unclear attribution. Still pairs cleanly with `ProfitTaking` as the gain-harvest mechanism. Useful when fixed-percent stops feel regime-ignorant, since a single `multiplier` adapts across tickers with different volatility profiles.
+
+---
+
+### ParabolicSARExit
+
+**Type**: Exit rule
+
+J. Welles Wilder's Parabolic SAR (Stop And Reverse) as a trailing-stop exit. Computes a self-accelerating trailing stop that starts slow and ratchets tighter as the trend extends: each time the price makes a new extreme in the direction of the trend, the acceleration factor (AF) is bumped up by `af_step` (capped at `af_max`), which pulls the SAR closer to price. When the SAR finally flips above price, the uptrend is considered broken and the rule clamps the target to 0.
+
+The defining property of SAR is that it converts elapsed trend time into stop tightness. A fresh breakout gets a generous stop (small AF, SAR trails far below); a long-running uptrend gets a tight one (AF near cap, SAR hugging price). This makes it well-suited for riding long trends without giving back too much at the end — the stop tightens on its own as the move matures.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `af_start` | 0.02 | Initial acceleration factor — the fraction of the SAR-to-extreme gap closed per bar at trend start |
+| `af_step` | 0.02 | Increment added to AF on each new trend extreme |
+| `af_max` | 0.20 | Upper cap on AF — Wilder's original value |
+
+**Suited for**: All asset classes, especially trending markets
+
+**Interactions**: Overlaps functionally with `TrailingStop` and `ChandelierStop` — all three are trailing-stop exits — but uses a fundamentally different tightening rule. `TrailingStop` is a fixed percentage from the HWM; `ChandelierStop` scales with ATR; `ParabolicSARExit` scales with trend duration. Don't stack all three or they'll fight over attribution. Pairs naturally with strong trend-following entries like `DonchianBreakout`, `KeltnerChannel`, or `Momentum`, where the late-stage tightening matches the "ride the move, cut when it breaks" thesis.
 
 ---
 

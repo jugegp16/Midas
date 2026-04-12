@@ -69,6 +69,11 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
         "num_std": (1.5, 3.0, 0.25),
         "_weight": (0.5, 3.0, 0.25),
     },
+    "DonchianBreakout": {
+        "window": (10, 60, 5),
+        "breakout_scale": (0.01, 0.06, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
+    },
     "MACDCrossover": {
         "fast_period": (8, 16, 2),
         "slow_period": (20, 40, 2),
@@ -77,6 +82,11 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     },
     "GapDownRecovery": {
         "gap_threshold": (0.02, 0.08, 0.005),
+        "_weight": (0.5, 3.0, 0.25),
+    },
+    "KeltnerChannel": {
+        "window": (10, 50, 5),
+        "multiplier": (1.0, 4.0, 0.25),
         "_weight": (0.5, 3.0, 0.25),
     },
     "VWAPReversion": {
@@ -112,6 +122,11 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
     "MovingAverageCrossoverExit": {
         "short_window": (10, 30, 2),
         "long_window": (40, 100, 5),
+    },
+    "ParabolicSARExit": {
+        "af_start": (0.01, 0.04, 0.005),
+        "af_step": (0.01, 0.04, 0.005),
+        "af_max": (0.10, 0.30, 0.02),
     },
     ALLOCATION_KEY: {
         # softmax_temperature: low = concentrated, high = uniform split.

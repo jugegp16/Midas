@@ -123,7 +123,9 @@ def test_strategy_registry_complete() -> None:
     expected = {
         # entry signals
         "BollingerBand",
+        "DonchianBreakout",
         "GapDownRecovery",
+        "KeltnerChannel",
         "MACDCrossover",
         "MeanReversion",
         "Momentum",
@@ -134,6 +136,7 @@ def test_strategy_registry_complete() -> None:
         "ChandelierStop",
         "MACDExit",
         "MovingAverageCrossoverExit",
+        "ParabolicSARExit",
         "ProfitTaking",
         "StopLoss",
         "TrailingStop",
