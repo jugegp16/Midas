@@ -142,6 +142,23 @@ class _Decision:
     active_tickers: list[str]
     decision_day: date
 
+    def filtered(self, available: set[str]) -> _Decision | None:
+        """Return a copy keeping only tickers in *available*, or None if empty."""
+        active = [t for t in self.active_tickers if t in available]
+        if not active:
+            return None
+        keep = set(active)
+        return _Decision(
+            allocation=AllocationResult(
+                targets={t: w for t, w in self.allocation.targets.items() if t in keep},
+                contributions={t: v for t, v in self.allocation.contributions.items() if t in keep},
+                blended_scores={t: v for t, v in self.allocation.blended_scores.items() if t in keep},
+            ),
+            clamp_attribution={k: v for k, v in self.clamp_attribution.items() if k in keep},
+            active_tickers=active,
+            decision_day=self.decision_day,
+        )
+
 
 @dataclass
 class _SimState:
@@ -179,6 +196,23 @@ class _SimState:
     # the current bar under ``execution_mode="next_open"|"next_close"``.
     # Always ``None`` under legacy ``execution_mode="close"``.
     pending: _Decision | None = None
+
+    def portfolio_value(self, close_prices: dict[str, float]) -> float:
+        """Cash + mark-to-market of held positions at *close_prices*."""
+        return self.cash + sum(
+            shares * close_prices[t] for t, shares in self.positions.items() if shares > 0 and t in close_prices
+        )
+
+    def close_twr_period(self, current_value: float) -> None:
+        """Close a TWR sub-period and reset the base for the next one."""
+        if self.twr_base_value > 0:
+            self.twr_periods.append(current_value / self.twr_base_value)
+        self.twr_base_value = current_value
+
+
+def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
+    """Latest close price for every ticker in *current_data*."""
+    return {t: float(current_data[t].close[-1]) for t in current_data}
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -570,8 +604,7 @@ class BacktestEngine:
         deferred_activated: set[str] = set()
 
         for day in trading_days:
-            if state.last_day != day:
-                state.last_day = day
+            state.last_day = day
 
             # Advance pointers and build current slices
             current_data: dict[str, PriceHistory] = {}
@@ -592,34 +625,17 @@ class BacktestEngine:
 
             # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
-                split_val = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
-                )
-                state.split_value = split_val
+                closes = _close_prices(current_data)
+                state.split_value = state.portfolio_value(closes)
                 state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
+                    state.bh_positions.get(t, 0) * closes.get(t, 0) for t in state.bh_positions
                 )
-                # Close current TWR sub-period at the split boundary.
-                if state.twr_base_value > 0:
-                    state.twr_periods.append(split_val / state.twr_base_value)
-                    state.twr_base_value = split_val
+                state.close_twr_period(state.split_value)
                 state.twr_split_idx = len(state.twr_periods)
 
-            # Phased allocator flow. ``close`` is the legacy same-day path;
-            # ``next_open``/``next_close`` execute yesterday's decision at
-            # today's open/close and defer today's decision to the next bar.
-            if self._execution_mode == "close":
-                self._run_day(state, portfolio, current_data, day)
-            else:
-                self._run_day_lagged(state, portfolio, current_data, day)
+            self._run_day(state, portfolio, current_data, day)
 
-            # Record equity curve snapshot
-            day_value = state.cash + sum(
-                state.positions.get(t, 0) * float(current_data[t].close[-1])
-                for t in current_data
-                if state.positions.get(t, 0) > 0
-            )
-            state.equity_curve.append((day, day_value))
+            state.equity_curve.append((day, state.portfolio_value(_close_prices(current_data))))
 
     def _activate_deferred(
         self,
@@ -641,13 +657,8 @@ class BacktestEngine:
                 # the newly activated ticker), then reset the base to include
                 # the new position. Otherwise the new capital would be counted
                 # as pure return by the closing final_value / twr_base ratio.
-                pre_activation_value = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t].close[-1])
-                    for t in current_data
-                    if state.positions.get(t, 0) > 0
-                )
-                if state.twr_base_value > 0:
-                    state.twr_periods.append(pre_activation_value / state.twr_base_value)
+                pre_activation_value = state.portfolio_value(_close_prices(current_data))
+                state.close_twr_period(pre_activation_value)
                 state.twr_base_value = pre_activation_value + added_value
 
                 state.positions[ticker] = shares
@@ -670,48 +681,34 @@ class BacktestEngine:
         current_data: dict[str, PriceHistory],
         day: date,
     ) -> None:
-        """Legacy same-day path: decide at T close, execute at T close.
+        """Single-day tick: credit cash, execute any pending, decide, maybe execute.
 
-        Used when ``execution_mode="close"``. Also used directly by unit
-        tests that hand-build a ``_SimState`` and want to pin the full
-        allocate → clamp → size → execute pipeline inside a single tick
-        without caring about execution lag.
-        """
-        self._credit_cash_infusion(state, portfolio, current_data, day)
-        self._update_high_water_marks(state, current_data)
-        decision = self._decide(state, current_data, day)
-        if decision is None:
-            return
-        exec_prices = {t: float(current_data[t].close[-1]) for t in decision.active_tickers}
-        self._size_and_execute(state, decision, exec_prices, day)
-
-    def _run_day_lagged(
-        self,
-        state: _SimState,
-        portfolio: PortfolioConfig,
-        current_data: dict[str, PriceHistory],
-        day: date,
-    ) -> None:
-        """Lagged path for ``execution_mode="next_open"|"next_close"``.
-
-        Cash infusion → execute yesterday's pending at today's exec prices
-        → mark HWM at today's close → decide for today → stash decision as
-        pending for tomorrow. The decision on the *last* simulated day
-        intentionally never executes (there is no next bar inside the
-        window) — that matches reality: an order placed after the final
-        session cannot fill inside the backtest.
+        Under ``close`` mode, today's decision executes immediately at
+        today's close.  Under ``next_open``/``next_close``, today's
+        decision is stashed as ``pending`` and fills on the next bar.
+        The last simulated day's decision under lag modes intentionally
+        never executes — there is no T+1 bar in the window.
         """
         self._credit_cash_infusion(state, portfolio, current_data, day)
 
+        # Execute yesterday's pending decision at today's prices.
         if state.pending is not None:
-            pending = self._pending_for_today(state.pending, current_data)
+            pending = state.pending.filtered(set(current_data))
             if pending is not None:
-                exec_prices = self._execution_prices(pending.active_tickers, current_data)
+                price_field = "open" if self._execution_mode == "next_open" else "close"
+                exec_prices = {t: float(getattr(current_data[t], price_field)[-1]) for t in pending.active_tickers}
                 self._size_and_execute(state, pending, exec_prices, day)
             state.pending = None
 
         self._update_high_water_marks(state, current_data)
-        state.pending = self._decide(state, current_data, day)
+        decision = self._decide(state, current_data, day)
+        if decision is None:
+            return
+
+        if self._execution_mode == "close":
+            self._size_and_execute(state, decision, _close_prices(current_data), day)
+        else:
+            state.pending = decision
 
     def _credit_cash_infusion(
         self,
@@ -730,13 +727,8 @@ class BacktestEngine:
         infusion = portfolio.cash_infusion
         if not infusion or infusion.next_date > day:
             return
-        pre_infusion_value = state.cash + sum(
-            state.positions.get(t, 0) * float(current_data[t].close[-1])
-            for t in current_data
-            if state.positions.get(t, 0) > 0
-        )
-        if state.twr_base_value > 0:
-            state.twr_periods.append(pre_infusion_value / state.twr_base_value)
+        pre_infusion_value = state.portfolio_value(_close_prices(current_data))
+        state.close_twr_period(pre_infusion_value)
         state.cash += infusion.amount
         state.twr_base_value = pre_infusion_value + infusion.amount
         infusion.advance()
@@ -753,12 +745,9 @@ class BacktestEngine:
         a fresh peak.
         """
         for ticker, pos in state.positions.items():
-            if pos <= 0 or ticker not in current_data:
-                continue
-            px = float(current_data[ticker].close[-1])
-            prev = state.high_water_marks.get(ticker, 0.0)
-            if px > prev:
-                state.high_water_marks[ticker] = px
+            if pos > 0 and ticker in current_data:
+                px = float(current_data[ticker].close[-1])
+                state.high_water_marks[ticker] = max(px, state.high_water_marks.get(ticker, 0.0))
 
     def _decide(
         self,
@@ -780,7 +769,7 @@ class BacktestEngine:
         if not active_tickers:
             return None
 
-        current_prices = {t: float(current_data[t].close[-1]) for t in active_tickers}
+        current_prices = _close_prices(current_data)
 
         # Current portfolio weights so the allocator can hold (not
         # drift-correct) tickers whose entry signals don't score today.
@@ -788,11 +777,11 @@ class BacktestEngine:
         # allocator falls back to its equal-weight baseline rather than
         # anchoring held tickers at 0.
         total_value = state.cash + sum(state.positions.get(t, 0.0) * current_prices[t] for t in active_tickers)
-        current_weights: dict[str, float] | None = None
-        if total_value > 0:
-            current_weights = {
-                t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers
-            }
+        current_weights: dict[str, float] | None = (
+            {t: (state.positions.get(t, 0.0) * current_prices[t]) / total_value for t in active_tickers}
+            if total_value > 0
+            else None
+        )
 
         # Phase 1: allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
@@ -853,27 +842,24 @@ class BacktestEngine:
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
         total_value = state.cash + sum(positions[t] * exec_prices[t] for t in active_tickers)
 
-        # Preserve "hold" semantics across overnight price drift. Under
-        # lag modes the fill happens at T+1's open/close, so a held
-        # ticker's actual weight has drifted from the decision-day target.
-        # Rewrite pure-hold targets to the current weight so the delta
-        # collapses to zero. Tickers with an exit-clamp verdict are
-        # exempt — their target is an explicit sell that must survive
-        # drift. Under ``close`` mode exec_prices == decision prices so
-        # this is a no-op, but we skip it entirely for clarity.
+        # Preserve "hold" semantics across price drift between decision and
+        # fill.  A pure-hold ticker (no positive entry-signal contributions,
+        # no exit clamp) gets its target rewritten to the current weight at
+        # exec_prices so the delta collapses to zero.  Under ``close`` mode
+        # exec_prices == decision prices so this is a no-op.
         rebalanced_targets = dict(decision.allocation.targets)
         contribs_map = decision.allocation.contributions
-        if self._execution_mode != "close":
-            for ticker in active_tickers:
-                if ticker in decision.clamp_attribution:
-                    continue
-                contribs = contribs_map.get(ticker, {})
-                if any(v > 0 for v in contribs.values()):
-                    continue
-                if total_value <= 0:
-                    rebalanced_targets[ticker] = 0.0
-                    continue
-                rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
+        for ticker in active_tickers:
+            if ticker in decision.clamp_attribution:
+                continue
+            contribs = contribs_map.get(ticker, {})
+            if any(v > 0 for v in contribs.values()):
+                continue
+            if total_value <= 0:
+                rebalanced_targets[ticker] = 0.0
+                continue
+            rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
+
         rebalanced_allocation = AllocationResult(
             targets=rebalanced_targets,
             contributions=contribs_map,
@@ -883,34 +869,32 @@ class BacktestEngine:
         # Phase 3: size sells and filter restriction-blocked ones *before*
         # computing post-sell cash. Leaking blocked proceeds would let
         # ``size_buys`` authorize buys against cash that never arrives.
-        exit_orders = self._order_sizer.size_sells(
-            rebalanced_targets,
-            positions,
-            exec_prices,
-            total_value,
-            decision.clamp_attribution,
-        )
-        if state.restriction_tracker:
-            exit_orders = [
-                o for o in exit_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)
-            ]
-        sell_proceeds = sum(o.estimated_value for o in exit_orders)
-        post_sell_cash = state.cash + sell_proceeds
+        def unrestricted(orders: list[Order]) -> list[Order]:
+            if not state.restriction_tracker:
+                return orders
+            return [o for o in orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
 
-        # Phase 4: size buys against post-sell cash, then filter restrictions.
-        # ``total_value`` is derived from exec_prices, not the decision-day
-        # prices.  Under lag modes these differ; re-deriving from fill prices
-        # keeps the delta math self-consistent with the actual fill.
-        buy_orders = self._order_sizer.size_buys(
-            rebalanced_allocation,
-            positions,
-            exec_prices,
-            post_sell_cash,
-            self._constraints,
-            total_value=total_value,
+        exit_orders = unrestricted(
+            self._order_sizer.size_sells(
+                rebalanced_targets,
+                positions,
+                exec_prices,
+                total_value,
+                decision.clamp_attribution,
+            )
         )
-        if state.restriction_tracker:
-            buy_orders = [o for o in buy_orders if not state.restriction_tracker.is_blocked(o.ticker, o.direction, day)]
+        post_sell_cash = state.cash + sum(o.estimated_value for o in exit_orders)
+
+        buy_orders = unrestricted(
+            self._order_sizer.size_buys(
+                rebalanced_allocation,
+                positions,
+                exec_prices,
+                post_sell_cash,
+                self._constraints,
+                total_value=total_value,
+            )
+        )
 
         # Phase 5: sells first (proceeds land before buys), then buys.
         # ``_execute`` emits one TradeRecord per holding-period group on
@@ -939,51 +923,6 @@ class BacktestEngine:
             if state.restriction_tracker:
                 state.restriction_tracker.record_trade(order.ticker, order.direction, day)
             state.cash -= order.estimated_value
-
-    def _execution_prices(
-        self,
-        active_tickers: list[str],
-        current_data: dict[str, PriceHistory],
-    ) -> dict[str, float]:
-        """Per-ticker fill price for a lagged execution on the current bar.
-
-        ``next_open`` reads today's open; ``next_close`` reads today's
-        close. Legacy ``close`` mode never reaches this helper — it sizes
-        off ``close[-1]`` inline in ``_run_day``.
-        """
-        if self._execution_mode == "next_open":
-            return {t: float(current_data[t].open[-1]) for t in active_tickers}
-        return {t: float(current_data[t].close[-1]) for t in active_tickers}
-
-    def _pending_for_today(
-        self,
-        pending: _Decision,
-        current_data: dict[str, PriceHistory],
-    ) -> _Decision | None:
-        """Project yesterday's decision onto tickers with data today.
-
-        A ticker that was tradable at decision time but has no bar today
-        (delisted, gapped-out provider, end of data) is dropped from the
-        decision: there is no way to price its fill. If every ticker
-        drops out, returns ``None`` and the caller skips execution.
-        """
-        active = [t for t in pending.active_tickers if t in current_data]
-        if not active:
-            return None
-        targets = {t: w for t, w in pending.allocation.targets.items() if t in current_data}
-        active_set = set(active)
-        projected = AllocationResult(
-            targets=targets,
-            contributions={t: v for t, v in pending.allocation.contributions.items() if t in active_set},
-            blended_scores={t: v for t, v in pending.allocation.blended_scores.items() if t in active_set},
-        )
-        filtered_clamps = {k: v for k, v in pending.clamp_attribution.items() if k in current_data}
-        return _Decision(
-            allocation=projected,
-            clamp_attribution=filtered_clamps,
-            active_tickers=active,
-            decision_day=pending.decision_day,
-        )
 
     @staticmethod
     def _aggregate_cost_basis(lots: list[PositionLot]) -> float:
@@ -1153,18 +1092,14 @@ class BacktestEngine:
             in_range = df[df.index <= end_day]
             if len(in_range) > 0:
                 final_prices[ticker] = float(in_range["close"].iloc[-1])
-        final_value = state.cash + sum(state.positions.get(t, 0) * p for t, p in final_prices.items())
+        final_value = state.portfolio_value(final_prices)
         bh_value = portfolio.available_cash + sum(
             state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions
         )
 
         # Close the final TWR sub-period and compound all periods.
-        if state.twr_base_value > 0:
-            state.twr_periods.append(final_value / state.twr_base_value)
-        twr = 1.0
-        for period_return in state.twr_periods:
-            twr *= period_return
-        twr -= 1.0
+        state.close_twr_period(final_value)
+        twr = math.prod(state.twr_periods) - 1.0
 
         sv = state.starting_value
         spbh = state.split_bh_value

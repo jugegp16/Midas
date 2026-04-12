@@ -1107,6 +1107,7 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
         order_sizer=sizer,
         exit_rules=[ProfitTaking(gain_threshold=0.10)],
         constraints=constraints,
+        execution_mode="close",
     )
 
     # A single held ticker in profit → ProfitTaking fires. Round-trip
@@ -1168,6 +1169,7 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
         order_sizer=sizer,
         exit_rules=[ProfitTaking(gain_threshold=0.10), TrailingStop(trail_pct=0.05)],
         constraints=constraints,
+        execution_mode="close",
     )
 
     # Lot @ $80 basis with HWM=$130 (the peak the position has seen).
