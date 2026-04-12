@@ -853,11 +853,41 @@ class BacktestEngine:
         positions = {t: state.positions.get(t, 0.0) for t in active_tickers}
         total_value = state.cash + sum(positions[t] * exec_prices[t] for t in active_tickers)
 
+        # Preserve "hold" semantics across overnight price drift. The
+        # allocator's Option-A rule is that a ticker with no positive
+        # entry-signal contribution holds its *decision-day* weight; it's
+        # not an instruction to rebalance. Under lag, by the time we fill
+        # at T+1's open the ticker's actual weight has drifted — re-sizing
+        # against the stale target would ask the sizer to buy (on drops)
+        # or sell (on pops) for no reason, and ``size_buys`` would fire
+        # its "no positive contributions" suppression warning for every
+        # held ticker every tick. Rewrite pure-hold targets to today's
+        # current weight so the delta collapses to zero. Tickers with a
+        # live exit-clamp verdict are exempt — their target is an
+        # explicit sell decision that must survive drift.
+        rebalanced_targets = dict(decision.allocation.targets)
+        contribs_map = decision.allocation.contributions
+        for ticker in active_tickers:
+            if ticker in decision.clamp_attribution:
+                continue
+            contribs = contribs_map.get(ticker, {})
+            if any(v > 0 for v in contribs.values()):
+                continue
+            if total_value <= 0:
+                rebalanced_targets[ticker] = 0.0
+                continue
+            rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
+        rebalanced_allocation = AllocationResult(
+            targets=rebalanced_targets,
+            contributions=contribs_map,
+            blended_scores=decision.allocation.blended_scores,
+        )
+
         # Phase 3: size sells and filter restriction-blocked ones *before*
         # computing post-sell cash. Leaking blocked proceeds would let
         # ``size_buys`` authorize buys against cash that never arrives.
         exit_orders = self._order_sizer.size_sells(
-            decision.allocation.targets,
+            rebalanced_targets,
             positions,
             exec_prices,
             total_value,
@@ -874,7 +904,7 @@ class BacktestEngine:
         # ``total_value`` is the same denominator ``_decide`` used for
         # ``current_weights`` so per-ticker delta math stays consistent.
         buy_orders = self._order_sizer.size_buys(
-            decision.allocation,
+            rebalanced_allocation,
             positions,
             exec_prices,
             post_sell_cash,

@@ -280,6 +280,51 @@ def test_execution_lag_close_mode_preserves_legacy_same_day_fill() -> None:
     assert buys[0].price == 99.0
 
 
+def test_execution_lag_no_drift_warning_for_held_tickers() -> None:
+    """Under lag, pure-hold tickers must not trip ``size_buys`` warnings.
+
+    The allocator's Option-A rule marks a ticker with no positive
+    entry-signal contributions as "hold at decision-day current weight".
+    With execution lag, prices drift overnight and the ticker's *actual*
+    T+1 weight diverges from the stored target, producing a fake delta.
+    ``size_buys`` used to log a "no positive contributions" suppression
+    warning for every held ticker every tick. Engine should now rewrite
+    held-ticker targets to T+1 current weight so the delta collapses.
+    """
+    # Flat series — GapDownRecovery never fires, every tick is pure hold.
+    n = 30
+    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    closes = 100.0 + np.arange(n, dtype=float)  # slow drift, $100 -> $129
+    opens = closes - 0.5
+    highs = closes + 0.5
+    lows = closes - 1.0
+    volumes = np.full(n, 1_000_000.0)
+    frame = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+
+    log_messages: list[str] = []
+    engine = BacktestEngine(
+        allocator=Allocator(
+            [(GapDownRecovery(gap_threshold=0.03), 1.0)],
+            AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95),
+            n_tickers=1,
+        ),
+        order_sizer=OrderSizer(default_slippage=0.0),
+        exit_rules=[],
+        constraints=AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95),
+        enable_split=False,
+        execution_mode="next_open",
+        log_fn=log_messages.append,
+    )
+
+    engine.run(_lag_test_portfolio(), {"GAPCO": frame}, dates[0], dates[-1])
+
+    suppression_msgs = [m for m in log_messages if "Suppressing buy" in m or "no positive entry-signal" in m]
+    assert suppression_msgs == [], f"held-ticker drift produced spurious warnings: {suppression_msgs}"
+
+
 def test_execution_lag_last_day_decision_never_executes() -> None:
     """A signal on the final bar has no next bar to fill against — dropped.
 
