@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import pickle
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,9 +13,9 @@ import yfinance as yf  # type: ignore[import-untyped]
 
 from midas.data.provider import DataProvider
 
-DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
+logger = logging.getLogger(__name__)
 
-OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
 
 
 class CachedYFinanceProvider(DataProvider):
@@ -45,13 +46,32 @@ class CachedYFinanceProvider(DataProvider):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
+        volume = df["Volume"].astype(float)
+        # yfinance can emit NaN volume on indexes, illiquid crypto, or
+        # pre-market-adjusted bars. VWAPReversion's rolling sum is poisoned
+        # by NaN, so coerce to zero — those bars then fall back to a simple
+        # mean of typical price. Log the count so a chronic data-quality
+        # issue (e.g. an index with no real volume) is visible instead of
+        # silently degrading the strategy.
+        nan_volume_count = int(volume.isna().sum())
+        if nan_volume_count > 0:
+            logger.warning(
+                "%s: %d bar(s) with NaN volume between %s and %s — coerced to 0; "
+                "VWAP-weighted strategies will fall back to typical-price SMA on those bars.",
+                ticker,
+                nan_volume_count,
+                start,
+                end,
+            )
+            volume = volume.fillna(0.0)
+
         frame = pd.DataFrame(
             {
                 "open": df["Open"].astype(float),
                 "high": df["High"].astype(float),
                 "low": df["Low"].astype(float),
                 "close": df["Close"].astype(float),
-                "volume": df["Volume"].astype(float),
+                "volume": volume,
             }
         )
         frame.index = pd.to_datetime(frame.index).date

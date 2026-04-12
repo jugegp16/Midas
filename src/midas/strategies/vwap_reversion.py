@@ -67,7 +67,8 @@ class VWAPReversion(EntrySignal):
         vwap = self._rolling_vwap(price_history)
         assert vwap is not None  # n >= w
         current = close[w - 1 :]
-        deviation = np.where(vwap != 0, (current - vwap) / vwap, 0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            deviation = np.where(vwap != 0, (current - vwap) / vwap, 0.0)
         scores[w - 1 :] = np.clip(-deviation / self._threshold, 0.0, 1.0)
         return scores
 

@@ -95,13 +95,19 @@ class LiveEngine:
     def _tick(self, tickers: list[str]) -> None:
         today = date.today()
 
-        # Fetch recent history for all tickers
+        # Fetch recent history for all tickers and convert to PriceHistory at
+        # the boundary. Both calls share a try/except so a misshapen frame
+        # (missing OHLCV columns, bad index) skips that ticker for the tick
+        # instead of crashing the entire poll loop.
         end = today
         start = end - timedelta(days=self._history_days)
         price_data: dict[str, pd.DataFrame] = {}
+        price_history: dict[str, PriceHistory] = {}
         for ticker in tickers:
             try:
-                price_data[ticker] = self._provider.get_history(ticker, start, end)
+                df = self._provider.get_history(ticker, start, end)
+                price_history[ticker] = PriceHistory.from_dataframe(df)
+                price_data[ticker] = df
             except Exception as e:
                 print_status(f"Warning: failed to fetch {ticker}: {e}")
 
@@ -122,10 +128,6 @@ class LiveEngine:
                 current_prices[ticker] = float(price_data[ticker]["close"].iloc[-1])
 
         active_tickers = [t for t in tickers if t in price_data]
-
-        # Convert DataFrames to PriceHistory at the boundary — strategies
-        # and the allocator operate on numpy-backed structs for performance.
-        price_history: dict[str, PriceHistory] = {t: PriceHistory.from_dataframe(price_data[t]) for t in active_tickers}
 
         # Current positions + weights (weights feed Option A: neutral=hold).
         positions = {}

@@ -18,38 +18,41 @@ class ChandelierStop(ExitRule):
     def warmup_period(self) -> int:
         return self._window
 
-    def _true_range(
+    def _wilder_atr(
         self,
         high: np.ndarray,
         low: np.ndarray,
         close: np.ndarray,
-    ) -> np.ndarray:
-        """TR over the last N bars: max(H-L, |H-prevC|, |L-prevC|).
+    ) -> float:
+        """Wilder-smoothed ATR over the full available history.
 
-        When the window's first bar has no prior close available, its TR
-        falls back to H - L (standard Wilder convention).
+        TR_t = max(H-L, |H - prevC|, |L - prevC|), with bar 0 falling back
+        to H - L since no prior close is available. The seed ATR is the
+        simple mean of the first ``window`` TRs; subsequent bars apply the
+        recursive formula ``ATR_t = ((window - 1) * ATR_{t-1} + TR_t) / window``.
+
+        With exactly ``window`` bars of history this degenerates to the
+        simple mean (no iteration). With more, the exponential decay tail
+        matches Wilder's original definition and most charting tools.
         """
-        n = self._window
-        start = len(close) - n
-        h = high[start:]
-        lo = low[start:]
-        if start >= 1:
-            prev_c = close[start - 1 : -1]
-            tr = np.maximum.reduce([h - lo, np.abs(h - prev_c), np.abs(lo - prev_c)])
-        else:
-            tr = np.empty(n)
-            tr[0] = h[0] - lo[0]
+        n = len(close)
+        tr = np.empty(n)
+        tr[0] = high[0] - low[0]
+        if n > 1:
             prev_c = close[:-1]
-            tr[1:] = np.maximum.reduce([h[1:] - lo[1:], np.abs(h[1:] - prev_c), np.abs(lo[1:] - prev_c)])
-        return np.asarray(tr, dtype=float)
+            tr[1:] = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - prev_c), np.abs(low[1:] - prev_c)])
+        w = self._window
+        atr = float(tr[:w].mean())
+        for t in range(w, n):
+            atr = ((w - 1) * atr + float(tr[t])) / w
+        return atr
 
     def _stop_level(self, price_history: PriceHistory) -> tuple[float, float, float] | None:
         """Return ``(stop, highest_high, atr)`` or None if not enough history."""
         close = price_history.close
         if len(close) < self._window:
             return None
-        tr = self._true_range(price_history.high, price_history.low, close)
-        atr = float(tr.mean())
+        atr = self._wilder_atr(price_history.high, price_history.low, close)
         highest = float(price_history.high[-self._window :].max())
         return highest - self._multiplier * atr, highest, atr
 
