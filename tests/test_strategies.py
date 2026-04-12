@@ -247,6 +247,22 @@ class TestDonchianBreakout:
         assert strategy.name == "DonchianBreakout"
         assert strategy.description
 
+    def test_precompute_matches_score(self) -> None:
+        # Vectorized precompute must match the per-bar score() exactly for
+        # every prefix — the backtest engine relies on this equivalence.
+        rng = np.random.default_rng(seed=11)
+        prices = 100.0 + np.cumsum(rng.normal(0, 1.0, size=80))
+        strategy = DonchianBreakout(window=20, breakout_scale=0.02)
+        precomputed = strategy.precompute(prices)
+        assert precomputed is not None
+        for i in range(len(prices)):
+            expected = strategy.score(prices[: i + 1])
+            actual = precomputed[i]
+            if expected is None:
+                assert np.isnan(actual)
+            else:
+                assert np.isclose(actual, expected, rtol=1e-9), f"mismatch at i={i}: {actual} vs {expected}"
+
 
 class TestKeltnerChannel:
     """Breakout entry: bullish when price breaks above EMA + k x ATR upper band."""
@@ -290,6 +306,20 @@ class TestKeltnerChannel:
         strategy = KeltnerChannel(window=20, multiplier=2.0)
         assert strategy.name == "KeltnerChannel"
         assert strategy.description
+
+    def test_precompute_matches_score(self) -> None:
+        rng = np.random.default_rng(seed=13)
+        prices = 100.0 + np.cumsum(rng.normal(0, 1.2, size=80))
+        strategy = KeltnerChannel(window=20, multiplier=2.0)
+        precomputed = strategy.precompute(prices)
+        assert precomputed is not None
+        for i in range(len(prices)):
+            expected = strategy.score(prices[: i + 1])
+            actual = precomputed[i]
+            if expected is None:
+                assert np.isnan(actual)
+            else:
+                assert np.isclose(actual, expected, rtol=1e-9), f"mismatch at i={i}: {actual} vs {expected}"
 
 
 class TestChandelierStop:

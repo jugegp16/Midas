@@ -17,6 +17,29 @@ class KeltnerChannel(EntrySignal):
     def warmup_period(self) -> int:
         return self._window
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w or w < 2:
+            return scores
+        cs = np.empty(n + 1)
+        cs[0] = 0.0
+        np.cumsum(prices, out=cs[1:])
+        centerlines = (cs[w:] - cs[:-w]) / w
+        abs_diffs = np.abs(np.diff(prices))
+        cs_diff = np.empty(n)
+        cs_diff[0] = 0.0
+        np.cumsum(abs_diffs, out=cs_diff[1:])
+        atr_series = (cs_diff[w - 1 :] - cs_diff[: n - w + 1]) / (w - 1)
+        upper = centerlines + self._multiplier * atr_series
+        current = prices[w - 1 :]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            excess_atr = np.where(atr_series > 0, (current - upper) / atr_series, 0.0)
+        raw = np.where(current > upper, excess_atr, 0.0)
+        scores[w - 1 :] = np.clip(raw, 0.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,

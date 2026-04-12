@@ -17,6 +17,21 @@ class DonchianBreakout(EntrySignal):
     def warmup_period(self) -> int:
         return self._window + 1
 
+    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+        n = len(prices)
+        w = self._window
+        scores = np.full(n, np.nan)
+        if n < w + 1:
+            return scores
+        windows = np.lib.stride_tricks.sliding_window_view(prices[:-1], w)
+        prior_highs = windows.max(axis=1)
+        current = prices[w:]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            excess_pct = np.where(prior_highs > 0, (current - prior_highs) / prior_highs, 0.0)
+        raw = np.where(current > prior_highs, excess_pct / self._breakout_scale, 0.0)
+        scores[w:] = np.clip(raw, 0.0, 1.0)
+        return scores
+
     def score(
         self,
         price_history: np.ndarray,
