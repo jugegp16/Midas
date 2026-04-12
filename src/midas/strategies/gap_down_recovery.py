@@ -15,28 +15,29 @@ class GapDownRecovery(EntrySignal):
 
     @property
     def warmup_period(self) -> int:
-        return 3
+        return 2
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
-        prices = price_history.close
-        n = len(prices)
+        close = price_history.close
+        opens = price_history.open
+        n = len(close)
         scores = np.full(n, np.nan)
-        if n < 3:
+        if n < 2:
             return scores
-        prev_close = prices[:-2]
-        gap_open = prices[1:-1]
-        current = prices[2:]
-        gap_pct = np.where(prev_close != 0, (prev_close - gap_open) / prev_close, 0.0)
+        prev_close = close[:-1]
+        today_open = opens[1:]
+        current = close[1:]
+        gap_pct = np.where(prev_close != 0, (prev_close - today_open) / prev_close, 0.0)
         is_gap = gap_pct >= self._gap_threshold
-        is_recovery = current > gap_open
+        is_recovery = current > today_open
         active = is_gap & is_recovery
-        gap_size = prev_close - gap_open
+        gap_size = prev_close - today_open
         recovery_pct = np.where(
             active & (gap_size != 0),
-            (current - gap_open) / gap_size,
+            (current - today_open) / gap_size,
             0.0,
         )
-        scores[2:] = np.where(active, np.clip(np.minimum(recovery_pct, 1.0), 0.0, 1.0), 0.0)
+        scores[1:] = np.where(active, np.clip(np.minimum(recovery_pct, 1.0), 0.0, 1.0), 0.0)
         return scores
 
     def score(
@@ -44,21 +45,21 @@ class GapDownRecovery(EntrySignal):
         price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        prices = price_history.close
-        if len(prices) < 3:
+        close = price_history.close
+        if len(close) < 2:
             return None
 
-        prev_close = float(prices[-3])
-        gap_open = float(prices[-2])
-        current = float(prices[-1])
+        prev_close = float(close[-2])
+        today_open = float(price_history.open[-1])
+        current = float(close[-1])
 
         if prev_close == 0:
             return 0.0
 
-        gap_pct = (prev_close - gap_open) / prev_close
+        gap_pct = (prev_close - today_open) / prev_close
 
-        if gap_pct >= self._gap_threshold and current > gap_open:
-            recovery_pct = (current - gap_open) / (prev_close - gap_open)
+        if gap_pct >= self._gap_threshold and current > today_open:
+            recovery_pct = (current - today_open) / (prev_close - today_open)
             return self.clamp(min(recovery_pct, 1.0), 0.0, 1.0)
         return 0.0
 

@@ -1,7 +1,7 @@
 """Tests for individual strategies — entry score() and exit clamp_target() interfaces."""
 
 import numpy as np
-from conftest import ph
+from conftest import ph, ph_ohlc
 
 from midas.data.price_history import PriceHistory
 from midas.strategies.base import MIN_WARMUP_CALENDAR_DAYS, warmup_bars_to_calendar_days
@@ -158,7 +158,7 @@ class TestGapDownRecovery:
     def test_positive_score_on_gap_recovery(self, gap_down_recovery_prices: PriceHistory) -> None:
         strategy = GapDownRecovery(gap_threshold=0.03)
         found_signal = False
-        for i in range(3, len(gap_down_recovery_prices)):
+        for i in range(2, len(gap_down_recovery_prices)):
             score = strategy.score(gap_down_recovery_prices[: i + 1])
             if score is not None and score > 0:
                 found_signal = True
@@ -170,9 +170,34 @@ class TestGapDownRecovery:
         assert strategy.score(flat_prices) == 0.0
 
     def test_insufficient_history(self) -> None:
-        short = ph(np.array([100.0, 95.0]))
+        short = ph(np.array([100.0]))
         strategy = GapDownRecovery()
         assert strategy.score(short) is None
+
+    def test_real_open_gap_fires(self) -> None:
+        # Day 1 opens 5% below prior close and closes halfway back into the gap.
+        prices = ph_ohlc(
+            open_=np.array([100.0, 95.0]),
+            high=np.array([100.0, 97.5]),
+            low=np.array([100.0, 94.0]),
+            close=np.array([100.0, 97.0]),
+        )
+        strategy = GapDownRecovery(gap_threshold=0.03)
+        score = strategy.score(prices)
+        assert score is not None
+        assert score > 0
+
+    def test_close_to_close_drop_without_real_gap_does_not_fire(self) -> None:
+        # Prev close = 100; today opens at 100 (no gap) and closes at 90.
+        # Real gap semantics: no fire. Old close-to-close semantics would fire.
+        prices = ph_ohlc(
+            open_=np.array([100.0, 100.0]),
+            high=np.array([100.0, 100.0]),
+            low=np.array([100.0, 90.0]),
+            close=np.array([100.0, 90.0]),
+        )
+        strategy = GapDownRecovery(gap_threshold=0.03)
+        assert strategy.score(prices) == 0.0
 
 
 class TestTrailingStop:
@@ -397,6 +422,25 @@ class TestChandelierStop:
         assert rule.name == "ChandelierStop"
         assert rule.description
 
+    def test_uses_real_true_range_and_highs(self) -> None:
+        # 22 flat-close bars at $100 with H=$102, L=$98 (intraday range $4) —
+        # a close-only "mean of |diff|" ATR would be 0 (all closes equal),
+        # but true-range ATR is $4. Final close $95, highest HIGH $102 → stop
+        # at 102 - 3*4 = $90. Current 95 > 90 → no fire.
+        n = 22
+        open_ = np.full(n, 100.0)
+        high = np.full(n, 102.0)
+        low = np.full(n, 98.0)
+        close = np.full(n, 100.0)
+        close[-1] = 95.0
+        low[-1] = 94.0
+        high[-1] = 100.0
+        prices = ph_ohlc(open_, high, low, close)
+        rule = ChandelierStop(window=22, multiplier=3.0)
+        # With real ATR ≈ $4 and highest high $102, stop ≈ $90.
+        # Current $95 is above the stop → no fire.
+        assert rule.clamp_target("X", 0.10, prices, cost_basis=100.0, high_water_mark=102.0) == 0.10
+
 
 class TestParabolicSARExit:
     """Wilder's self-accelerating SAR trailing stop: fire when SAR flips above price."""
@@ -571,8 +615,9 @@ class TestWarmupPeriod:
         assert DonchianBreakout(window=20).warmup_period == 21
         assert DonchianBreakout(window=55).warmup_period == 56
 
-    def test_gap_down_recovery_needs_three_bars(self) -> None:
-        assert GapDownRecovery().warmup_period == 3
+    def test_gap_down_recovery_needs_two_bars(self) -> None:
+        # One prior bar for prev_close, plus today's open/close.
+        assert GapDownRecovery().warmup_period == 2
 
 
 class TestWarmupBarsToCalendarDays:

@@ -19,15 +19,16 @@ class DonchianBreakout(EntrySignal):
         return self._window + 1
 
     def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
-        prices = price_history.close
-        n = len(prices)
+        highs = price_history.high
+        close = price_history.close
+        n = len(close)
         w = self._window
         scores = np.full(n, np.nan)
         if n < w + 1:
             return scores
-        windows = np.lib.stride_tricks.sliding_window_view(prices[:-1], w)
+        windows = np.lib.stride_tricks.sliding_window_view(highs[:-1], w)
         prior_highs = windows.max(axis=1)
-        current = prices[w:]
+        current = close[w:]
         with np.errstate(divide="ignore", invalid="ignore"):
             excess_pct = np.where(prior_highs > 0, (current - prior_highs) / prior_highs, 0.0)
         raw = np.where(current > prior_highs, excess_pct / self._breakout_scale, 0.0)
@@ -39,12 +40,12 @@ class DonchianBreakout(EntrySignal):
         price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        prices = price_history.close
-        if len(prices) < self._window + 1:
+        close = price_history.close
+        if len(close) < self._window + 1:
             return None
 
-        prior_high = float(prices[-self._window - 1 : -1].max())
-        current = float(prices[-1])
+        prior_high = float(price_history.high[-self._window - 1 : -1].max())
+        current = float(close[-1])
 
         if prior_high <= 0 or current <= prior_high:
             return 0.0
@@ -59,6 +60,6 @@ class DonchianBreakout(EntrySignal):
     @property
     def description(self) -> str:
         return (
-            f"Bullish when current price breaks above the highest close of "
+            f"Bullish when current price breaks above the highest high of "
             f"the prior {self._window} bars (Turtle-style breakout)"
         )

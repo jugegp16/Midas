@@ -99,6 +99,27 @@ def ph(close: np.ndarray) -> PriceHistory:
     return PriceHistory.from_close_only(dates, close_arr)
 
 
+def ph_ohlc(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+) -> PriceHistory:
+    """Wrap independent OHLC numpy arrays as a PriceHistory."""
+    close_arr = np.asarray(close, dtype=float)
+    dates = np.asarray(
+        [date(2024, 1, 1) + timedelta(days=i) for i in range(len(close_arr))],
+        dtype=object,
+    )
+    return PriceHistory(
+        dates=dates,
+        open=np.asarray(open_, dtype=float),
+        high=np.asarray(high, dtype=float),
+        low=np.asarray(low, dtype=float),
+        close=close_arr,
+    )
+
+
 @pytest.fixture
 def flat_prices() -> PriceHistory:
     """100 days of flat $100 price."""
@@ -146,9 +167,31 @@ def volatile_rising_prices() -> PriceHistory:
 
 @pytest.fixture
 def gap_down_recovery_prices() -> PriceHistory:
-    """Price stable then sharp drop then recovery — triggers gap down recovery."""
-    returns = [0.0] * 95 + [-0.05, -0.04, 0.06] + [0.0] * 2
-    return make_price_history(100, 100.0, returns)
+    """100 bars flat at $100 then a day that opens 5% down and recovers partway.
+
+    Day index 95: real gap — open=$95 (5% below prior close $100),
+    intraday low dips to $94, then rallies to close at $97 (halfway back
+    into the gap). ``GapDownRecovery`` reads the real OPEN vs prior CLOSE
+    to detect the gap, so this fixture uses independent OHLC arrays
+    instead of the degenerate close-only path.
+    """
+    n = 100
+    open_ = np.full(n, 100.0)
+    high = np.full(n, 100.0)
+    low = np.full(n, 100.0)
+    close = np.full(n, 100.0)
+    gap_day = 95
+    open_[gap_day] = 95.0
+    low[gap_day] = 94.0
+    high[gap_day] = 97.5
+    close[gap_day] = 97.0
+    # Subsequent flat days at the new level
+    for i in range(gap_day + 1, n):
+        open_[i] = 97.0
+        high[i] = 97.0
+        low[i] = 97.0
+        close[i] = 97.0
+    return ph_ohlc(open_, high, low, close)
 
 
 @pytest.fixture

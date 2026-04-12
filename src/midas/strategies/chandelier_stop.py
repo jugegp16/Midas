@@ -1,4 +1,4 @@
-"""Chandelier exit: k x ATR trailing stop off the rolling N-bar highest close."""
+"""Chandelier exit: k x ATR trailing stop off the rolling N-bar highest high."""
 
 from __future__ import annotations
 
@@ -18,14 +18,40 @@ class ChandelierStop(ExitRule):
     def warmup_period(self) -> int:
         return self._window
 
-    def _stop_level(self, price_history: PriceHistory) -> float | None:
-        prices = price_history.close
-        if len(prices) < self._window:
+    def _true_range(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+    ) -> np.ndarray:
+        """TR over the last N bars: max(H-L, |H-prevC|, |L-prevC|).
+
+        When the window's first bar has no prior close available, its TR
+        falls back to H - L (standard Wilder convention).
+        """
+        n = self._window
+        start = len(close) - n
+        h = high[start:]
+        lo = low[start:]
+        if start >= 1:
+            prev_c = close[start - 1 : -1]
+            tr = np.maximum.reduce([h - lo, np.abs(h - prev_c), np.abs(lo - prev_c)])
+        else:
+            tr = np.empty(n)
+            tr[0] = h[0] - lo[0]
+            prev_c = close[:-1]
+            tr[1:] = np.maximum.reduce([h[1:] - lo[1:], np.abs(h[1:] - prev_c), np.abs(lo[1:] - prev_c)])
+        return np.asarray(tr, dtype=float)
+
+    def _stop_level(self, price_history: PriceHistory) -> tuple[float, float, float] | None:
+        """Return ``(stop, highest_high, atr)`` or None if not enough history."""
+        close = price_history.close
+        if len(close) < self._window:
             return None
-        recent = prices[-self._window :]
-        highest = float(recent.max())
-        atr = float(np.abs(np.diff(recent)).mean())
-        return highest - self._multiplier * atr
+        tr = self._true_range(price_history.high, price_history.low, close)
+        atr = float(tr.mean())
+        highest = float(price_history.high[-self._window :].max())
+        return highest - self._multiplier * atr, highest, atr
 
     def clamp_target(
         self,
@@ -37,9 +63,10 @@ class ChandelierStop(ExitRule):
     ) -> float:
         if proposed_target <= 0:
             return proposed_target
-        stop = self._stop_level(price_history)
-        if stop is None:
+        level = self._stop_level(price_history)
+        if level is None:
             return proposed_target
+        stop, _, _ = level
         current = float(price_history.close[-1])
         if current < stop:
             return 0.0
@@ -52,12 +79,11 @@ class ChandelierStop(ExitRule):
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        prices = price_history.close
-        recent = prices[-self._window :]
-        highest = float(recent.max())
-        atr = float(np.abs(np.diff(recent)).mean()) if len(recent) > 1 else 0.0
-        stop = highest - self._multiplier * atr
-        current = float(prices[-1])
+        level = self._stop_level(price_history)
+        current = float(price_history.close[-1])
+        if level is None:
+            return f"ChandelierStop: insufficient history for {ticker}"
+        stop, highest, atr = level
         return (
             f"ChandelierStop: price ${current:.2f} below "
             f"${stop:.2f} (${highest:.2f} peak - "
