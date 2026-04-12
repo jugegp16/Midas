@@ -550,6 +550,50 @@ class TestVWAPReversion:
         strategy = VWAPReversion(window=20)
         assert strategy.score(short) is None
 
+    def test_volume_weighting_shifts_vwap_toward_heavy_bars(self) -> None:
+        # 20 bars: 19 flat bars at $100 with volume 1, then a final bar at
+        # $100 that carries all the weight of a huge volume surge at $120.
+        # Wait — we want to show that volume moves VWAP. Build a window
+        # where heavy volume sits on a HIGH price, so the rolling VWAP is
+        # pulled well above the simple mean. A current close of $100 then
+        # reads as below VWAP and fires, whereas the unweighted SMA would
+        # be much closer and emit a weaker (or zero) signal.
+        n = 20
+        close = np.full(n, 100.0)
+        close[:10] = 120.0
+        volume = np.full(n, 1.0)
+        volume[:10] = 1_000.0  # heavy volume at the high prices
+        strategy = VWAPReversion(window=n, threshold=0.02)
+        hist = ph_ohlc(close, close, close, close, volume=volume)
+        score = strategy.score(hist)
+        assert score is not None
+        assert score == 1.0
+
+        # With flat unit volume the signal degenerates to the SMA proxy
+        # — the current close $100 sits at the window mean $110 which is
+        # ~9% below, also clamps to 1.0. To isolate the volume effect we
+        # compare against a *different* surge pattern: heavy volume on the
+        # LOW bars, which drags VWAP down toward the current price so the
+        # deviation shrinks and the score drops below the weighted case.
+        volume_low_heavy = np.full(n, 1.0)
+        volume_low_heavy[10:] = 1_000.0
+        hist_low_heavy = ph_ohlc(close, close, close, close, volume=volume_low_heavy)
+        low_heavy_score = strategy.score(hist_low_heavy)
+        assert low_heavy_score is not None
+        assert low_heavy_score < score
+
+    def test_missing_volume_falls_back_to_sma(self) -> None:
+        # A close-only PriceHistory has volume=None. Behavior should match
+        # a simple rolling mean of the typical price (which equals close
+        # for degenerate bars), matching the prior proxy implementation.
+        prices = [100.0] * 15 + [90.0] * 5
+        strategy = VWAPReversion(window=20, threshold=0.02)
+        hist = ph(np.array(prices))
+        score = strategy.score(hist)
+        # Current = 90, rolling mean = (15*100 + 5*90)/20 = 97.5
+        # deviation = (90 - 97.5)/97.5 = -0.0769 → score = 3.84 clamped → 1.0
+        assert score == 1.0
+
 
 class TestMovingAverageCrossover:
     def test_positive_score_on_golden_cross(self, ma_crossover_prices: PriceHistory) -> None:

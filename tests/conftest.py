@@ -104,8 +104,9 @@ def ph_ohlc(
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
+    volume: np.ndarray | None = None,
 ) -> PriceHistory:
-    """Wrap independent OHLC numpy arrays as a PriceHistory."""
+    """Wrap independent OHLC(V) numpy arrays as a PriceHistory."""
     close_arr = np.asarray(close, dtype=float)
     dates = np.asarray(
         [date(2024, 1, 1) + timedelta(days=i) for i in range(len(close_arr))],
@@ -117,6 +118,7 @@ def ph_ohlc(
         high=np.asarray(high, dtype=float),
         low=np.asarray(low, dtype=float),
         close=close_arr,
+        volume=np.asarray(volume, dtype=float) if volume is not None else None,
     )
 
 
