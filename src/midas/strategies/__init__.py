@@ -2,6 +2,7 @@
 
 from midas.strategies.base import EntrySignal, ExitRule, Strategy
 from midas.strategies.bollinger_band import BollingerBand
+from midas.strategies.chandelier_stop import ChandelierStop
 from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.ma_crossover import MovingAverageCrossover
 from midas.strategies.ma_crossover_exit import MovingAverageCrossoverExit
@@ -26,6 +27,7 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "RSIOversold": RSIOversold,
     "VWAPReversion": VWAPReversion,
     # Exit rules
+    "ChandelierStop": ChandelierStop,
     "MACDExit": MACDExit,
     "MovingAverageCrossoverExit": MovingAverageCrossoverExit,
     "ProfitTaking": ProfitTaking,
@@ -36,6 +38,7 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
 __all__ = [
     "STRATEGY_REGISTRY",
     "BollingerBand",
+    "ChandelierStop",
     "EntrySignal",
     "ExitRule",
     "GapDownRecovery",

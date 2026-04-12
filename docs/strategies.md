@@ -22,6 +22,7 @@ To add a new strategy: implement `EntrySignal` or `ExitRule` in a new file under
 | MovingAverageCrossover | Entry | Bullish on the golden cross (short MA above long MA) |
 | RSIOversold | Entry | Bullish when RSI dips below 50 (oversold conditions) |
 | VWAPReversion | Entry | Bullish when price is below the average price (VWAP proxy) |
+| ChandelierStop | Exit | Clamps target to 0 when price falls k x ATR below the rolling N-bar high |
 | MACDExit | Exit | Clamps target to 0 on a bearish MACD crossover |
 | MovingAverageCrossoverExit | Exit | Clamps target to 0 on the death cross |
 | ProfitTaking | Exit | Clamps target to 0 when unrealized gain exceeds the threshold |
@@ -46,7 +47,7 @@ A strategy file needs at least one entry signal and at least one exit rule. With
 
 - **[Trend-Following](../example-strategies/trend-following.yaml)** — Two entry signals (`MovingAverageCrossover` + `MACDCrossover`) confirmed across timescales, paired with their symmetric exits (`MovingAverageCrossoverExit` + `MACDExit`) and a `ProfitTaking` target.
 - **[Dip-Buying](../example-strategies/dip-buying.yaml)** — `BollingerBand` and `RSIOversold` for independent confirmation that an asset is oversold, protected by a `StopLoss` floor.
-- **[Balanced Growth](../example-strategies/balanced-growth.yaml)** — `Momentum` and `MeanReversion` give entries in both trending and recovering markets; `ProfitTaking` and `TrailingStop` provide layered exits.
+- **[Balanced Growth](../example-strategies/balanced-growth.yaml)** — `Momentum` and `MeanReversion` give entries in both trending and recovering markets; `ProfitTaking` harvests gains at a fixed target and `ChandelierStop` provides a volatility-adjusted trailing stop that works whether the position is in profit or underwater.
 
 ## Entry Signals
 
@@ -234,6 +235,25 @@ Clamps the target weight to 0 when the position's drawdown from its aggregate hi
 **Suited for**: All asset classes
 
 **Interactions**: Complements `StopLoss` and `ProfitTaking`. `ProfitTaking` exits at a fixed gain threshold; `TrailingStop` dynamically protects whatever gains have accumulated, even beyond that threshold. Together they create layered exits: `ProfitTaking` harvests at the target, `TrailingStop` catches sharp reversals after gains have run further.
+
+---
+
+### ChandelierStop
+
+**Type**: Exit rule
+
+A volatility-adjusted trailing stop based on Chuck LeBeau's Chandelier Exit. Clamps the target weight to 0 when the current price falls more than `multiplier` × ATR below the highest close over the most recent `window` bars. ATR is approximated from close-to-close absolute differences since the engine's price history is close-only.
+
+Unlike `TrailingStop`, `ChandelierStop` uses a rolling window high rather than an all-time high-water-mark since entry, so its reference point breathes with the recent price range rather than being pinned to a months-old peak. It also has no `in_profit` gate — it fires on both profitable and losing positions, which makes it a drop-in replacement for `StopLoss + TrailingStop` rather than a layered partner. The stop distance scales with realized volatility, so the same `multiplier` produces a tighter stop in calm markets and a wider stop in choppy ones.
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `window` | 22 | Rolling lookback for both the highest close and the ATR (trading days) |
+| `multiplier` | 3.0 | ATR multiple that sets the stop distance below the rolling high |
+
+**Suited for**: All asset classes
+
+**Interactions**: Generally substitutes for the `StopLoss` + `TrailingStop` pair — stacking all three produces overlapping protection with unclear attribution. Still pairs cleanly with `ProfitTaking` as the gain-harvest mechanism. Useful when fixed-percent stops feel regime-ignorant, since a single `multiplier` adapts across tickers with different volatility profiles.
 
 ---
 

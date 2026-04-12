@@ -40,6 +40,6 @@ Moderately aggressive entries with disciplined exits. Two entries push you in, t
 
 - **Profit Taking** (20% threshold, exit) — trims lots whose unrealized gain exceeds 20%. A fixed target that ensures profits get harvested from winners.
 
-- **Trailing Stop** (10% trail, exit) — tracks the highest price each lot reaches after purchase (the "high-water mark") and sells if the price drops 10% from that peak — but only while above cost basis. Dynamically adjusts upward as the price rises, protecting gains without capping upside. Unlike a regular stop loss, it never forces a sell at a loss.
+- **Chandelier Stop** (22-day window, 3.0× ATR, exit) — a volatility-adjusted trailing stop. Tracks the highest close over the last 22 days and sells if the current price falls more than 3× the recent average true range below that high. Unlike a fixed-percent trailing stop, the stop distance breathes with realized volatility — tighter in calm markets, wider in choppy ones — and the rolling-window reference high keeps the stop responsive to recent price action instead of anchoring to a months-old peak. Fires on both profitable and underwater positions, so it subsumes the role of a separate stop loss.
 
 Best for: a general-purpose portfolio that balances growth capture with downside protection.
