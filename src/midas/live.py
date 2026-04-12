@@ -6,10 +6,10 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
-import numpy as np
 import pandas as pd
 
 from midas.allocator import AllocationResult, Allocator
+from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.models import (
     AllocationConstraints,
@@ -98,7 +98,7 @@ class LiveEngine:
         # Fetch recent history for all tickers
         end = today
         start = end - timedelta(days=self._history_days)
-        price_data: dict[str, pd.Series] = {}
+        price_data: dict[str, pd.DataFrame] = {}
         for ticker in tickers:
             try:
                 price_data[ticker] = self._provider.get_history(ticker, start, end)
@@ -119,13 +119,13 @@ class LiveEngine:
         current_prices: dict[str, float] = {}
         for ticker in tickers:
             if ticker in price_data and len(price_data[ticker]) > 0:
-                current_prices[ticker] = float(price_data[ticker].iloc[-1])
+                current_prices[ticker] = float(price_data[ticker]["close"].iloc[-1])
 
         active_tickers = [t for t in tickers if t in price_data]
 
-        # Convert pd.Series to numpy arrays at the boundary — strategies
-        # and the allocator operate on np.ndarray for performance.
-        price_arrays: dict[str, np.ndarray] = {t: np.asarray(price_data[t]) for t in active_tickers}
+        # Convert DataFrames to PriceHistory at the boundary — strategies
+        # and the allocator operate on numpy-backed structs for performance.
+        price_history: dict[str, PriceHistory] = {t: PriceHistory.from_dataframe(price_data[t]) for t in active_tickers}
 
         # Current positions + weights (weights feed Option A: neutral=hold).
         positions = {}
@@ -143,7 +143,7 @@ class LiveEngine:
         # Phase 1: Allocator scores entry signals and blends to target weights.
         allocation = self._allocator.allocate(
             active_tickers,
-            price_arrays,
+            price_history,
             current_weights=current_weights,
         )
 
@@ -172,11 +172,11 @@ class LiveEngine:
                 else:
                     cost_basis = holding.cost_basis
                 hwm = max(cost_basis, current_prices[ticker])
-                clamped = rule.clamp_target(ticker, proposed, price_arrays[ticker], cost_basis, hwm)
+                clamped = rule.clamp_target(ticker, proposed, price_history[ticker], cost_basis, hwm)
                 if clamped < proposed:
                     clamped_targets[ticker] = clamped
                     if ticker not in clamp_attribution:
-                        reason = rule.clamp_reason(ticker, price_arrays[ticker], cost_basis, hwm)
+                        reason = rule.clamp_reason(ticker, price_history[ticker], cost_basis, hwm)
                         clamp_attribution[ticker] = (rule.name, reason)
 
         # Size sells and filter restriction-blocked sells *before* computing

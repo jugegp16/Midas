@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal
 
@@ -40,7 +41,8 @@ class MACDCrossover(EntrySignal):
         # multiplier applied to the slow leg.
         return self._slow_period * RECURSIVE_WARMUP_MULTIPLIER + self._signal_period
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         min_len = self._slow_period + self._signal_period
         scores = np.full(n, np.nan)
@@ -57,19 +59,20 @@ class MACDCrossover(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
+        prices = price_history.close
         min_len = self._slow_period + self._signal_period
-        if len(price_history) < min_len:
+        if len(prices) < min_len:
             return None
 
-        fast_ema = ema(price_history, self._fast_period)
-        slow_ema = ema(price_history, self._slow_period)
+        fast_ema = ema(prices, self._fast_period)
+        slow_ema = ema(prices, self._slow_period)
         macd_line = fast_ema - slow_ema
         signal_line = ema(macd_line, self._signal_period)
 
-        current = float(price_history[-1])
+        current = float(prices[-1])
         diff = float(macd_line[-1] - signal_line[-1])
         if current == 0:
             return 0.0

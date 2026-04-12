@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -22,7 +23,8 @@ class MovingAverageCrossover(EntrySignal):
     def warmup_period(self) -> int:
         return self._long_window
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         lw = self._long_window
         sw = self._short_window
@@ -42,14 +44,15 @@ class MovingAverageCrossover(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._long_window:
+        prices = price_history.close
+        if len(prices) < self._long_window:
             return None
 
-        short_ma = float(price_history[-self._short_window :].mean())
-        long_ma = float(price_history[-self._long_window :].mean())
+        short_ma = float(prices[-self._short_window :].mean())
+        long_ma = float(prices[-self._long_window :].mean())
 
         if long_ma == 0:
             return 0.0

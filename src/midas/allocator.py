@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
 from midas.strategies.base import EntrySignal
 
@@ -93,30 +94,30 @@ class Allocator:
     def strategies(self) -> list[EntrySignal]:
         return [e.strategy for e in self._entries]
 
-    def precompute_signals(self, price_data: dict[str, np.ndarray]) -> None:
+    def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
         """Precompute entry-signal scores for all tickers over the full price arrays."""
         self._signal_cache = {}
         for entry in self._entries:
             cache: dict[str, np.ndarray] = {}
-            for ticker, prices in price_data.items():
-                result = entry.strategy.precompute(prices)
+            for ticker, history in price_data.items():
+                result = entry.strategy.precompute(history)
                 if result is not None:
                     cache[ticker] = result
             if cache:
                 self._signal_cache[id(entry.strategy)] = cache
 
-    def _lookup_score(self, strategy: EntrySignal, ticker: str, prices_len: int) -> tuple[bool, float | None]:
+    def _lookup_score(self, strategy: EntrySignal, ticker: str, history_len: int) -> tuple[bool, float | None]:
         """Look up a precomputed score.  Returns (hit, score)."""
         strat_cache = self._signal_cache.get(id(strategy))
         if strat_cache is not None and ticker in strat_cache:
-            val = strat_cache[ticker][prices_len - 1]
+            val = strat_cache[ticker][history_len - 1]
             return True, (None if np.isnan(val) else float(val))
         return False, None
 
     def allocate(
         self,
         tickers: list[str],
-        price_data: dict[str, np.ndarray],
+        price_data: dict[str, PriceHistory],
         context: dict[str, dict[str, Any]] | None = None,
         current_weights: dict[str, float] | None = None,
     ) -> AllocationResult:
@@ -158,8 +159,8 @@ class Allocator:
         held: list[str] = []
 
         for ticker in tickers:
-            prices = price_data.get(ticker)
-            if prices is None or len(prices) == 0:
+            history = price_data.get(ticker)
+            if history is None or len(history) == 0:
                 contributions[ticker] = {}
                 blended_scores[ticker] = 0.0
                 held.append(ticker)
@@ -171,9 +172,9 @@ class Allocator:
             weight_total = 0.0
 
             for entry in self._entries:
-                hit, s = self._lookup_score(entry.strategy, ticker, len(prices))
+                hit, s = self._lookup_score(entry.strategy, ticker, len(history))
                 if not hit:
-                    s = entry.strategy.score(prices, **ticker_ctx)
+                    s = entry.strategy.score(history, **ticker_ctx)
                 if s is not None:
                     ticker_contributions[entry.strategy.name] = s
                     weighted_sum += entry.weight * s

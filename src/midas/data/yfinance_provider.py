@@ -14,13 +14,15 @@ from midas.data.provider import DataProvider
 
 DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
 
+OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+
 
 class CachedYFinanceProvider(DataProvider):
     def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR) -> None:
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_history(self, ticker: str, start: date, end: date) -> pd.Series:
+    def get_history(self, ticker: str, start: date, end: date) -> pd.DataFrame:
         cache_key = self._cache_path(ticker, start, end)
         if cache_key.exists():
             with open(cache_key, "rb") as f:
@@ -38,14 +40,27 @@ class CachedYFinanceProvider(DataProvider):
             msg = f"No data returned for {ticker} between {start} and {end}"
             raise ValueError(msg)
 
-        series: pd.Series = df["Close"].squeeze()
-        series.index = pd.to_datetime(series.index).date
-        series.name = ticker
+        # yfinance can return a MultiIndex on columns when multiple tickers
+        # are requested — guard against a single-ticker MultiIndex too.
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        frame = pd.DataFrame(
+            {
+                "open": df["Open"].astype(float),
+                "high": df["High"].astype(float),
+                "low": df["Low"].astype(float),
+                "close": df["Close"].astype(float),
+                "volume": df["Volume"].astype(float),
+            }
+        )
+        frame.index = pd.to_datetime(frame.index).date
+        frame.index.name = "date"
 
         with open(cache_key, "wb") as f:
-            pickle.dump(series, f)
+            pickle.dump(frame, f)
 
-        return series
+        return frame
 
     def get_current_price(self, ticker: str) -> float:
         t = yf.Ticker(ticker)
@@ -56,6 +71,6 @@ class CachedYFinanceProvider(DataProvider):
         return float(hist["Close"].iloc[-1])
 
     def _cache_path(self, ticker: str, start: date, end: date) -> Path:
-        key = f"{ticker}_{start}_{end}"
+        key = f"{ticker}_{start}_{end}_ohlcv"
         hashed = hashlib.md5(key.encode()).hexdigest()
         return self._cache_dir / f"{hashed}.pkl"

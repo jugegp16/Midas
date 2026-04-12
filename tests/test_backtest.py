@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import make_price_series
+from conftest import make_price_series, ph
 
 from midas.allocator import Allocator
 from midas.backtest import (
@@ -69,7 +69,7 @@ def _build_engine(
     )
 
 
-def _make_backtest_data() -> tuple[PortfolioConfig, dict[str, pd.Series]]:
+def _make_backtest_data() -> tuple[PortfolioConfig, dict[str, pd.DataFrame]]:
     """Create a portfolio and price data that will generate trades."""
     portfolio = PortfolioConfig(
         holdings=[
@@ -800,7 +800,7 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
 
     # A single held ticker in profit → ProfitTaking fires. Round-trip
     # restriction blocks the sell.
-    a_prices = np.array([100.0] * 15)
+    a_prices = ph(np.array([100.0] * 15))
 
     state = _SimState(cash=0.0)
     state.positions = {"A": 5.0}
@@ -887,7 +887,8 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
 
     # Price array with current=$115; backstop history gives the rules
     # something to read but the only price they act on is the last bar.
-    prices = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    prices_raw = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    prices = ph(prices_raw)
     engine._run_day(state, portfolio, {"A": prices}, date(2024, 2, 1))
 
     sells = [t for t in state.trades if t.direction == Direction.SELL]
@@ -900,7 +901,7 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
 
     # Reconciliation: with one sell, FIFO consumed basis = real basis,
     # state.cash exactly reflects sell proceeds, and the position is empty.
-    final_price = float(prices[-1])
+    final_price = float(prices_raw[-1])
     final_value = state.cash + sum(sum(lot.shares for lot in lots) * final_price for lots in state.lots.values())
     realized = sum(
         (t.price - state.basis_per_sell[i]) * t.shares

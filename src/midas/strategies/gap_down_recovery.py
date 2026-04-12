@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -16,7 +17,8 @@ class GapDownRecovery(EntrySignal):
     def warmup_period(self) -> int:
         return 3
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         scores = np.full(n, np.nan)
         if n < 3:
@@ -39,15 +41,16 @@ class GapDownRecovery(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < 3:
+        prices = price_history.close
+        if len(prices) < 3:
             return None
 
-        prev_close = float(price_history[-3])
-        gap_open = float(price_history[-2])
-        current = float(price_history[-1])
+        prev_close = float(prices[-3])
+        gap_open = float(prices[-2])
+        current = float(prices[-1])
 
         if prev_close == 0:
             return 0.0

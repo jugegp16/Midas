@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from midas.data.price_history import PriceHistory
 from midas.models import CashInfusion, Holding, PortfolioConfig
 
 
@@ -26,24 +27,25 @@ def sample_portfolio() -> PortfolioConfig:
     )
 
 
-def make_price_series(
+def make_price_frame(
     start: date,
     days: int,
     base_price: float,
     daily_returns: list[float] | None = None,
     name: str = "TEST",
-) -> pd.Series:
-    """Generate a synthetic price series with a date index.
+) -> pd.DataFrame:
+    """Generate a synthetic OHLCV DataFrame with a date index.
 
-    Used by backtest/optimizer tests that need pd.Series with date indexes.
-    Strategy and allocator tests should use make_price_array() instead.
+    Used by backtest/optimizer tests that need a provider-style DataFrame.
+    Open/high/low all equal close; volume is a flat constant. Strategies
+    that depend on real H/L data get degenerate bars, which is fine for
+    tests that only exercise close-based logic.
     """
-    dates = []
-    prices = []
+    dates: list[date] = []
+    prices: list[float] = []
     price = base_price
     current = start
     for i in range(days):
-        # Skip weekends
         while current.weekday() >= 5:
             current += timedelta(days=1)
         dates.append(current)
@@ -51,86 +53,113 @@ def make_price_series(
             price *= 1 + daily_returns[i]
         prices.append(round(price, 2))
         current += timedelta(days=1)
-    series = pd.Series(prices, index=dates, name=name)
-    return series
+    close = np.asarray(prices, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": np.full(days, 1_000_000.0),
+        },
+        index=dates,
+    )
+    frame.index.name = "date"
+    return frame
 
 
-def make_price_array(
+# Backwards-compatible alias used by existing backtest/optimizer tests.
+make_price_series = make_price_frame
+
+
+def make_price_history(
     days: int,
     base_price: float,
     daily_returns: list[float] | None = None,
-) -> np.ndarray:
-    """Generate a synthetic price array for strategy/allocator tests."""
-    prices = []
+) -> PriceHistory:
+    """Generate a synthetic PriceHistory for strategy/allocator tests."""
+    prices: list[float] = []
     price = base_price
     for i in range(days):
         if daily_returns and i < len(daily_returns):
             price *= 1 + daily_returns[i]
         prices.append(round(price, 2))
-    return np.array(prices)
+    close = np.asarray(prices, dtype=float)
+    dates = np.asarray([date(2024, 1, 1) + timedelta(days=i) for i in range(days)], dtype=object)
+    return PriceHistory.from_close_only(dates, close)
+
+
+def ph(close: np.ndarray) -> PriceHistory:
+    """Wrap a close-only numpy array as a PriceHistory for strategy tests."""
+    close_arr = np.asarray(close, dtype=float)
+    dates = np.asarray(
+        [date(2024, 1, 1) + timedelta(days=i) for i in range(len(close_arr))],
+        dtype=object,
+    )
+    return PriceHistory.from_close_only(dates, close_arr)
 
 
 @pytest.fixture
-def flat_prices() -> np.ndarray:
+def flat_prices() -> PriceHistory:
     """100 days of flat $100 price."""
-    return make_price_array(100, 100.0)
+    return make_price_history(100, 100.0)
 
 
 @pytest.fixture
-def dropping_prices() -> np.ndarray:
+def dropping_prices() -> PriceHistory:
     """Price is stable then drops sharply at the end — triggers mean reversion.
 
     The last few days are a sharp drop while the 30-day MA still includes
     the stable period, creating a gap between current price and MA.
     """
     returns = [0.0] * 90 + [-0.02] * 10
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def rising_prices() -> np.ndarray:
+def rising_prices() -> PriceHistory:
     """Price rises steadily — triggers profit taking."""
     returns = [0.003] * 100
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def crossover_prices() -> np.ndarray:
+def crossover_prices() -> PriceHistory:
     """Price dips below MA then crosses back above — triggers momentum."""
     returns = [0.0] * 20 + [-0.008] * 15 + [0.015] * 10 + [0.0] * 55
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def volatile_dropping_prices() -> np.ndarray:
+def volatile_dropping_prices() -> PriceHistory:
     """Price with sustained losses at the end — triggers RSI oversold."""
     returns = [0.001] * 80 + [-0.02] * 20
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def volatile_rising_prices() -> np.ndarray:
+def volatile_rising_prices() -> PriceHistory:
     """Strong sustained gains at the end — triggers RSI overbought."""
     returns = [0.001] * 80 + [0.02] * 20
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def gap_down_recovery_prices() -> np.ndarray:
+def gap_down_recovery_prices() -> PriceHistory:
     """Price stable then sharp drop then recovery — triggers gap down recovery."""
     returns = [0.0] * 95 + [-0.05, -0.04, 0.06] + [0.0] * 2
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def peak_then_drop_prices() -> np.ndarray:
+def peak_then_drop_prices() -> PriceHistory:
     """Price rises then falls — triggers trailing stop."""
     returns = [0.01] * 30 + [-0.005] * 40 + [0.0] * 30
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)
 
 
 @pytest.fixture
-def ma_crossover_prices() -> np.ndarray:
+def ma_crossover_prices() -> PriceHistory:
     """Long decline followed by recovery — triggers golden cross."""
     returns = [-0.002] * 60 + [0.008] * 30 + [0.0] * 10
-    return make_price_array(100, 100.0, returns)
+    return make_price_history(100, 100.0, returns)

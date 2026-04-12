@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
@@ -17,10 +18,11 @@ class ChandelierStop(ExitRule):
     def warmup_period(self) -> int:
         return self._window
 
-    def _stop_level(self, price_history: np.ndarray) -> float | None:
-        if len(price_history) < self._window:
+    def _stop_level(self, price_history: PriceHistory) -> float | None:
+        prices = price_history.close
+        if len(prices) < self._window:
             return None
-        recent = price_history[-self._window :]
+        recent = prices[-self._window :]
         highest = float(recent.max())
         atr = float(np.abs(np.diff(recent)).mean())
         return highest - self._multiplier * atr
@@ -29,7 +31,7 @@ class ChandelierStop(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
@@ -38,7 +40,7 @@ class ChandelierStop(ExitRule):
         stop = self._stop_level(price_history)
         if stop is None:
             return proposed_target
-        current = float(price_history[-1])
+        current = float(price_history.close[-1])
         if current < stop:
             return 0.0
         return proposed_target
@@ -46,15 +48,16 @@ class ChandelierStop(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        recent = price_history[-self._window :]
+        prices = price_history.close
+        recent = prices[-self._window :]
         highest = float(recent.max())
         atr = float(np.abs(np.diff(recent)).mean()) if len(recent) > 1 else 0.0
         stop = highest - self._multiplier * atr
-        current = float(price_history[-1])
+        current = float(prices[-1])
         return (
             f"ChandelierStop: price ${current:.2f} below "
             f"${stop:.2f} (${highest:.2f} peak - "

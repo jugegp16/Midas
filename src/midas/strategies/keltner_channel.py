@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -17,7 +18,8 @@ class KeltnerChannel(EntrySignal):
     def warmup_period(self) -> int:
         return self._window
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         w = self._window
         scores = np.full(n, np.nan)
@@ -42,13 +44,14 @@ class KeltnerChannel(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window:
+        prices = price_history.close
+        if len(prices) < self._window:
             return None
 
-        recent = price_history[-self._window :]
+        recent = prices[-self._window :]
         centerline = float(recent.mean())
         atr = float(np.abs(np.diff(recent)).mean())
 
@@ -56,7 +59,7 @@ class KeltnerChannel(EntrySignal):
             return 0.0
 
         upper = centerline + self._multiplier * atr
-        current = float(price_history[-1])
+        current = float(prices[-1])
 
         if current <= upper:
             return 0.0

@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from midas.allocator import AllocationResult, Allocator
+from midas.data.price_history import PriceHistory
 from midas.models import (
     AllocationConstraints,
     Direction,
@@ -100,10 +101,10 @@ class BacktestResult:
 
 @dataclass
 class _TickerIndex:
-    """Pre-computed numpy arrays and pointer for a single ticker's price data."""
+    """Pre-computed PriceHistory and cursor for a single ticker's price data."""
 
     dates: list[date]
-    values: np.ndarray
+    history: PriceHistory
     ptr: int = 0
 
 
@@ -323,7 +324,7 @@ class BacktestEngine:
     def run(
         self,
         portfolio: PortfolioConfig,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         start: date,
         end: date,
     ) -> BacktestResult:
@@ -332,9 +333,9 @@ class BacktestEngine:
         ticker_idx = self._build_ticker_index(price_data, start, end)
         state = self._init_positions(portfolio, price_data, trading_days, start, end)
 
-        # Precompute strategy signals over full price arrays (one-time cost).
-        full_prices = {ticker: idx.values for ticker, idx in ticker_idx.items()}
-        self._allocator.precompute_signals(full_prices)
+        # Precompute strategy signals over the full PriceHistory (one-time cost).
+        full_history = {ticker: idx.history for ticker, idx in ticker_idx.items()}
+        self._allocator.precompute_signals(full_history)
 
         deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
 
@@ -359,13 +360,13 @@ class BacktestEngine:
 
     def _collect_trading_days(
         self,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         start: date,
         end: date,
     ) -> list[date]:
         all_dates: set[date] = set()
-        for series in price_data.values():
-            all_dates.update(d for d in series.index if start <= d <= end)
+        for df in price_data.values():
+            all_dates.update(d for d in df.index if start <= d <= end)
         days = sorted(all_dates)
         if not days:
             msg = "No trading days found in date range"
@@ -384,13 +385,13 @@ class BacktestEngine:
 
     def _build_ticker_index(
         self,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         start: date,
         end: date,
     ) -> dict[str, _TickerIndex]:
-        """Build per-ticker arrays keeping the warmup prefix intact.
+        """Build per-ticker PriceHistory keeping the warmup prefix intact.
 
-        The returned array spans ``[max(first_available, start - warmup_bars), end]``
+        The returned history spans ``[max(first_available, start - warmup_bars), end]``
         so ``precompute_signals`` and the per-day pointer advance see a prefix
         of history before the user's ``start``. The simulation loop iterates
         over ``trading_days`` (which are already filtered to ``start..end``),
@@ -398,8 +399,8 @@ class BacktestEngine:
         """
         warmup_bars = self._warmup_bars()
         index: dict[str, _TickerIndex] = {}
-        for ticker, series in price_data.items():
-            bounded = series[series.index <= end]
+        for ticker, df in price_data.items():
+            bounded = df[df.index <= end]
             if len(bounded) == 0:
                 continue
             # Identify the first trading day inside the sim window.
@@ -419,7 +420,7 @@ class BacktestEngine:
             sliced = bounded.iloc[warmup_first_idx:]
             index[ticker] = _TickerIndex(
                 dates=list(sliced.index),
-                values=np.asarray(sliced.values),
+                history=PriceHistory.from_dataframe(sliced),
             )
         return index
 
@@ -429,12 +430,12 @@ class BacktestEngine:
 
     def _first_data_dates(
         self,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         start: date,
     ) -> dict[str, date]:
         result: dict[str, date] = {}
-        for ticker, series in price_data.items():
-            in_range = series[series.index >= start]
+        for ticker, df in price_data.items():
+            in_range = df[df.index >= start]
             if len(in_range) > 0:
                 result[ticker] = in_range.index[0]
         return result
@@ -442,7 +443,7 @@ class BacktestEngine:
     def _init_positions(
         self,
         portfolio: PortfolioConfig,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         trading_days: list[date],
         start: date,
         end: date,
@@ -469,7 +470,8 @@ class BacktestEngine:
                 # user's real purchase basis (used by the live engine and for
                 # display) — using it here would let exit rules fire on
                 # pre-backtest gains, distorting strategy performance.
-                entry_price = float(price_data[h.ticker][price_data[h.ticker].index >= start].iloc[0])
+                entry_df = price_data[h.ticker][price_data[h.ticker].index >= start]
+                entry_price = float(entry_df["close"].iloc[0])
                 state.positions[h.ticker] = h.shares
                 state.bh_positions[h.ticker] = h.shares
                 state.lots[h.ticker] = [
@@ -490,7 +492,7 @@ class BacktestEngine:
     def _find_deferred(
         self,
         portfolio: PortfolioConfig,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         trading_days: list[date],
         start: date,
         end: date,
@@ -531,12 +533,12 @@ class BacktestEngine:
                 state.last_day = day
 
             # Advance pointers and build current slices
-            current_data: dict[str, np.ndarray] = {}
+            current_data: dict[str, PriceHistory] = {}
             for ticker, idx in ticker_idx.items():
                 while idx.ptr < len(idx.dates) and idx.dates[idx.ptr] <= day:
                     idx.ptr += 1
                 if idx.ptr > 0:
-                    current_data[ticker] = idx.values[: idx.ptr]
+                    current_data[ticker] = idx.history[: idx.ptr]
 
             # Activate deferred holdings
             self._activate_deferred(
@@ -550,11 +552,11 @@ class BacktestEngine:
             # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
                 split_val = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
+                    state.positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
                 )
                 state.split_value = split_val
                 state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(t, 0) * float(current_data[t][-1]) for t in current_data
+                    state.bh_positions.get(t, 0) * float(current_data[t].close[-1]) for t in current_data
                 )
                 # Close current TWR sub-period at the split boundary.
                 if state.twr_base_value > 0:
@@ -567,7 +569,7 @@ class BacktestEngine:
 
             # Record equity curve snapshot
             day_value = state.cash + sum(
-                state.positions.get(t, 0) * float(current_data[t][-1])
+                state.positions.get(t, 0) * float(current_data[t].close[-1])
                 for t in current_data
                 if state.positions.get(t, 0) > 0
             )
@@ -578,14 +580,14 @@ class BacktestEngine:
         state: _SimState,
         deferred: dict[str, float],
         activated: set[str],
-        current_data: dict[str, np.ndarray],
+        current_data: dict[str, PriceHistory],
         day: date,
     ) -> None:
         for ticker, shares in deferred.items():
             if ticker in activated:
                 continue
             if ticker in current_data:
-                entry_price = float(current_data[ticker][-1])
+                entry_price = float(current_data[ticker].close[-1])
                 added_value = shares * entry_price
 
                 # Treat deferred activation like a capital infusion for TWR:
@@ -594,7 +596,7 @@ class BacktestEngine:
                 # the new position. Otherwise the new capital would be counted
                 # as pure return by the closing final_value / twr_base ratio.
                 pre_activation_value = state.cash + sum(
-                    state.positions.get(t, 0) * float(current_data[t][-1])
+                    state.positions.get(t, 0) * float(current_data[t].close[-1])
                     for t in current_data
                     if state.positions.get(t, 0) > 0
                 )
@@ -619,7 +621,7 @@ class BacktestEngine:
         self,
         state: _SimState,
         portfolio: PortfolioConfig,
-        current_data: dict[str, np.ndarray],
+        current_data: dict[str, PriceHistory],
         day: date,
     ) -> None:
         # Credit cash infusion if it lands on or before today.
@@ -628,7 +630,7 @@ class BacktestEngine:
         infusion = portfolio.cash_infusion
         if infusion and infusion.next_date <= day:
             pre_infusion_value = state.cash + sum(
-                state.positions.get(t, 0) * float(current_data[t][-1])
+                state.positions.get(t, 0) * float(current_data[t].close[-1])
                 for t in current_data
                 if state.positions.get(t, 0) > 0
             )
@@ -648,7 +650,7 @@ class BacktestEngine:
 
         current_prices: dict[str, float] = {}
         for ticker in active_tickers:
-            current_prices[ticker] = float(current_data[ticker][-1])
+            current_prices[ticker] = float(current_data[ticker].close[-1])
 
         # Compute current portfolio weights so the allocator can hold
         # (not drift-correct) tickers whose entry signals don't score today.
@@ -924,22 +926,22 @@ class BacktestEngine:
         self,
         state: _SimState,
         portfolio: PortfolioConfig,
-        price_data: dict[str, pd.Series],
+        price_data: dict[str, pd.DataFrame],
         trading_days: list[date],
         split_date: date | None,
     ) -> BacktestResult:
         # Use prices at the last trading day within the backtest range, not the
-        # last row of the raw series (which may extend beyond `end` when the
+        # last row of the raw frame (which may extend beyond `end` when the
         # caller reuses one price_data dict across multiple sub-windows — e.g.
         # walk-forward fold evaluation).
         end_day = trading_days[-1]
         final_prices: dict[str, float] = {}
-        for ticker, series in price_data.items():
-            if len(series) == 0:
+        for ticker, df in price_data.items():
+            if len(df) == 0:
                 continue
-            in_range = series[series.index <= end_day]
+            in_range = df[df.index <= end_day]
             if len(in_range) > 0:
-                final_prices[ticker] = float(in_range.iloc[-1])
+                final_prices[ticker] = float(in_range["close"].iloc[-1])
         final_value = state.cash + sum(state.positions.get(t, 0) * p for t, p in final_prices.items())
         bh_value = portfolio.available_cash + sum(
             state.bh_positions.get(t, 0) * final_prices.get(t, 0) for t in state.bh_positions

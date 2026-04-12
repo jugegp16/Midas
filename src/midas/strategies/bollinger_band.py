@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -17,7 +18,8 @@ class BollingerBand(EntrySignal):
     def warmup_period(self) -> int:
         return self._window
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         w = self._window
         scores = np.full(n, np.nan)
@@ -41,20 +43,21 @@ class BollingerBand(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window:
+        prices = price_history.close
+        if len(prices) < self._window:
             return None
 
-        window_data = price_history[-self._window :]
+        window_data = prices[-self._window :]
         ma = float(window_data.mean())
         std = float(window_data.std(ddof=1))
 
         if std == 0:
             return 0.0
 
-        current = float(price_history[-1])
+        current = float(prices[-1])
         # Z-score: how many std devs from the mean. Buy-only entry signal:
         # negative z (below MA) ramps from 0 at the MA to 1 at the lower band.
         # The bearish "above upper band" half is dropped — exits are handled

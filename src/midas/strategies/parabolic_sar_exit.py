@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
@@ -68,13 +69,13 @@ class ParabolicSARExit(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
         if proposed_target <= 0:
             return proposed_target
-        result = self._compute(price_history)
+        result = self._compute(price_history.close)
         if result is None:
             return proposed_target
         _sar, uptrend = result
@@ -85,12 +86,13 @@ class ParabolicSARExit(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        result = self._compute(price_history)
-        current = float(price_history[-1]) if len(price_history) > 0 else 0.0
+        prices = price_history.close
+        result = self._compute(prices)
+        current = float(prices[-1]) if len(prices) > 0 else 0.0
         if result is None:
             return f"ParabolicSARExit: flip on {ticker}"
         sar, _ = result

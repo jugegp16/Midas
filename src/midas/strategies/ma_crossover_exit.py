@@ -6,8 +6,7 @@ is a technical signal that does not use cost basis or high-water mark.
 
 from __future__ import annotations
 
-import numpy as np
-
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
@@ -29,20 +28,21 @@ class MovingAverageCrossoverExit(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
         if proposed_target <= 0:
             return proposed_target
-        if len(price_history) < self._long_window:
+        prices = price_history.close
+        if len(prices) < self._long_window:
             return proposed_target
-        current = float(price_history[-1])
+        current = float(prices[-1])
         if current <= 0:
             return proposed_target
 
-        short_ma = float(price_history[-self._short_window :].mean())
-        long_ma = float(price_history[-self._long_window :].mean())
+        short_ma = float(prices[-self._short_window :].mean())
+        long_ma = float(prices[-self._long_window :].mean())
         if long_ma == 0:
             return proposed_target
 
@@ -54,12 +54,13 @@ class MovingAverageCrossoverExit(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        short_ma = float(price_history[-self._short_window :].mean())
-        long_ma = float(price_history[-self._long_window :].mean())
+        prices = price_history.close
+        short_ma = float(prices[-self._short_window :].mean())
+        long_ma = float(prices[-self._long_window :].mean())
         spread = (short_ma - long_ma) / long_ma if long_ma else 0.0
         return (
             f"Death cross: {self._short_window}-day MA ${short_ma:.2f} "

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -17,7 +18,8 @@ class DonchianBreakout(EntrySignal):
     def warmup_period(self) -> int:
         return self._window + 1
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         w = self._window
         scores = np.full(n, np.nan)
@@ -34,14 +36,15 @@ class DonchianBreakout(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window + 1:
+        prices = price_history.close
+        if len(prices) < self._window + 1:
             return None
 
-        prior_high = float(price_history[-self._window - 1 : -1].max())
-        current = float(price_history[-1])
+        prior_high = float(prices[-self._window - 1 : -1].max())
+        current = float(prices[-1])
 
         if prior_high <= 0 or current <= prior_high:
             return 0.0

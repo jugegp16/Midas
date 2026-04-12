@@ -17,7 +17,7 @@ from midas.optimizer import (
 )
 
 
-def _make_optimizer_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date, date]:
+def _make_optimizer_data() -> tuple[PortfolioConfig, dict[str, pd.DataFrame], date, date]:
     """Create a portfolio and price data suitable for optimisation tests."""
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)],
@@ -128,7 +128,7 @@ def test_write_strategies_yaml(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_walk_forward_data() -> tuple[PortfolioConfig, dict[str, pd.Series], date, date]:
+def _make_walk_forward_data() -> tuple[PortfolioConfig, dict[str, pd.DataFrame], date, date]:
     """Longer price series suitable for walk-forward folds.
 
     400 days: 60% train = 240 days, remaining 160 days → 2 folds of ~63 days.
