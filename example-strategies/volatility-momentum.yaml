@@ -1,0 +1,27 @@
+softmax_temperature: 0.5
+min_buy_delta: 0.02
+min_cash_pct: 0.05
+
+strategies:
+  # -- Entry signals --
+  - name: KeltnerChannel
+    weight: 1.0
+    params:
+      window: 20
+      multiplier: 2.0
+
+  - name: Momentum
+    weight: 1.0
+    params:
+      window: 20
+      momentum_scale: 0.05
+
+  # -- Exit rules --
+  - name: ChandelierStop
+    params:
+      window: 22
+      multiplier: 3.0
+
+  - name: ProfitTaking
+    params:
+      gain_threshold: 0.25
