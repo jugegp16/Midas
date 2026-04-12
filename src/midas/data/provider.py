@@ -11,13 +11,20 @@ import pandas as pd
 class DataProvider(ABC):
     """Contract for market data providers.
 
-    All providers return adjusted close (total return) data as a pd.Series
-    indexed by date.
+    Providers return OHLCV bars as a ``pd.DataFrame`` indexed by
+    ``datetime.date``. Required columns: ``open``, ``high``, ``low``,
+    ``close``. ``volume`` is optional (not every feed has it). Close
+    prices are assumed adjusted for splits and dividends.
+
+    The backtest and live engines convert these DataFrames into
+    :class:`midas.data.price_history.PriceHistory` structs once at the
+    boundary so downstream code (allocator, strategies) operates on
+    numpy arrays rather than pandas objects.
     """
 
     @abstractmethod
-    def get_history(self, ticker: str, start: date, end: date) -> pd.Series:
-        """Return adjusted close prices for ticker between start and end (inclusive)."""
+    def get_history(self, ticker: str, start: date, end: date) -> pd.DataFrame:
+        """Return OHLCV bars for *ticker* between *start* and *end* inclusive."""
 
     @abstractmethod
     def get_current_price(self, ticker: str) -> float:

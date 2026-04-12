@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import make_price_series
+from conftest import make_price_series, ph
 
 from midas.allocator import Allocator
 from midas.backtest import (
@@ -40,6 +40,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
+from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking
 from midas.strategies.trailing_stop import TrailingStop
@@ -69,7 +70,7 @@ def _build_engine(
     )
 
 
-def _make_backtest_data() -> tuple[PortfolioConfig, dict[str, pd.Series]]:
+def _make_backtest_data() -> tuple[PortfolioConfig, dict[str, pd.DataFrame]]:
     """Create a portfolio and price data that will generate trades."""
     portfolio = PortfolioConfig(
         holdings=[
@@ -106,6 +107,66 @@ def test_backtest_produces_trades() -> None:
     assert len(result.trades) > 0
     for t in result.trades:
         assert t.ticker == "AAPL"
+
+
+def test_backtest_runs_real_ohlcv_through_strategy() -> None:
+    """End-to-end proof the OHLCV pipeline reaches the strategy via the engine.
+
+    The conftest helper produces degenerate bars (O=H=L=C, flat volume), so a
+    backtest using GapDownRecovery on that fixture can never fire — it needs a
+    real open-vs-prior-close gap. Here we hand-build a frame whose CLOSE
+    sequence shows no qualifying drop (close-to-close moves are <1%), but a
+    single bar opens 5% below the prior close and recovers most of the way.
+    If the engine ever silently degraded to close-only data, the buy below
+    would not happen.
+    """
+    n = 30
+    dates = [date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)]
+    dates = [d.date() for d in pd.to_datetime(dates)]
+    closes = np.full(n, 100.0)
+    opens = np.full(n, 100.0)
+    highs = np.full(n, 100.0)
+    lows = np.full(n, 100.0)
+    volumes = np.full(n, 1_000_000.0)
+    gap_day = 20
+    # Real intraday gap-and-recover: open 5% below prior close, low $94,
+    # close at $99 (close-to-close drop of just 1%, well under any
+    # close-only "gap" proxy threshold).
+    opens[gap_day] = 95.0
+    lows[gap_day] = 94.0
+    highs[gap_day] = 99.5
+    closes[gap_day] = 99.0
+    frame = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+    frame.index.name = "date"
+
+    # Start with a small seed position so the engine activates the ticker
+    # in state.positions (zero-share holdings are skipped by _init_positions).
+    # On flat days the score is 0 and the allocator holds the current weight,
+    # so no trades fire. On the gap day the 0.8 score pushes the target to
+    # the position cap, generating a buy delta.
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="GAPCO", shares=5, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    engine = _build_engine(
+        entries=[(GapDownRecovery(gap_threshold=0.03), 1.0)],
+        enable_split=False,
+    )
+
+    result = engine.run(portfolio, {"GAPCO": frame}, dates[0], dates[-1])
+
+    buys_on_gap_day = [t for t in result.trades if t.direction == Direction.BUY and t.date == dates[gap_day]]
+    assert buys_on_gap_day, (
+        "GapDownRecovery should fire on the real-OHLCV gap day; if this fails, "
+        "the engine is not threading open/high/low through to the strategy."
+    )
+    # And nothing fires on the flat days — proves the strategy is reading the
+    # specific bar's OHLC, not e.g. a constant from the precompute fixture.
+    other_buys = [t for t in result.trades if t.direction == Direction.BUY and t.date != dates[gap_day]]
+    assert not other_buys, f"unexpected buys outside the gap day: {other_buys}"
 
 
 def test_backtest_with_split() -> None:
@@ -800,7 +861,7 @@ def test_blocked_sell_does_not_leak_into_buy_sizing() -> None:
 
     # A single held ticker in profit → ProfitTaking fires. Round-trip
     # restriction blocks the sell.
-    a_prices = np.array([100.0] * 15)
+    a_prices = ph(np.array([100.0] * 15))
 
     state = _SimState(cash=0.0)
     state.positions = {"A": 5.0}
@@ -887,7 +948,8 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
 
     # Price array with current=$115; backstop history gives the rules
     # something to read but the only price they act on is the last bar.
-    prices = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    prices_raw = np.array([100.0, 110.0, 120.0, 130.0, 125.0, 120.0, 115.0])
+    prices = ph(prices_raw)
     engine._run_day(state, portfolio, {"A": prices}, date(2024, 2, 1))
 
     sells = [t for t in state.trades if t.direction == Direction.SELL]
@@ -900,7 +962,7 @@ def test_competing_exit_rules_collapse_to_one_sell() -> None:
 
     # Reconciliation: with one sell, FIFO consumed basis = real basis,
     # state.cash exactly reflects sell proceeds, and the position is empty.
-    final_price = float(prices[-1])
+    final_price = float(prices_raw[-1])
     final_value = state.cash + sum(sum(lot.shares for lot in lots) * final_price for lots in state.lots.values())
     realized = sum(
         (t.price - state.basis_per_sell[i]) * t.shares

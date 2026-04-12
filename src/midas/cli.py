@@ -69,7 +69,7 @@ def _fetch_prices(
     start: date,
     end: date,
     warmup_bars: int = 0,
-) -> dict[str, pd.Series]:
+) -> dict[str, pd.DataFrame]:
     """Fetch price history from ``start - warmup_buffer`` through ``end``.
 
     ``warmup_bars`` is the maximum number of trading days any configured
@@ -78,7 +78,7 @@ def _fetch_prices(
     have history available on day one of the simulation.
     """
     provider = CachedYFinanceProvider()
-    price_data: dict[str, pd.Series] = {}
+    price_data: dict[str, pd.DataFrame] = {}
     tickers = [h.ticker for h in portfolio.holdings]
     buffer_days = warmup_bars_to_calendar_days(warmup_bars)
     fetch_start = start - timedelta(days=buffer_days)

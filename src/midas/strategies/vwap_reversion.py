@@ -1,14 +1,17 @@
-"""VWAP reversion strategy: buy below average price, sell above.
+"""VWAP reversion strategy: buy when the close trades below rolling VWAP.
 
-Note: Without volume data, this uses a simple moving average as a proxy
-for VWAP. With volume data available via the provider, this could be
-extended to use true volume-weighted average price.
+Classical VWAP weights each bar's typical price ``(H + L + C) / 3`` by
+its traded volume. When the provider has no volume data (or the window
+traded zero contracts), this strategy degenerates to the simple moving
+average of the typical price — equivalent to the prior close-SMA proxy
+for the close-only fixtures used in tests.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import EntrySignal
 
@@ -22,39 +25,69 @@ class VWAPReversion(EntrySignal):
     def warmup_period(self) -> int:
         return self._window
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
-        n = len(prices)
+    def _rolling_vwap(self, price_history: PriceHistory) -> np.ndarray | None:
+        """Rolling VWAP of length ``len(close) - window + 1``, or None.
+
+        Returns None only when the history is shorter than the window.
+        When volume data is missing — or the window's total volume is
+        zero — the bars in question fall back to the simple mean of the
+        typical price.
+        """
+        close = price_history.close
+        n = len(close)
+        w = self._window
+        if n < w:
+            return None
+        typical = (price_history.high + price_history.low + close) / 3.0
+        cs_t = np.empty(n + 1)
+        cs_t[0] = 0.0
+        np.cumsum(typical, out=cs_t[1:])
+        typical_sum = cs_t[w:] - cs_t[:-w]
+        if price_history.volume is None:
+            return typical_sum / w
+        volume = price_history.volume
+        cs_pv = np.empty(n + 1)
+        cs_pv[0] = 0.0
+        np.cumsum(typical * volume, out=cs_pv[1:])
+        cs_v = np.empty(n + 1)
+        cs_v[0] = 0.0
+        np.cumsum(volume, out=cs_v[1:])
+        pv_sum = cs_pv[w:] - cs_pv[:-w]
+        v_sum = cs_v[w:] - cs_v[:-w]
+        sma = typical_sum / w
+        return np.where(v_sum > 0, pv_sum / np.where(v_sum > 0, v_sum, 1.0), sma)
+
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        close = price_history.close
+        n = len(close)
         w = self._window
         scores = np.full(n, np.nan)
         if n < w:
             return scores
-        cs = np.empty(n + 1)
-        cs[0] = 0.0
-        np.cumsum(prices, out=cs[1:])
-        avg = (cs[w:] - cs[:-w]) / w
-        current = prices[w - 1 :]
-        deviation = np.where(avg != 0, (current - avg) / avg, 0.0)
+        vwap = self._rolling_vwap(price_history)
+        assert vwap is not None  # n >= w
+        current = close[w - 1 :]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            deviation = np.where(vwap != 0, (current - vwap) / vwap, 0.0)
         scores[w - 1 :] = np.clip(-deviation / self._threshold, 0.0, 1.0)
         return scores
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window:
+        if len(price_history.close) < self._window:
             return None
-
-        current = float(price_history[-1])
-        avg_price = float(price_history[-self._window :].mean())
-
-        if avg_price == 0:
+        vwap = self._rolling_vwap(price_history)
+        assert vwap is not None
+        vwap_now = float(vwap[-1])
+        if vwap_now == 0:
             return 0.0
-
-        deviation = (current - avg_price) / avg_price
-
-        # Buy-only entry signal: negative deviation (below avg) ramps from 0
-        # to 1. The bearish "above avg" half is dropped — exits are handled
+        current = float(price_history.close[-1])
+        deviation = (current - vwap_now) / vwap_now
+        # Buy-only entry signal: negative deviation (below VWAP) ramps from 0
+        # to 1. The bearish "above VWAP" half is dropped — exits are handled
         # by ExitRule strategies.
         return self.clamp(-deviation / self._threshold, 0.0, 1.0)
 
@@ -64,4 +97,4 @@ class VWAPReversion(EntrySignal):
 
     @property
     def description(self) -> str:
-        return f"Bullish below the {self._window}-day average price (VWAP proxy) by {self._threshold:.0%}"
+        return f"Bullish when price trades {self._threshold:.0%} below the {self._window}-bar rolling VWAP"

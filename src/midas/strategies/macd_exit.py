@@ -6,8 +6,7 @@ is a technical signal that does not use cost basis or high-water mark.
 
 from __future__ import annotations
 
-import numpy as np
-
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, ExitRule
 from midas.strategies.macd_crossover import ema
@@ -32,21 +31,22 @@ class MACDExit(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
         if proposed_target <= 0:
             return proposed_target
+        prices = price_history.close
         min_len = self._slow_period + self._signal_period
-        if len(price_history) < min_len:
+        if len(prices) < min_len:
             return proposed_target
-        current = float(price_history[-1])
+        current = float(prices[-1])
         if current <= 0:
             return proposed_target
 
-        fast_ema = ema(price_history, self._fast_period)
-        slow_ema = ema(price_history, self._slow_period)
+        fast_ema = ema(prices, self._fast_period)
+        slow_ema = ema(prices, self._slow_period)
         macd_line = fast_ema - slow_ema
         signal_line = ema(macd_line, self._signal_period)
         diff = float(macd_line[-1] - signal_line[-1])
@@ -58,12 +58,13 @@ class MACDExit(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        fast_ema = ema(price_history, self._fast_period)
-        slow_ema = ema(price_history, self._slow_period)
+        prices = price_history.close
+        fast_ema = ema(prices, self._fast_period)
+        slow_ema = ema(prices, self._slow_period)
         macd_line = fast_ema - slow_ema
         signal_line = ema(macd_line, self._signal_period)
         diff = float(macd_line[-1] - signal_line[-1])

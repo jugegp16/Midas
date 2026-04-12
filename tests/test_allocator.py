@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import numpy as np
+from conftest import ph
 
 from midas.allocator import Allocator
+from midas.data.price_history import PriceHistory
 from midas.models import AllocationConstraints
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
 
 
-def _prices(values: list[float]) -> np.ndarray:
-    return np.array(values)
+def _prices(values: list[float]) -> PriceHistory:
+    return ph(np.array(values))
 
 
 class TestAllocator:

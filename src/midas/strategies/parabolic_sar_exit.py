@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
@@ -23,43 +24,53 @@ class ParabolicSARExit(ExitRule):
     def warmup_period(self) -> int:
         return 2
 
-    def _compute(self, prices: np.ndarray) -> tuple[float, bool] | None:
-        """Return (sar, uptrend) at the final bar, or None if too little data."""
-        n = len(prices)
+    def _compute(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+    ) -> tuple[float, bool] | None:
+        """Return (sar, uptrend) at the final bar, or None if too little data.
+
+        Wilder's spec uses HIGH for the uptrend extreme point and LOW for the
+        downtrend extreme point, and flips the trend when SAR crosses LOW
+        (uptrend) or HIGH (downtrend).
+        """
+        n = len(high)
         if n < 2:
             return None
 
-        p0 = float(prices[0])
-        p1 = float(prices[1])
-        uptrend = p1 >= p0
+        h0, h1 = float(high[0]), float(high[1])
+        l0, l1 = float(low[0]), float(low[1])
+        uptrend = h1 >= h0
         if uptrend:
-            sar = min(p0, p1)
-            ep = max(p0, p1)
+            sar = min(l0, l1)
+            ep = max(h0, h1)
         else:
-            sar = max(p0, p1)
-            ep = min(p0, p1)
+            sar = max(h0, h1)
+            ep = min(l0, l1)
         af = self._af_start
 
         for i in range(2, n):
             sar = sar + af * (ep - sar)
-            close = float(prices[i])
+            hi = float(high[i])
+            lo = float(low[i])
             if uptrend:
-                if close > ep:
-                    ep = close
+                if hi > ep:
+                    ep = hi
                     af = min(af + self._af_step, self._af_max)
-                if sar > close:
+                if sar > lo:
                     uptrend = False
                     sar = ep
-                    ep = close
+                    ep = lo
                     af = self._af_start
             else:
-                if close < ep:
-                    ep = close
+                if lo < ep:
+                    ep = lo
                     af = min(af + self._af_step, self._af_max)
-                if sar < close:
+                if sar < hi:
                     uptrend = True
                     sar = ep
-                    ep = close
+                    ep = hi
                     af = self._af_start
 
         return sar, uptrend
@@ -68,13 +79,13 @@ class ParabolicSARExit(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
         if proposed_target <= 0:
             return proposed_target
-        result = self._compute(price_history)
+        result = self._compute(price_history.high, price_history.low)
         if result is None:
             return proposed_target
         _sar, uptrend = result
@@ -85,12 +96,13 @@ class ParabolicSARExit(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        result = self._compute(price_history)
-        current = float(price_history[-1]) if len(price_history) > 0 else 0.0
+        close = price_history.close
+        result = self._compute(price_history.high, price_history.low)
+        current = float(close[-1]) if len(close) > 0 else 0.0
         if result is None:
             return f"ParabolicSARExit: flip on {ticker}"
         sar, _ = result

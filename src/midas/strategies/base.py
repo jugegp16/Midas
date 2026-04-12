@@ -18,6 +18,11 @@ Both inherit from ``Strategy`` for shared bookkeeping (``name``,
 ``warmup_period``, ``suitability``, ``description``, ``tier_label``), but
 the two scoring interfaces (``EntrySignal.score`` and
 ``ExitRule.clamp_target``) are completely disjoint.
+
+Both tiers receive a :class:`midas.data.price_history.PriceHistory` —
+an OHLCV bar struct — rather than a bare close array, so strategies
+that depend on high/low/volume data (ATR, Donchian, VWAP, gap detection)
+can read what they need without out-of-band state.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from typing import ClassVar
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 
 # Recursive indicators (EMA, RSI, MACD) converge to their steady-state value
@@ -121,17 +127,18 @@ class EntrySignal(Strategy):
     @abstractmethod
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
         """Return entry score in ``[0, 1]`` (or ``None`` to abstain)."""
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
-        """Precompute scores for every prefix of *prices* in one pass.
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        """Precompute scores for every prefix of *price_history* in one pass.
 
-        Returns an array *s* of length ``len(prices)`` where ``s[i]`` equals
-        ``self.score(prices[:i+1])`` (or ``NaN`` when ``score`` would return
-        ``None``). Returns ``None`` when precomputation is not possible.
+        Returns an array *s* of length ``len(price_history)`` where ``s[i]``
+        equals ``self.score(price_history[:i+1])`` (or ``NaN`` when ``score``
+        would return ``None``). Returns ``None`` when precomputation is not
+        possible.
         """
         return None
 
@@ -158,7 +165,7 @@ class ExitRule(Strategy):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
@@ -171,7 +178,7 @@ class ExitRule(Strategy):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:

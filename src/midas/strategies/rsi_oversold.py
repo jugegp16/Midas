@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal
 
@@ -19,7 +20,8 @@ class RSIOversold(EntrySignal):
         # bars gives a mathematically valid but numerically unstable value.
         return self._window * RECURSIVE_WARMUP_MULTIPLIER
 
-    def precompute(self, prices: np.ndarray) -> np.ndarray | None:
+    def precompute(self, price_history: PriceHistory) -> np.ndarray | None:
+        prices = price_history.close
         n = len(prices)
         w = self._window
         scores = np.full(n, np.nan)
@@ -50,13 +52,14 @@ class RSIOversold(EntrySignal):
 
     def score(
         self,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         **kwargs: object,
     ) -> float | None:
-        if len(price_history) < self._window + 1:
+        prices = price_history.close
+        if len(prices) < self._window + 1:
             return None
 
-        deltas = np.diff(price_history[-(self._window + 1) :])
+        deltas = np.diff(prices[-(self._window + 1) :])
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
 

@@ -219,7 +219,7 @@ def _suggest_params(
 def _run_trial(
     strategy_params: dict[str, dict[str, float]],
     portfolio: PortfolioConfig,
-    price_data: dict[str, pd.Series],
+    price_data: dict[str, pd.DataFrame],
     start: date,
     end: date,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
@@ -286,7 +286,7 @@ worker_state: dict[str, Any] = {}
 
 def _init_worker(
     portfolio: PortfolioConfig,
-    price_data: dict[str, pd.Series],
+    price_data: dict[str, pd.DataFrame],
     start: date,
     end: date,
     min_cash_pct: float,
@@ -318,7 +318,7 @@ def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, 
 
 def _wf_init_worker(
     portfolio: PortfolioConfig,
-    price_data: dict[str, pd.Series],
+    price_data: dict[str, pd.DataFrame],
     min_cash_pct: float,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
@@ -412,7 +412,7 @@ def _prepare_names_and_ranges(
 
 def optimize(
     portfolio: PortfolioConfig,
-    price_data: dict[str, pd.Series],
+    price_data: dict[str, pd.DataFrame],
     start: date,
     end: date,
     strategy_names: list[str] | None = None,
@@ -528,7 +528,7 @@ def optimize(
 
 def walk_forward_optimize(
     portfolio: PortfolioConfig,
-    price_data: dict[str, pd.Series],
+    price_data: dict[str, pd.DataFrame],
     start: date,
     end: date,
     strategy_names: list[str] | None = None,
@@ -553,8 +553,8 @@ def walk_forward_optimize(
 
     # Collect trading days across all tickers.
     all_dates: set[date] = set()
-    for series in price_data.values():
-        all_dates.update(d for d in series.index if start <= d <= end)
+    for df in price_data.values():
+        all_dates.update(d for d in df.index if start <= d <= end)
     trading_days = sorted(all_dates)
 
     n_days = len(trading_days)

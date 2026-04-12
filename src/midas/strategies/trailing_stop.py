@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-
+from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import ExitRule
 
@@ -16,13 +15,13 @@ class TrailingStop(ExitRule):
         self,
         ticker: str,
         proposed_target: float,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> float:
         if proposed_target <= 0 or len(price_history) == 0:
             return proposed_target
-        current = float(price_history[-1])
+        current = float(price_history.close[-1])
         if current <= 0 or high_water_mark <= 0:
             return proposed_target
         drawdown = (high_water_mark - current) / high_water_mark
@@ -34,11 +33,11 @@ class TrailingStop(ExitRule):
     def clamp_reason(
         self,
         ticker: str,
-        price_history: np.ndarray,
+        price_history: PriceHistory,
         cost_basis: float,
         high_water_mark: float,
     ) -> str:
-        current = float(price_history[-1])
+        current = float(price_history.close[-1])
         drawdown = (high_water_mark - current) / high_water_mark if high_water_mark > 0 else 0.0
         return (
             f"TrailingStop: {drawdown:.1%} drawdown from high "
