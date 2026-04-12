@@ -17,13 +17,14 @@ import pandas as pd
 import yaml
 
 from midas.allocator import Allocator
-from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, BacktestResult
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
     PortfolioConfig,
 )
 from midas.order_sizer import OrderSizer
+from midas.results import BacktestResult
 from midas.strategies import STRATEGY_REGISTRY
 from midas.strategies.base import EntrySignal, ExitRule
 

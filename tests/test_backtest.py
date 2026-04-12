@@ -13,18 +13,18 @@ from conftest import make_price_series, ph
 
 from midas.allocator import Allocator
 from midas.backtest import (
-    TRADING_DAYS_PER_YEAR,
     BacktestEngine,
-    BacktestResult,
     ExecutionMode,
     _SimState,
+)
+from midas.metrics import (
+    TRADING_DAYS_PER_YEAR,
     compute_cagr,
     compute_max_drawdown,
     compute_sharpe,
     compute_sortino,
     compute_strategy_stats,
     compute_trade_stats,
-    write_backtest_results,
 )
 from midas.models import (
     AllocationConstraints,
@@ -41,6 +41,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
+from midas.results import BacktestResult, write_backtest_results
 from midas.strategies.gap_down_recovery import GapDownRecovery
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.profit_taking import ProfitTaking

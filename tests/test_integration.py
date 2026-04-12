@@ -8,10 +8,11 @@ import yaml
 from conftest import make_price_series
 
 from midas.allocator import Allocator
-from midas.backtest import BacktestEngine, write_backtest_results
+from midas.backtest import BacktestEngine
 from midas.config import load_portfolio, load_strategies
 from midas.models import Direction
 from midas.order_sizer import OrderSizer
+from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY
 from midas.strategies.base import EntrySignal, ExitRule
 
