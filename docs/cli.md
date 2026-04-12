@@ -51,6 +51,7 @@ uv run midas backtest -p portfolio.yaml -s strategies.yaml --start 2023-01-01 --
 | `-o`, `--output` | `backtest_results.csv` | Output CSV path for trade log and summary |
 | `--train-pct` | 0.70 | Train/test split ratio |
 | `--no-split` | off | Disable train/test split entirely |
+| `--execution-mode` | `next_open` | When decisions fill: `close` (legacy same-day, optimistic), `next_open` (next session's open — honest default), `next_close` (next session's close) |
 
 ## live
 

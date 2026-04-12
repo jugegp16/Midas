@@ -158,15 +158,158 @@ def test_backtest_runs_real_ohlcv_through_strategy() -> None:
 
     result = engine.run(portfolio, {"GAPCO": frame}, dates[0], dates[-1])
 
-    buys_on_gap_day = [t for t in result.trades if t.direction == Direction.BUY and t.date == dates[gap_day]]
-    assert buys_on_gap_day, (
-        "GapDownRecovery should fire on the real-OHLCV gap day; if this fails, "
-        "the engine is not threading open/high/low through to the strategy."
+    # Default engine mode is ``next_open``: the strategy scores the gap at
+    # day ``gap_day`` close but the buy fills at day ``gap_day + 1``'s open.
+    fill_day = dates[gap_day + 1]
+    buys_on_fill_day = [t for t in result.trades if t.direction == Direction.BUY and t.date == fill_day]
+    assert buys_on_fill_day, (
+        "GapDownRecovery should fire on the real-OHLCV gap day (executing next "
+        "open); if this fails, the engine is not threading open/high/low through "
+        "to the strategy, or the execution-lag pipeline dropped the decision."
     )
     # And nothing fires on the flat days — proves the strategy is reading the
     # specific bar's OHLC, not e.g. a constant from the precompute fixture.
-    other_buys = [t for t in result.trades if t.direction == Direction.BUY and t.date != dates[gap_day]]
-    assert not other_buys, f"unexpected buys outside the gap day: {other_buys}"
+    other_buys = [t for t in result.trades if t.direction == Direction.BUY and t.date != fill_day]
+    assert not other_buys, f"unexpected buys outside the gap-fill day: {other_buys}"
+
+
+# --- execution lag (#46) ---
+#
+# Honest execution defers today's decision to tomorrow's open (or close)
+# instead of filling on the bar the signal reads — eliminating the
+# close-on-close lookahead that inflates realistic backtest returns.
+
+
+def _gap_fill_frame(
+    gap_day: int,
+    fill_open: float,
+    fill_close: float,
+    *,
+    n: int = 30,
+) -> pd.DataFrame:
+    """OHLCV frame with a real gap at ``gap_day`` and a pinned next bar.
+
+    The fill bar's open and close are set independently so tests can
+    distinguish ``next_open`` and ``next_close`` execution modes by the
+    trade price they record.
+    """
+    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    opens = np.full(n, 100.0)
+    highs = np.full(n, 100.0)
+    lows = np.full(n, 100.0)
+    closes = np.full(n, 100.0)
+    volumes = np.full(n, 1_000_000.0)
+    # Real intraday gap: open 5% below prior close, recovers to $99.
+    opens[gap_day] = 95.0
+    lows[gap_day] = 94.0
+    highs[gap_day] = 99.5
+    closes[gap_day] = 99.0
+    # Pin the fill bar so the trade price uniquely identifies which
+    # bar (and which field) the engine filled against.
+    opens[gap_day + 1] = fill_open
+    highs[gap_day + 1] = max(fill_open, fill_close)
+    lows[gap_day + 1] = min(fill_open, fill_close)
+    closes[gap_day + 1] = fill_close
+    return pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+
+
+def _lag_test_engine(execution_mode: str) -> BacktestEngine:
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator([(GapDownRecovery(gap_threshold=0.03), 1.0)], constraints, n_tickers=1)
+    return BacktestEngine(
+        allocator=allocator,
+        order_sizer=OrderSizer(default_slippage=0.0),  # clean numbers for price pinning
+        exit_rules=[],
+        constraints=constraints,
+        enable_split=False,
+        execution_mode=execution_mode,  # type: ignore[arg-type]
+    )
+
+
+def _lag_test_portfolio() -> PortfolioConfig:
+    return PortfolioConfig(
+        holdings=[Holding(ticker="GAPCO", shares=5, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+
+
+def test_execution_lag_next_open_fills_at_next_bar_open() -> None:
+    """Signal at day T close fires at day T+1's *open* under ``next_open``."""
+    gap_day = 20
+    frame = _gap_fill_frame(gap_day=gap_day, fill_open=105.0, fill_close=107.0)
+    engine = _lag_test_engine("next_open")
+
+    result = engine.run(_lag_test_portfolio(), {"GAPCO": frame}, frame.index[0], frame.index[-1])
+
+    buys = [t for t in result.trades if t.direction == Direction.BUY]
+    assert len(buys) == 1, f"expected a single buy from the gap signal, got {len(buys)}: {buys}"
+    assert buys[0].date == frame.index[gap_day + 1]
+    # Fill price is the next bar's open, not its close and not today's close.
+    assert buys[0].price == 105.0, f"expected fill at next bar open ($105), got ${buys[0].price}"
+
+
+def test_execution_lag_next_close_fills_at_next_bar_close() -> None:
+    """Signal at day T close fires at day T+1's *close* under ``next_close``."""
+    gap_day = 20
+    frame = _gap_fill_frame(gap_day=gap_day, fill_open=105.0, fill_close=107.0)
+    engine = _lag_test_engine("next_close")
+
+    result = engine.run(_lag_test_portfolio(), {"GAPCO": frame}, frame.index[0], frame.index[-1])
+
+    buys = [t for t in result.trades if t.direction == Direction.BUY]
+    assert len(buys) == 1
+    assert buys[0].date == frame.index[gap_day + 1]
+    assert buys[0].price == 107.0, f"expected fill at next bar close ($107), got ${buys[0].price}"
+
+
+def test_execution_lag_close_mode_preserves_legacy_same_day_fill() -> None:
+    """Legacy ``close`` mode fills on the decision bar itself (optimistic)."""
+    gap_day = 20
+    frame = _gap_fill_frame(gap_day=gap_day, fill_open=105.0, fill_close=107.0)
+    engine = _lag_test_engine("close")
+
+    result = engine.run(_lag_test_portfolio(), {"GAPCO": frame}, frame.index[0], frame.index[-1])
+
+    buys = [t for t in result.trades if t.direction == Direction.BUY]
+    assert len(buys) == 1
+    assert buys[0].date == frame.index[gap_day]
+    # Legacy mode fills at the decision bar's close ($99, the gap recovery).
+    assert buys[0].price == 99.0
+
+
+def test_execution_lag_last_day_decision_never_executes() -> None:
+    """A signal on the final bar has no next bar to fill against — dropped.
+
+    Under lag=1 semantics an order placed after the final session cannot
+    fill inside the window. Otherwise the backtest would implicitly gain
+    one free day of hindsight at its right edge.
+    """
+    # 22 bars, gap on bar 21 (the last). Under ``next_open`` the decision
+    # is stored as pending but the loop ends — no trade should land.
+    n = 22
+    dates = [d.date() for d in pd.to_datetime([date(2024, 1, 2) + pd.Timedelta(days=i) for i in range(n)])]
+    opens = np.full(n, 100.0)
+    highs = np.full(n, 100.0)
+    lows = np.full(n, 100.0)
+    closes = np.full(n, 100.0)
+    volumes = np.full(n, 1_000_000.0)
+    opens[n - 1] = 95.0
+    lows[n - 1] = 94.0
+    highs[n - 1] = 99.5
+    closes[n - 1] = 99.0
+    frame = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+
+    engine = _lag_test_engine("next_open")
+    result = engine.run(_lag_test_portfolio(), {"GAPCO": frame}, dates[0], dates[-1])
+
+    buys = [t for t in result.trades if t.direction == Direction.BUY]
+    assert buys == [], f"final-bar signal must not execute under lag=1, got: {buys}"
 
 
 def test_backtest_with_split() -> None:

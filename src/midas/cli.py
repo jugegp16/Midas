@@ -125,6 +125,18 @@ def cli() -> None:
     help="Train/test split ratio (0-1).",
 )
 @click.option("--no-split", is_flag=True, help="Disable train/test split.")
+@click.option(
+    "--execution-mode",
+    type=click.Choice(["close", "next_open", "next_close"]),
+    default="next_open",
+    show_default=True,
+    help=(
+        "When orders computed on day T actually fill. "
+        "'close' = same day (legacy, optimistic); "
+        "'next_open' = next session's open (honest default); "
+        "'next_close' = next session's close."
+    ),
+)
 def backtest(
     portfolio: str,
     strategies: str | None,
@@ -133,6 +145,7 @@ def backtest(
     output: str,
     train_pct: float,
     no_split: bool,
+    execution_mode: str,
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
@@ -158,6 +171,7 @@ def backtest(
         train_pct=train_pct,
         enable_split=not no_split,
         log_fn=print_status,
+        execution_mode=execution_mode,  # type: ignore[arg-type]
     )
 
     print_status("Running backtest...")
