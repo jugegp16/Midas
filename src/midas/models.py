@@ -12,6 +12,12 @@ DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
 DEFAULT_ENTRY_WEIGHT = 1
 
+FREQUENCY_DAYS: dict[str, int] = {
+    "weekly": 7,
+    "biweekly": 14,
+    "monthly": 30,
+}
+
 
 class Direction(Enum):
     BUY = "BUY"
@@ -36,13 +42,6 @@ class Holding:
     ticker: str
     shares: float
     cost_basis: float | None = None
-
-
-FREQUENCY_DAYS: dict[str, int] = {
-    "weekly": 7,
-    "biweekly": 14,
-    "monthly": 30,
-}
 
 
 @dataclass

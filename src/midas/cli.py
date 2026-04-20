@@ -9,7 +9,7 @@ import click
 import pandas as pd
 
 from midas.allocator import Allocator
-from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, ExecutionMode, write_backtest_results
+from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, ExecutionMode
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.models import (
@@ -19,6 +19,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.output import print_backtest_summary, print_status, print_strategy_table
+from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
 

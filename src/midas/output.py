@@ -10,14 +10,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from midas.backtest import aggregate_strategy_stats
+from midas.metrics import aggregate_strategy_stats
 from midas.models import Direction, Order
 from midas.strategies.base import Strategy
 
 if TYPE_CHECKING:
-    from midas.backtest import BacktestResult
+    from midas.results import BacktestResult
 
 console = Console()
+
+BACKTEST_TABLE_WIDTH = 100
+# Split table in half so the column divider is centered.
+# Account for 4 chars of box borders/separator (outer borders + center separator).
+METRIC_COL_WIDTH = (BACKTEST_TABLE_WIDTH - 4) // 2
+VALUE_COL_WIDTH = BACKTEST_TABLE_WIDTH - 4 - METRIC_COL_WIDTH
 
 
 def print_alert(
@@ -71,13 +77,6 @@ def print_strategy_table(strategies: list[Strategy]) -> None:
         table.add_row(strat.name, strat.tier_label, strat.description, tags)
 
     console.print(table, justify="center")
-
-
-BACKTEST_TABLE_WIDTH = 100
-# Split table in half so the column divider is centered.
-# Account for 4 chars of box borders/separator (outer borders + center separator).
-METRIC_COL_WIDTH = (BACKTEST_TABLE_WIDTH - 4) // 2
-VALUE_COL_WIDTH = BACKTEST_TABLE_WIDTH - 4 - METRIC_COL_WIDTH
 
 
 def color_signed(value: float, fmt: str = ".2%") -> str:

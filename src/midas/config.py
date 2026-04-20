@@ -21,6 +21,15 @@ from midas.models import (
 )
 
 
+def _load_yaml(path: Path) -> dict[str, Any]:
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        msg = f"Expected a YAML mapping in {path}"
+        raise ValueError(msg)
+    return data
+
+
 def load_portfolio(path: Path) -> PortfolioConfig:
     """Load portfolio config from YAML."""
     raw = _load_yaml(path)
@@ -99,12 +108,3 @@ def load_strategies(
         ),
     )
     return configs, constraints
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        msg = f"Expected a YAML mapping in {path}"
-        raise ValueError(msg)
-    return data
