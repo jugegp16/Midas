@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from midas.data.price_history import PriceHistory
-from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
+from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -61,11 +61,15 @@ class Allocator:
         entries: list[tuple[EntrySignal, float]],
         constraints: AllocationConstraints,
         n_tickers: int,
+        *,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         self._entries: list[_ScoredEntry] = [_ScoredEntry(strat, wt) for strat, wt in entries]
         self._constraints = constraints
+        self._risk_config = risk_config if risk_config is not None else RiskConfig()
         self._n_tickers = n_tickers
         self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
+        self._risk_cache: dict[str, Any] = {}
 
         # Auto-compute max_position_pct if not set.
         equal_weight = (1.0 - constraints.min_cash_pct) / max(n_tickers, 1)

@@ -37,6 +37,7 @@ def _build_components(
     strategy_configs: list[StrategyConfig] | None,
     constraints: AllocationConstraints,
     n_tickers: int,
+    risk_config: RiskConfig | None = None,
 ) -> tuple[Allocator, OrderSizer, list[ExitRule]]:
     """Build allocator, order sizer, and exit rules from config."""
     configs = strategy_configs or [StrategyConfig(name=name) for name in STRATEGY_REGISTRY]
@@ -55,7 +56,7 @@ def _build_components(
             msg = f"Strategy {cfg.name!r} is neither EntrySignal nor ExitRule"
             raise click.ClickException(msg)
 
-    allocator = Allocator(entries, constraints, n_tickers)
+    allocator = Allocator(entries, constraints, n_tickers, risk_config=risk_config)
     order_sizer = OrderSizer()
 
     return allocator, order_sizer, exits
@@ -151,7 +152,7 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, _risk_config = (
+    strat_configs, constraints, risk_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
 
@@ -162,6 +163,7 @@ def backtest(
         strat_configs,
         constraints,
         n_tickers,
+        risk_config=risk_config,
     )
 
     warmup_bars = max_warmup([*allocator.strategies, *exit_rules])
@@ -214,7 +216,7 @@ def live(
     from midas.live import LiveEngine
 
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, _risk_config = (
+    strat_configs, constraints, risk_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
     provider = CachedYFinanceProvider()
@@ -224,6 +226,7 @@ def live(
         strat_configs,
         constraints,
         n_tickers,
+        risk_config=risk_config,
     )
 
     engine = LiveEngine(

@@ -7,7 +7,7 @@ from conftest import ph
 
 from midas.allocator import Allocator
 from midas.data.price_history import PriceHistory
-from midas.models import AllocationConstraints
+from midas.models import AllocationConstraints, RiskConfig
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
 
@@ -207,3 +207,20 @@ class TestAllocator:
         # redistribution loop runs twice.
         assert abs(result.targets["A"] - 0.35) < 1e-9
         assert abs(result.targets["B"] - 0.35) < 1e-9
+
+
+class TestAllocatorRiskConfig:
+    def test_accepts_risk_config_kwarg(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05)
+        risk = RiskConfig()
+        allocator = Allocator([(mr, 1.0)], constraints, n_tickers=2, risk_config=risk)
+        # Verify it's stored on the instance for later phases to read.
+        assert allocator._risk_config is risk
+
+    def test_defaults_to_risk_config_when_omitted(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05)
+        allocator = Allocator([(mr, 1.0)], constraints, n_tickers=2)
+        # Default matches RiskConfig() exactly.
+        assert allocator._risk_config == RiskConfig()
