@@ -423,3 +423,71 @@ class TestIDMStage:
         # Re-cap (phase 3.6) must pull everything back to max_position_pct.
         for ticker, weight in result.targets.items():
             assert weight <= 0.40 + 1e-9, f"{ticker} exceeded cap after re-cap"
+
+
+class TestVolTargetingStage:
+    def test_high_vol_portfolio_scaled_down_to_target(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,
+        )
+        rng = np.random.default_rng(3)
+        # Very volatile: daily sigma 5% each → annualized vol ≈ 80%.
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 5.0, 260))) for name in ("A", "B")}
+        for h in histories.values():
+            h.close[-1] = h.close[-2] * 0.90  # buy signal
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(
+                weighting="equal",
+                idm_cap=1.0,  # disable IDM
+                vol_target_annualized=0.20,
+            ),
+        )
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["A", "B"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0},
+        )
+        total = sum(result.targets.values())
+        # Vol targeting clamps down — total should be well below 0.95.
+        assert total < 0.60
+
+    def test_low_vol_portfolio_not_scaled_up(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,
+        )
+        rng = np.random.default_rng(5)
+        # Tame daily noise — well below 20% annualized.
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.1, 260))) for name in ("A", "B")}
+        for h in histories.values():
+            h.close[-1] = h.close[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(
+                weighting="equal",
+                idm_cap=1.0,
+                vol_target_annualized=0.20,
+            ),
+        )
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["A", "B"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0},
+        )
+        total = sum(result.targets.values())
+        # Below target vol → no scaling down.
+        assert math.isclose(total, 1 - 0.05, rel_tol=1e-6)

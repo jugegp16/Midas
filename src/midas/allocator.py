@@ -25,6 +25,7 @@ from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
 from midas.risk import (
     apply_instrument_diversification_multiplier,
+    apply_vol_targeting,
     covariance_matrix,
     realized_vol,
 )
@@ -303,6 +304,18 @@ class Allocator:
             targets,
             score_offsets=score_offsets,
         )
+
+        # Phase 3.7: Portfolio vol targeting. Only scales down.
+        cov = self._risk_cache.get("cov")
+        if cov is not None and active:
+            active_weights = {ticker: targets[ticker] for ticker in active}
+            scaled = apply_vol_targeting(
+                active_weights,
+                cov,
+                target_annualized_vol=self._risk_config.vol_target_annualized,
+            )
+            for ticker, weight in scaled.items():
+                targets[ticker] = weight
 
         return AllocationResult(targets, contributions, blended_scores)
 
