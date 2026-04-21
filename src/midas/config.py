@@ -9,9 +9,14 @@ from typing import Any
 import yaml
 
 from midas.models import (
+    DEFAULT_CORR_LOOKBACK_DAYS,
+    DEFAULT_IDM_CAP,
     DEFAULT_MIN_BUY_DELTA,
     DEFAULT_MIN_CASH_PCT,
     DEFAULT_SOFTMAX_TEMPERATURE,
+    DEFAULT_VOL_FLOOR,
+    DEFAULT_VOL_LOOKBACK_DAYS,
+    DEFAULT_VOL_TARGET_ANNUALIZED,
     AllocationConstraints,
     CashInfusion,
     Holding,
@@ -114,10 +119,16 @@ def load_strategies(
     risk_raw = raw.get("risk", {}) or {}
     risk = RiskConfig(
         weighting=risk_raw.get("weighting", "inverse_vol"),
-        vol_target_annualized=float(risk_raw.get("vol_target_annualized", 0.20)),
-        idm_cap=float(risk_raw.get("idm_cap", 2.5)),
-        vol_lookback_days=int(risk_raw.get("vol_lookback_days", 60)),
-        corr_lookback_days=int(risk_raw.get("corr_lookback_days", 252)),
-        vol_floor=float(risk_raw.get("vol_floor", 0.02)),
+        vol_target_annualized=float(
+            risk_raw.get("vol_target_annualized", DEFAULT_VOL_TARGET_ANNUALIZED),
+        ),
+        idm_cap=float(risk_raw.get("idm_cap", DEFAULT_IDM_CAP)),
+        vol_lookback_days=int(
+            risk_raw.get("vol_lookback_days", DEFAULT_VOL_LOOKBACK_DAYS),
+        ),
+        corr_lookback_days=int(
+            risk_raw.get("corr_lookback_days", DEFAULT_CORR_LOOKBACK_DAYS),
+        ),
+        vol_floor=float(risk_raw.get("vol_floor", DEFAULT_VOL_FLOOR)),
     )
     return configs, constraints, risk
