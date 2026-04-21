@@ -176,3 +176,67 @@ def apply_instrument_diversification_multiplier(
         return dict(weights)
 
     return {t: weight * multiplier if t in set(covered) else weight for t, weight in weights.items()}
+
+
+def predict_portfolio_vol(
+    weights: dict[str, float],
+    cov: pd.DataFrame,
+) -> float:
+    """Ex-ante portfolio vol: ``sqrt(w · cov · w) * sqrt(252)``.
+
+    Tickers in ``weights`` but not in ``cov`` are ignored. Returns 0.0 on
+    empty weights, all-zero weights, or when the quadratic form is
+    non-positive (degenerate covariance).
+
+    Args:
+        weights: Ticker -> weight mapping.
+        cov: Annualized covariance matrix indexed by ticker symbol.
+
+    Returns:
+        Annualized portfolio volatility as a fraction (0.20 == 20%),
+        or 0.0 on degenerate inputs.
+    """
+    covered = [t for t in weights if t in cov.index]
+    if not covered:
+        return 0.0
+    w = np.asarray([weights[t] for t in covered])
+    sub_cov = cov.loc[covered, covered].values
+    quad = float(w @ sub_cov @ w)
+    if quad <= 0:
+        return 0.0
+    return math.sqrt(quad)
+
+
+def apply_vol_targeting(
+    weights: dict[str, float],
+    cov: pd.DataFrame,
+    target_annualized_vol: float,
+) -> dict[str, float]:
+    """Scale weights down so predicted vol does not exceed the target.
+
+    Never scales up — if predicted vol is below target, weights are
+    returned unchanged. Degenerate cov matrices (w·cov·w <= 0) also
+    pass through unchanged.
+
+    Args:
+        weights: Ticker -> weight mapping before vol targeting.
+        cov: Annualized covariance matrix indexed by ticker symbol.
+        target_annualized_vol: Maximum allowable annualized portfolio vol
+            as a fraction (e.g. 0.20 for 20%).
+
+    Returns:
+        New dict with weights scaled by ``target / predicted`` when
+        predicted vol exceeds the target; otherwise the original weights
+        (as a new dict).
+    """
+    if not weights:
+        return {}
+    if sum(weights.values()) == 0:
+        return dict(weights)
+
+    predicted = predict_portfolio_vol(weights, cov)
+    if predicted <= 0 or predicted <= target_annualized_vol:
+        return dict(weights)
+
+    scale = target_annualized_vol / predicted
+    return {t: weight * scale for t, weight in weights.items()}

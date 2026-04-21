@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from conftest import ph, ph_ohlc  # noqa: F401 — ph_ohlc reserved for future tests
 
-from midas.risk import apply_instrument_diversification_multiplier, covariance_matrix, realized_vol
+from midas.risk import apply_instrument_diversification_multiplier, apply_vol_targeting, covariance_matrix, realized_vol
 
 
 class TestRealizedVol:
@@ -213,3 +213,58 @@ class TestApplyInstrumentDiversificationMultiplier:
         # for a 1-asset "portfolio" is trivially 1.0.
         assert math.isclose(out["A"], 0.3, rel_tol=1e-9)
         assert math.isclose(out["B"], 0.3, rel_tol=1e-9)
+
+
+def _cov_frame(tickers: list[str], matrix: np.ndarray) -> pd.DataFrame:
+    return pd.DataFrame(matrix, index=tickers, columns=tickers)
+
+
+class TestApplyVolTargeting:
+    def test_below_target_returns_unchanged(self):
+        # diag(cov) = 0.01 (10% ann vol), w = 0.5,0.5 uncorrelated → portfolio vol ≈ 7.07%
+        tickers = ["A", "B"]
+        cov = _cov_frame(tickers, np.diag([0.01, 0.01]))
+        weights = {"A": 0.5, "B": 0.5}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        assert out == weights
+
+    def test_exactly_at_target_returns_unchanged(self):
+        # Single asset, vol ≈ 20%; weight = 1 → portfolio vol = 20%.
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.04]]))
+        weights = {"A": 1.0}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        assert math.isclose(out["A"], 1.0, rel_tol=1e-9)
+
+    def test_double_target_halves_weights(self):
+        # Single asset, vol = 40% (variance 0.16), target = 20% → scale by 0.5.
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.16]]))
+        weights = {"A": 1.0}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        assert math.isclose(out["A"], 0.5, rel_tol=1e-9)
+
+    def test_zero_weights_returns_zero(self):
+        tickers = ["A", "B"]
+        cov = _cov_frame(tickers, np.eye(2))
+        weights = {"A": 0.0, "B": 0.0}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        assert out == weights
+
+    def test_degenerate_cov_returns_unchanged(self):
+        tickers = ["A", "B"]
+        cov = _cov_frame(tickers, np.zeros((2, 2)))
+        weights = {"A": 0.5, "B": 0.5}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        assert out == weights
+
+    def test_weights_missing_from_cov_pass_through_unscaled(self):
+        # "B" isn't in cov. "A" dominates the vol calculation.
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.16]]))  # 40% vol
+        weights = {"A": 1.0, "B": 0.3}
+        out = apply_vol_targeting(weights, cov, target_annualized_vol=0.20)
+        # A scales by 0.5; B is uncovered → passes through scaled by the same
+        # portfolio-wide multiplier so the downscaling remains coherent.
+        assert math.isclose(out["A"], 0.5, rel_tol=1e-9)
+        assert math.isclose(out["B"], 0.15, rel_tol=1e-9)
