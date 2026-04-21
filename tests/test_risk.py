@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pandas as pd
 from conftest import ph, ph_ohlc  # noqa: F401 — ph_ohlc reserved for future tests
 
-from midas.risk import covariance_matrix, realized_vol
+from midas.risk import apply_instrument_diversification_multiplier, covariance_matrix, realized_vol
 
 
 class TestRealizedVol:
@@ -152,3 +153,63 @@ class TestCovarianceMatrix:
         # Deterministic order for downstream matmul correctness.
         assert list(cov.index) == ["A", "M", "Z"]
         assert list(cov.columns) == ["A", "M", "Z"]
+
+
+def _corr_frame(tickers: list[str], matrix: np.ndarray) -> pd.DataFrame:
+    return pd.DataFrame(matrix, index=tickers, columns=tickers)
+
+
+class TestApplyInstrumentDiversificationMultiplier:
+    def test_uncorrelated_equal_weights_give_idm_approx_sqrt_n(self):
+        tickers = ["A", "B", "C", "D"]
+        weights = {t: 0.25 for t in tickers}
+        corr = _corr_frame(tickers, np.eye(4))
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=5.0)
+        # IDM = 1/sqrt(0.25 * 4 * 0.25) = 1/sqrt(0.25) = 2.0 = sqrt(4).
+        total = sum(out.values())
+        assert math.isclose(total, sum(weights.values()) * 2.0, rel_tol=1e-9)
+
+    def test_perfect_correlation_gives_idm_one(self):
+        tickers = ["A", "B"]
+        weights = {"A": 0.4, "B": 0.4}
+        corr = _corr_frame(tickers, np.ones((2, 2)))
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=5.0)
+        assert math.isclose(out["A"], 0.4, rel_tol=1e-9)
+        assert math.isclose(out["B"], 0.4, rel_tol=1e-9)
+
+    def test_cap_binds_when_raw_idm_exceeds(self):
+        tickers = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+        weights = dict.fromkeys(tickers, 1.0 / 9.0)
+        corr = _corr_frame(tickers, np.eye(9))
+        # raw IDM = sqrt(9) = 3.0; cap at 2.0 → multiplier = 2.0 / 3.0 of raw, so scale = 2.0.
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=2.0)
+        total = sum(out.values())
+        assert math.isclose(total, sum(weights.values()) * 2.0, rel_tol=1e-9)
+
+    def test_empty_weights_returns_empty(self):
+        corr = _corr_frame(["A"], np.eye(1))
+        assert apply_instrument_diversification_multiplier({}, corr, cap=2.5) == {}
+
+    def test_single_ticker_weights_unchanged(self):
+        weights = {"A": 0.5}
+        corr = _corr_frame(["A"], np.eye(1))
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=2.5)
+        assert out == {"A": 0.5}
+
+    def test_zero_weights_returns_unchanged(self):
+        tickers = ["A", "B"]
+        weights = dict.fromkeys(tickers, 0.0)
+        corr = _corr_frame(tickers, np.eye(2))
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=2.5)
+        assert out == weights
+
+    def test_weights_referencing_missing_ticker_are_ignored(self):
+        # "A" is in weights but absent from the correlation matrix — treat as
+        # uncorrelated (contributes to sum but not to the diversification math).
+        weights = {"A": 0.3, "B": 0.3}
+        corr = _corr_frame(["B"], np.eye(1))
+        out = apply_instrument_diversification_multiplier(weights, corr, cap=2.5)
+        # A passes through with multiplier 1.0; B scales by its own IDM which
+        # for a 1-asset "portfolio" is trivially 1.0.
+        assert math.isclose(out["A"], 0.3, rel_tol=1e-9)
+        assert math.isclose(out["B"], 0.3, rel_tol=1e-9)

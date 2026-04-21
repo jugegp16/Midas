@@ -127,3 +127,52 @@ def covariance_matrix(
     # Numerical safety: symmetrize.
     cov_composed = 0.5 * (cov_composed + cov_composed.T)
     return pd.DataFrame(cov_composed, index=tickers, columns=tickers)
+
+
+def apply_instrument_diversification_multiplier(
+    weights: dict[str, float],
+    corr: pd.DataFrame,
+    cap: float,
+) -> dict[str, float]:
+    """Scale all weights by ``min(1/sqrt(w·corr·w), cap)``.
+
+    Args:
+        weights: Ticker -> weight before IDM.
+        corr: Symmetric correlation matrix. Tickers in ``weights`` but not
+            in ``corr`` are left unscaled (treated as uncorrelated singletons).
+        cap: Upper bound on the multiplier. Must be >= 1.0 (checked by
+            :class:`RiskConfig`).
+
+    Returns:
+        New dict with scaled weights. Returns inputs unchanged on degenerate
+        inputs (empty weights, single ticker, zero weights, or numerical
+        w·corr·w <= 0).
+    """
+    if not weights:
+        return {}
+    if sum(weights.values()) == 0:
+        return dict(weights)
+
+    # Intersect weights with corr index — only covered tickers participate.
+    covered = [t for t in weights if t in corr.index]
+    if len(covered) <= 1:
+        return dict(weights)
+
+    w_raw = np.asarray([weights[t] for t in covered])
+    w_sum = float(w_raw.sum())
+    if w_sum <= 0:
+        return dict(weights)
+    w = w_raw / w_sum
+    sub_corr = corr.loc[covered, covered].values
+    quad = float(w @ sub_corr @ w)
+    if quad <= 0:
+        return dict(weights)
+
+    raw_idm = 1.0 / math.sqrt(quad)
+    multiplier = min(raw_idm, cap)
+    if multiplier <= 1.0:
+        # min(idm, cap) == 1.0 exactly happens only when idm<=1 (perfect
+        # correlation) or cap==1.0 (IDM stage disabled). Return unchanged.
+        return dict(weights)
+
+    return {t: weight * multiplier if t in set(covered) else weight for t, weight in weights.items()}
