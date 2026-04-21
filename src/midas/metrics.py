@@ -78,6 +78,23 @@ def compute_cagr(starting: float, final: float, days: int) -> float:
     return float((final / starting) ** (1.0 / years) - 1.0)
 
 
+def compute_annualized_return(cumulative_return: float, days: int) -> float:
+    """Annualize a cumulative return over *days* calendar days.
+
+    ``cumulative_return`` is expressed as a fraction (0.25 == +25%). Returns
+    0.0 for non-positive ``days`` and -1.0 when the cumulative loss wipes out
+    the starting value (i.e. growth factor ≤ 0), since compounding past total
+    loss is undefined.
+    """
+    if days <= 0:
+        return 0.0
+    growth = 1.0 + cumulative_return
+    if growth <= 0:
+        return -1.0
+    years = days / 365.25
+    return float(growth ** (1.0 / years) - 1.0)
+
+
 def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
     """Maximum peak-to-trough percentage decline."""
     dd = _drawdown_series(equity_curve)

@@ -18,6 +18,7 @@ import yaml
 
 from midas.allocator import Allocator
 from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
+from midas.metrics import compute_annualized_return
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
@@ -160,7 +161,12 @@ class OptimizeResult:
 
 @dataclass
 class FoldResult:
-    """Result of a single walk-forward fold."""
+    """Result of a single walk-forward fold.
+
+    ``train_return`` and ``test_return`` are annualized (so folds of different
+    lengths compare apples-to-apples). ``train_return_raw`` and
+    ``test_return_raw`` are cumulative returns over the fold's own window.
+    """
 
     fold: int
     train_start: date
@@ -170,6 +176,8 @@ class FoldResult:
     best_params: dict[str, dict[str, float]]
     train_return: float
     test_return: float
+    train_return_raw: float
+    test_return_raw: float
     trials_run: int
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
@@ -656,7 +664,7 @@ def walk_forward_optimize(
             )
 
             best_params: dict[str, dict[str, float]] = study.best_trial.user_attrs["params"]
-            train_return = study.best_trial.value or 0.0
+            train_return_raw = study.best_trial.value or 0.0
             prev_best_flat = dict(study.best_trial.params)
 
             # --- Evaluate best params on test window ---
@@ -670,7 +678,12 @@ def walk_forward_optimize(
                 enable_split=False,
             )
 
-            log(f"  Result — train: {train_return:.2%} | out-of-sample: {test_twr:.2%}")
+            train_days = (fold_train_end - fold_train_start).days
+            test_days = (fold_test_end - fold_test_start).days
+            train_ann = compute_annualized_return(train_return_raw, train_days)
+            test_ann = compute_annualized_return(test_twr, test_days)
+
+            log(f"  Result — train: {train_ann:.2%} annualized | out-of-sample: {test_ann:.2%} annualized")
 
             fold_results.append(
                 FoldResult(
@@ -680,8 +693,10 @@ def walk_forward_optimize(
                     test_start=fold_test_start,
                     test_end=fold_test_end,
                     best_params=best_params,
-                    train_return=round(train_return, 4),
-                    test_return=round(test_twr, 4),
+                    train_return=round(train_ann, 4),
+                    test_return=round(test_ann, 4),
+                    train_return_raw=round(train_return_raw, 4),
+                    test_return_raw=round(test_twr, 4),
                     trials_run=len(study.trials),
                     max_drawdown=round(test_result.max_drawdown, 4),
                     sharpe_ratio=round(test_result.sharpe_ratio, 4),
@@ -692,15 +707,20 @@ def walk_forward_optimize(
     finally:
         pool.shutdown(wait=True)
 
+    # Per-fold test returns are already annualized, so aggregates (mean, std,
+    # best/worst) compare folds of different lengths apples-to-apples.
     test_returns = [fold.test_return for fold in fold_results]
     mean_test = sum(test_returns) / len(test_returns)
     variance = sum((ret - mean_test) ** 2 for ret in test_returns) / max(len(test_returns) - 1, 1)
     std_test = variance**0.5
 
-    # CAGR: compound per-fold returns, then annualize over the OOS period.
+    # Overall OOS CAGR: compound the *raw* per-fold returns (what actually
+    # happened to the equity chain) and then annualize over the full OOS span.
+    # Doing this on raw values avoids the double-annualization artefact that
+    # would come from chaining already-annualized fold returns.
     compounded = 1.0
-    for ret in test_returns:
-        compounded *= 1.0 + ret
+    for fold in fold_results:
+        compounded *= 1.0 + fold.test_return_raw
     first_test_start = fold_results[0].test_start
     last_test_end = fold_results[-1].test_end
     years = (last_test_end - first_test_start).days / 365.25
@@ -711,8 +731,8 @@ def walk_forward_optimize(
     worst_fold = min(test_returns)
 
     # Efficiency ratio: how much in-sample performance survives out-of-sample.
-    # Anchored IS windows overlap so we can't annualize them apples-to-apples
-    # with OOS — only the ratio of mean raw returns is reported.
+    # Both sides are annualized so the ratio is dimensionally consistent even
+    # though IS windows are anchored (longer) and OOS windows are shorter.
     train_returns = [fold.train_return for fold in fold_results]
     mean_train = sum(train_returns) / len(train_returns)
     efficiency = mean_test / mean_train if mean_train != 0 else 0.0

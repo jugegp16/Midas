@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from midas.metrics import aggregate_strategy_stats
+from midas.metrics import aggregate_strategy_stats, compute_annualized_return
 from midas.models import Direction, Order
 from midas.strategies.base import Strategy
 
@@ -130,22 +130,29 @@ def print_params_table(
     print_centered(table)
 
 
+def _return_row(cum: float, days: int) -> str:
+    """Format a return as 'cumulative (annualized)' for display."""
+    annualized = compute_annualized_return(cum, days)
+    return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
+
+
 def print_backtest_summary(result: BacktestResult) -> None:
     starting_val = result.starting_value
     final_val = result.final_value
     bh_val = result.buy_and_hold_value
     total_return = (final_val - starting_val) / starting_val if starting_val > 0 else 0
     bh_return = (bh_val - starting_val) / starting_val if starting_val > 0 else 0
+    total_days = result.total_days
 
     # --- Performance ---
     perf = make_metric_table("Performance")
     perf.add_row("Starting Value", f"${starting_val:,.2f}")
     perf.add_row("Final Value", f"${final_val:,.2f}")
-    perf.add_row("Total Return", color_signed(total_return))
+    perf.add_row("Total Return", _return_row(total_return, total_days))
     perf.add_row("CAGR", color_signed(result.cagr))
-    perf.add_row("Time-Weighted Return", color_signed(result.twr))
+    perf.add_row("Time-Weighted Return", _return_row(result.twr, total_days))
     perf.add_row("Buy & Hold Value", f"${bh_val:,.2f}")
-    perf.add_row("Buy & Hold Return", color_signed(bh_return))
+    perf.add_row("Buy & Hold Return", _return_row(bh_return, total_days))
     perf.add_row("Total Trades", str(len(result.trades)))
     print_centered(perf)
 
@@ -153,11 +160,11 @@ def print_backtest_summary(result: BacktestResult) -> None:
     if result.split_date:
         split = make_metric_table("Train / Test Split")
         split.add_row("Split Date", result.split_date.isoformat())
-        split.add_row("Train Return", color_signed(result.train_return))
-        split.add_row("Train B&H Return", color_signed(result.train_bh_return))
+        split.add_row("Train Return", _return_row(result.train_return, result.train_days))
+        split.add_row("Train B&H Return", _return_row(result.train_bh_return, result.train_days))
         split.add_row("Train Trades", str(len(result.train_trades)))
-        split.add_row("Test Return", color_signed(result.test_return))
-        split.add_row("Test B&H Return", color_signed(result.test_bh_return))
+        split.add_row("Test Return", _return_row(result.test_return, result.test_days))
+        split.add_row("Test B&H Return", _return_row(result.test_bh_return, result.test_days))
         split.add_row("Test Trades", str(len(result.test_trades)))
         split.add_row("Efficiency Ratio", f"{result.efficiency_ratio:.0%}")
         print_centered(split)

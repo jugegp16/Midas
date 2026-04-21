@@ -373,8 +373,8 @@ def optimize(
         fold_table.add_column("Fold", justify="center", style="bold")
         fold_table.add_column("IS Period")
         fold_table.add_column("OOS Period")
-        fold_table.add_column("IS Return", justify="right")
-        fold_table.add_column("OOS Return", justify="right")
+        fold_table.add_column("IS Return (Annualized)", justify="right")
+        fold_table.add_column("OOS Return (Annualized)", justify="right")
         fold_table.add_column("Max DD", justify="right")
         fold_table.add_column("Sharpe", justify="right")
         fold_table.add_column("Sortino", justify="right")
@@ -398,7 +398,7 @@ def optimize(
         agg = make_metric_table("Walk-Forward Aggregate")
         agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
         agg.add_row(
-            "Per-Fold OOS Mean ± Std",
+            "Per-Fold OOS Mean ± Std (Annualized)",
             f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
         )
         agg.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")

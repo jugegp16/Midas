@@ -979,6 +979,12 @@ class BacktestEngine:
         # New metrics
         equity_curve = state.equity_curve
         total_days = (trading_days[-1] - trading_days[0]).days if len(trading_days) > 1 else 0
+        if split_date and len(trading_days) > 1:
+            train_days = (split_date - trading_days[0]).days
+            test_days = (trading_days[-1] - split_date).days
+        else:
+            train_days = 0
+            test_days = 0
         cagr = compute_cagr(starting_val, final_value, total_days)
         max_drawdown = compute_max_drawdown(equity_curve)
         sharpe = compute_sharpe(equity_curve)
@@ -1009,6 +1015,9 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            total_days=total_days,
+            train_days=train_days,
+            test_days=test_days,
             cagr=round(cagr, 4),
             max_drawdown=round(max_drawdown, 4),
             sharpe_ratio=round(sharpe, 4),
