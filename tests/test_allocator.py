@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from conftest import ph
 
 from midas.allocator import Allocator
@@ -224,3 +225,43 @@ class TestAllocatorRiskConfig:
         allocator = Allocator([(mr, 1.0)], constraints, n_tickers=2)
         # Default matches RiskConfig() exactly.
         assert allocator._risk_config == RiskConfig()
+
+
+class TestAllocatorRiskCache:
+    def test_cache_populated_with_sufficient_history(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        rng = np.random.default_rng(0)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 1, 260))) for name in ("A", "B", "C")}
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=3,
+            risk_config=RiskConfig(vol_lookback_days=60, corr_lookback_days=252),
+        )
+        allocator.precompute_signals(histories)
+
+        cache = allocator._risk_cache
+        assert cache["cov"] is not None
+        assert isinstance(cache["cov"], pd.DataFrame)
+        assert cache["corr"] is not None
+        assert set(cache["per_ticker_vol"].keys()) == {"A", "B", "C"}
+
+    def test_cache_none_when_insufficient_history(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        # Only 30 bars — less than default corr_lookback_days=252.
+        histories = {name: ph(np.full(30, 100.0)) for name in ("A", "B")}
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(),
+        )
+        allocator.precompute_signals(histories)
+
+        cache = allocator._risk_cache
+        assert cache["cov"] is None
+        assert cache["corr"] is None
+        # Per-ticker vols also None when window not met.
+        assert cache["per_ticker_vol"] == {"A": None, "B": None}

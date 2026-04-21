@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
+from midas.risk import covariance_matrix, realized_vol
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -99,7 +101,7 @@ class Allocator:
         return [entry.strategy for entry in self._entries]
 
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
-        """Precompute entry-signal scores for all tickers over the full price arrays."""
+        """Precompute entry-signal scores and risk cache over the full price arrays."""
         self._signal_cache = {}
         for entry in self._entries:
             cache: dict[str, np.ndarray] = {}
@@ -109,6 +111,46 @@ class Allocator:
                     cache[ticker] = result
             if cache:
                 self._signal_cache[id(entry.strategy)] = cache
+
+        self._risk_cache = self._build_risk_cache(price_data)
+
+    def _build_risk_cache(
+        self,
+        price_data: dict[str, PriceHistory],
+    ) -> dict[str, Any]:
+        """Build the risk cache from price histories.
+
+        Args:
+            price_data: Ticker -> PriceHistory mapping.
+
+        Returns:
+            Dict with keys ``cov``, ``corr``, and ``per_ticker_vol``.
+            ``cov`` and ``corr`` are DataFrames or None when there is
+            insufficient history. ``per_ticker_vol`` maps each ticker to its
+            annualized realized vol (or None when the window is not met).
+        """
+        rc = self._risk_config
+        per_ticker_vol: dict[str, float | None] = {
+            ticker: realized_vol(history, window=rc.vol_lookback_days, annualize=True)
+            for ticker, history in price_data.items()
+        }
+        cov = covariance_matrix(
+            price_data,
+            vol_window=rc.vol_lookback_days,
+            corr_window=rc.corr_lookback_days,
+            vol_floor=rc.vol_floor,
+        )
+        if cov is None:
+            corr = None
+        else:
+            diag = np.sqrt(np.diag(cov.values))
+            if np.all(diag > 0):
+                corr_vals = cov.values / np.outer(diag, diag)
+                corr = pd.DataFrame(corr_vals, index=cov.index, columns=cov.columns)
+            else:
+                corr = None
+                cov = None
+        return {"cov": cov, "corr": corr, "per_ticker_vol": per_ticker_vol}
 
     def _lookup_score(self, strategy: EntrySignal, ticker: str, history_len: int) -> tuple[bool, float | None]:
         """Look up a precomputed score.  Returns (hit, score)."""
