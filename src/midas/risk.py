@@ -182,8 +182,10 @@ def predict_portfolio_vol(
     weights: dict[str, float],
     cov: pd.DataFrame,
 ) -> float:
-    """Ex-ante portfolio vol: ``sqrt(w · cov · w) * sqrt(252)``.
+    """Ex-ante annualized portfolio vol: ``sqrt(w · cov · w)``.
 
+    The cov matrix is assumed to already be annualized (as produced by
+    :func:`covariance_matrix`), so no additional sqrt(252) factor is applied.
     Tickers in ``weights`` but not in ``cov`` are ignored. Returns 0.0 on
     empty weights, all-zero weights, or when the quadratic form is
     non-positive (degenerate covariance).
@@ -216,7 +218,9 @@ def apply_vol_targeting(
 
     Never scales up — if predicted vol is below target, weights are
     returned unchanged. Degenerate cov matrices (w·cov·w <= 0) also
-    pass through unchanged.
+    pass through unchanged. The portfolio-wide multiplier is applied to
+    every weight in the input dict, including tickers that are absent from
+    ``cov``. This keeps the downscaling coherent across the full portfolio.
 
     Args:
         weights: Ticker -> weight mapping before vol targeting.
