@@ -250,14 +250,31 @@ class Allocator:
 
         budget_for_active = max(investable - held_total, 0.0)
 
+        # Phase 1.5a: Compute per-ticker vol offsets for softmax (inverse-vol weighting).
+        score_offsets = self._vol_score_offsets(active)
+
         # Phase 2: Softmax construct-to-budget over active tickers.
-        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
+        self._softmax_allocate(
+            active,
+            blended_scores,
+            budget_for_active,
+            temperature,
+            targets,
+            score_offsets=score_offsets,
+        )
 
         # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
         # max_position_pct and re-softmax the survivors over the reduced
         # remaining budget. Cap *never* forces a sell — it just refuses to
         # allocate more budget. Sells are exclusively ExitRule territory.
-        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets)
+        self._apply_cap_with_redistribution(
+            active,
+            blended_scores,
+            budget_for_active,
+            temperature,
+            targets,
+            score_offsets=score_offsets,
+        )
 
         return AllocationResult(targets, contributions, blended_scores)
 
@@ -268,8 +285,9 @@ class Allocator:
         budget: float,
         temperature: float,
         targets: dict[str, float],
+        score_offsets: dict[str, float] | None = None,
     ) -> None:
-        """Distribute `budget` across `tickers` via softmax(blended_scores / T).
+        """Distribute `budget` across `tickers` via softmax((blended_scores + offsets) / T).
 
         Temperature semantics:
             T → 0   winner-take-all (budget to the argmax ticker)
@@ -281,9 +299,10 @@ class Allocator:
                 targets[ticker] = 0.0
             return
         temp_safe = max(temperature, MIN_TEMPERATURE)
-        # Subtract max for numerical stability — softmax is translation-invariant.
-        max_score = max(blended_scores[ticker] for ticker in tickers)
-        exps = {ticker: math.exp((blended_scores[ticker] - max_score) / temp_safe) for ticker in tickers}
+        offsets = score_offsets or {}
+        adjusted = {ticker: blended_scores[ticker] + offsets.get(ticker, 0.0) for ticker in tickers}
+        max_score = max(adjusted.values())
+        exps = {ticker: math.exp((adjusted[ticker] - max_score) / temp_safe) for ticker in tickers}
         total_exp = sum(exps.values())
         for ticker in tickers:
             targets[ticker] = budget * exps[ticker] / total_exp
@@ -295,6 +314,7 @@ class Allocator:
         initial_budget: float,
         temperature: float,
         targets: dict[str, float],
+        score_offsets: dict[str, float] | None = None,
     ) -> None:
         """Clamp targets exceeding max_position_pct; re-softmax the survivors.
 
@@ -321,4 +341,30 @@ class Allocator:
                 for ticker in survivors:
                     targets[ticker] = 0.0
                 return
-            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)
+            self._softmax_allocate(
+                survivors,
+                blended_scores,
+                budget,
+                temperature,
+                targets,
+                score_offsets=score_offsets,
+            )
+
+    def _vol_score_offsets(self, active: list[str]) -> dict[str, float]:
+        """Per-ticker score offsets for inverse-vol weighting.
+
+        Returns an empty dict when the weighting is ``"equal"`` or when a
+        ticker has no known vol (warmup). Missing entries default to 0 in
+        ``_softmax_allocate``.
+        """
+        if self._risk_config.weighting != "inverse_vol":
+            return {}
+        offsets: dict[str, float] = {}
+        vol_floor = self._risk_config.vol_floor
+        per_ticker_vol = self._risk_cache.get("per_ticker_vol") or {}
+        for ticker in active:
+            vol = per_ticker_vol.get(ticker)
+            if vol is None:
+                continue  # warmup — no offset
+            offsets[ticker] = -math.log(max(vol, vol_floor))
+        return offsets

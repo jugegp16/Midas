@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 from conftest import ph
@@ -265,3 +267,66 @@ class TestAllocatorRiskCache:
         assert cache["corr"] is None
         # Per-ticker vols also None when window not met.
         assert cache["per_ticker_vol"] == {"A": None, "B": None}
+
+
+class TestPerTickerVolScaling:
+    def test_low_vol_ticker_gets_more_weight_than_high_vol(self):
+        """With equal signals, inverse-vol scaling should overweight low-vol ticker."""
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,
+        )
+        rng = np.random.default_rng(0)
+        # LOW vol — tiny daily noise.
+        low = 100.0 + np.cumsum(rng.normal(0, 0.05, 260))
+        # HIGH vol — large daily noise.
+        high = 100.0 + np.cumsum(rng.normal(0, 2.0, 260))
+        # Both end with an identical "buy" signal: 10% drop on last bar.
+        low[-1] = low[-2] * 0.90
+        high[-1] = high[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(weighting="inverse_vol"),
+        )
+        histories = {"LOW": ph(low), "HIGH": ph(high)}
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["LOW", "HIGH"],
+            histories,
+            current_weights={"LOW": 0.0, "HIGH": 0.0},
+        )
+        assert result.targets["LOW"] > result.targets["HIGH"]
+
+    def test_equal_weighting_disables_offset(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,
+        )
+        rng = np.random.default_rng(1)
+        # Use the same underlying prices for both tickers so blended scores are
+        # identical, isolating the vol-offset effect.
+        shared = 100.0 + np.cumsum(rng.normal(0, 0.5, 260))
+        shared[-1] = shared[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(weighting="equal"),
+        )
+        histories = {"LOW": ph(shared.copy()), "HIGH": ph(shared.copy())}
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["LOW", "HIGH"],
+            histories,
+            current_weights={"LOW": 0.0, "HIGH": 0.0},
+        )
+        # Without vol offset, equal signals → equal softmax weights (within 1e-9).
+        assert math.isclose(result.targets["LOW"], result.targets["HIGH"], rel_tol=1e-6)
