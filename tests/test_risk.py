@@ -8,7 +8,13 @@ import numpy as np
 import pandas as pd
 from conftest import ph, ph_ohlc  # noqa: F401 — ph_ohlc reserved for future tests
 
-from midas.risk import apply_instrument_diversification_multiplier, apply_vol_targeting, covariance_matrix, realized_vol
+from midas.risk import (
+    apply_instrument_diversification_multiplier,
+    apply_vol_targeting,
+    covariance_matrix,
+    predict_portfolio_vol,
+    realized_vol,
+)
 
 
 class TestRealizedVol:
@@ -268,3 +274,35 @@ class TestApplyVolTargeting:
         # portfolio-wide multiplier so the downscaling remains coherent.
         assert math.isclose(out["A"], 0.5, rel_tol=1e-9)
         assert math.isclose(out["B"], 0.15, rel_tol=1e-9)
+
+
+class TestPredictPortfolioVol:
+    def test_two_asset_uncorrelated_equal_weight(self):
+        # var_a = var_b = 0.04 (20% vol), w = (0.5, 0.5), uncorrelated.
+        # portfolio_var = 0.25 * 0.04 + 0.25 * 0.04 = 0.02 → vol ≈ sqrt(0.02) ≈ 0.1414
+        tickers = ["A", "B"]
+        cov = _cov_frame(tickers, np.diag([0.04, 0.04]))
+        vol = predict_portfolio_vol({"A": 0.5, "B": 0.5}, cov)
+        assert math.isclose(vol, math.sqrt(0.02), rel_tol=1e-9)
+
+    def test_zero_weights_return_zero(self):
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.04]]))
+        assert predict_portfolio_vol({"A": 0.0}, cov) == 0.0
+
+    def test_empty_weights_return_zero(self):
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.04]]))
+        assert predict_portfolio_vol({}, cov) == 0.0
+
+    def test_weights_outside_cov_index_ignored(self):
+        tickers = ["A"]
+        cov = _cov_frame(tickers, np.array([[0.04]]))
+        # Only A contributes; B is ignored.
+        vol = predict_portfolio_vol({"A": 1.0, "B": 5.0}, cov)
+        assert math.isclose(vol, 0.20, rel_tol=1e-9)
+
+    def test_degenerate_cov_returns_zero(self):
+        tickers = ["A", "B"]
+        cov = _cov_frame(tickers, -np.eye(2))  # non-PSD, forces quad <= 0
+        assert predict_portfolio_vol({"A": 1.0, "B": 1.0}, cov) == 0.0
