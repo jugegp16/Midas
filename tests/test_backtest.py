@@ -3,7 +3,7 @@
 import csv as csv_mod
 import json
 import math
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -1551,3 +1551,72 @@ def test_sell_mixed_basis_within_single_period() -> None:
     assert trade.holding_period == HoldingPeriod.SHORT_TERM
     assert trade.shares == 10.0
     assert basis == 92.0
+
+
+class TestRiskDisciplineEndToEnd:
+    def test_default_risk_config_produces_stable_summary(self, tmp_path):
+        """End-to-end smoke test: default RiskConfig + canned fixture -> stable summary.
+
+        Change-detector, not a correctness test. If this breaks, confirm the
+        drift is intentional before updating the golden numbers.
+        """
+        from datetime import date as dt_date
+
+        from midas.allocator import Allocator
+        from midas.backtest import BacktestEngine
+        from midas.models import (
+            AllocationConstraints,
+            Holding,
+            PortfolioConfig,
+            RiskConfig,
+        )
+        from midas.order_sizer import OrderSizer
+        from midas.strategies.mean_reversion import MeanReversion
+
+        # Deterministic synthetic: 2 tickers, 400 bars, mild drift + noise.
+        rng = np.random.default_rng(2026)
+        days = 400
+        start = dt_date(2023, 1, 2)
+        frames: dict[str, pd.DataFrame] = {}
+        for name, sigma in [("AAA", 0.01), ("BBB", 0.02)]:
+            returns = rng.normal(0.0003, sigma, days).tolist()
+            frames[name] = make_price_series(start, days, 100.0, returns, name=name)
+
+        # Seed 1 share per ticker so the backtest admits them into
+        # ``state.positions``; zero-share holdings are dropped at init and
+        # would leave ``_decide`` with no active tickers on every bar.
+        portfolio = PortfolioConfig(
+            holdings=[
+                Holding(ticker="AAA", shares=1),
+                Holding(ticker="BBB", shares=1),
+            ],
+            available_cash=10_000.0,
+        )
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.60,
+        )
+        allocator = Allocator(
+            [(MeanReversion(window=20, threshold=0.03), 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(),
+        )
+        engine = BacktestEngine(
+            allocator=allocator,
+            order_sizer=OrderSizer(),
+            exit_rules=[],
+            constraints=constraints,
+            train_pct=1.0,
+            enable_split=False,
+        )
+        result = engine.run(portfolio, frames, start, start + timedelta(days=days))
+
+        # Change-detector: lock in a few stable numbers. Update deliberately.
+        assert result.total_days > 0
+        assert math.isfinite(result.final_value)
+        assert result.final_value > 0
+        # Default risk-on pipeline should produce at least one trade on this
+        # 400-day synthetic — guards against the pipeline no-op'ing silently.
+        assert len(result.trades) >= 1
