@@ -23,7 +23,11 @@ import pandas as pd
 
 from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
-from midas.risk import covariance_matrix, realized_vol
+from midas.risk import (
+    apply_instrument_diversification_multiplier,
+    covariance_matrix,
+    realized_vol,
+)
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -267,6 +271,30 @@ class Allocator:
         # max_position_pct and re-softmax the survivors over the reduced
         # remaining budget. Cap *never* forces a sell — it just refuses to
         # allocate more budget. Sells are exclusively ExitRule territory.
+        self._apply_cap_with_redistribution(
+            active,
+            blended_scores,
+            budget_for_active,
+            temperature,
+            targets,
+            score_offsets=score_offsets,
+        )
+
+        # Phase 3.5: Instrument Diversification Multiplier. Scale up per-ticker
+        # weights by 1/sqrt(w'·corr·w), capped at risk_config.idm_cap. Skip
+        # entirely during warmup (no correlation matrix yet).
+        corr = self._risk_cache.get("corr")
+        if corr is not None and active:
+            active_weights = {ticker: targets[ticker] for ticker in active}
+            scaled = apply_instrument_diversification_multiplier(
+                active_weights,
+                corr,
+                cap=self._risk_config.idm_cap,
+            )
+            for ticker, weight in scaled.items():
+                targets[ticker] = weight
+
+        # Phase 3.6: Re-cap after IDM (IDM can push a single position past the cap).
         self._apply_cap_with_redistribution(
             active,
             blended_scores,

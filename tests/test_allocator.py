@@ -332,3 +332,94 @@ class TestPerTickerVolScaling:
             current_weights={"LOW": 0.0, "HIGH": 0.0},
         )
         assert math.isclose(result.targets["LOW"], result.targets["HIGH"], rel_tol=1e-6)
+
+
+class TestIDMStage:
+    def test_three_uncorrelated_tickers_scale_up_by_sqrt3(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,  # loose cap — won't bind after IDM
+        )
+        rng = np.random.default_rng(42)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.5, 260))) for name in ("A", "B", "C")}
+        # Final bar identical-size drop on all three → equal signals.
+        for h in histories.values():
+            h.close[-1] = h.close[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=3,
+            risk_config=RiskConfig(weighting="equal", idm_cap=5.0, vol_target_annualized=99.0),
+        )
+        allocator.precompute_signals(histories)
+        pre_idm_sum = 1 - 0.05
+        result = allocator.allocate(
+            ["A", "B", "C"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0, "C": 0.0},
+        )
+        total = sum(result.targets.values())
+        # Roughly sqrt(3) x pre_idm_sum, with some slack from LW shrinkage
+        # pulling correlations slightly off-zero.
+        assert total > 1.3 * pre_idm_sum
+        assert total < 1.8 * pre_idm_sum
+
+    def test_idm_cap_binds_at_1_0_disables_stage(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.90,
+        )
+        rng = np.random.default_rng(42)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.5, 260))) for name in ("A", "B", "C")}
+        for h in histories.values():
+            h.close[-1] = h.close[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=3,
+            risk_config=RiskConfig(weighting="equal", idm_cap=1.0, vol_target_annualized=99.0),
+        )
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["A", "B", "C"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0, "C": 0.0},
+        )
+        total = sum(result.targets.values())
+        # idm_cap=1.0 → multiplier capped at 1.0 → no scale-up.
+        assert math.isclose(total, 1 - 0.05, rel_tol=1e-6)
+
+    def test_idm_then_recap_clips_overshoots(self):
+        mr = MeanReversion(window=5, threshold=0.20)
+        # Tight cap: IDM will push at least one ticker past it.
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.40,
+        )
+        rng = np.random.default_rng(42)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.5, 260))) for name in ("A", "B", "C")}
+        for h in histories.values():
+            h.close[-1] = h.close[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=3,
+            risk_config=RiskConfig(weighting="equal", idm_cap=3.0, vol_target_annualized=99.0),
+        )
+        allocator.precompute_signals(histories)
+        result = allocator.allocate(
+            ["A", "B", "C"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0, "C": 0.0},
+        )
+        # Re-cap (phase 3.6) must pull everything back to max_position_pct.
+        for ticker, weight in result.targets.items():
+            assert weight <= 0.40 + 1e-9, f"{ticker} exceeded cap after re-cap"
