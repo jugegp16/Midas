@@ -9,6 +9,7 @@ dependencies = [
     "rich>=13.0",
     "yfinance>=0.2",
     "optuna>=4.0",
+    "scikit-learn>=1.5",
 ]
 
 [project.scripts]
