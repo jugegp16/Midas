@@ -116,3 +116,65 @@ class TestCashInfusion:
         infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3), frequency="quarterly")
         with pytest.raises(ValueError, match="Unknown cash_infusion frequency"):
             infusion.advance()
+
+
+class TestRiskConfig:
+    def test_defaults_are_risk_on(self) -> None:
+        from midas.models import RiskConfig
+
+        cfg = RiskConfig()
+        assert cfg.weighting == "inverse_vol"
+        assert cfg.vol_target_annualized == 0.20
+        assert cfg.idm_cap == 2.5
+        assert cfg.vol_lookback_days == 60
+        assert cfg.corr_lookback_days == 252
+        assert cfg.vol_floor == 0.02
+
+    def test_is_frozen(self) -> None:
+        from midas.models import RiskConfig
+
+        cfg = RiskConfig()
+        with pytest.raises((AttributeError, Exception)):
+            cfg.idm_cap = 1.0  # type: ignore[misc]
+
+    def test_rejects_non_positive_vol_target(self) -> None:
+        from midas.models import RiskConfig
+
+        with pytest.raises(ValueError, match="vol_target_annualized"):
+            RiskConfig(vol_target_annualized=0.0)
+        with pytest.raises(ValueError, match="vol_target_annualized"):
+            RiskConfig(vol_target_annualized=-0.10)
+
+    def test_rejects_idm_cap_below_one(self) -> None:
+        from midas.models import RiskConfig
+
+        with pytest.raises(ValueError, match="idm_cap"):
+            RiskConfig(idm_cap=0.99)
+
+    def test_accepts_idm_cap_exactly_one(self) -> None:
+        from midas.models import RiskConfig
+
+        RiskConfig(idm_cap=1.0)
+
+    def test_rejects_small_vol_lookback(self) -> None:
+        from midas.models import RiskConfig
+
+        with pytest.raises(ValueError, match="vol_lookback_days"):
+            RiskConfig(vol_lookback_days=1)
+
+    def test_rejects_small_corr_lookback(self) -> None:
+        from midas.models import RiskConfig
+
+        with pytest.raises(ValueError, match="corr_lookback_days"):
+            RiskConfig(corr_lookback_days=1)
+
+    def test_rejects_negative_vol_floor(self) -> None:
+        from midas.models import RiskConfig
+
+        with pytest.raises(ValueError, match="vol_floor"):
+            RiskConfig(vol_floor=-0.01)
+
+    def test_accepts_zero_vol_floor(self) -> None:
+        from midas.models import RiskConfig
+
+        RiskConfig(vol_floor=0.0)

@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
+from typing import Literal
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
 DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
 DEFAULT_ENTRY_WEIGHT = 1
+DEFAULT_VOL_TARGET_ANNUALIZED = 0.20
+DEFAULT_IDM_CAP = 2.5
+DEFAULT_VOL_LOOKBACK_DAYS = 60
+DEFAULT_CORR_LOOKBACK_DAYS = 252
+DEFAULT_VOL_FLOOR = 0.02
 
 FREQUENCY_DAYS: dict[str, int] = {
     "weekly": 7,
@@ -139,3 +145,35 @@ class StrategyConfig:
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
     weight: float = DEFAULT_ENTRY_WEIGHT
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    """Portfolio-level risk-discipline parameters.
+
+    See docs/superpowers/specs/2026-04-20-risk-discipline-design.md.
+    """
+
+    weighting: Literal["inverse_vol", "equal"] = "inverse_vol"
+    vol_target_annualized: float = DEFAULT_VOL_TARGET_ANNUALIZED
+    idm_cap: float = DEFAULT_IDM_CAP
+    vol_lookback_days: int = DEFAULT_VOL_LOOKBACK_DAYS
+    corr_lookback_days: int = DEFAULT_CORR_LOOKBACK_DAYS
+    vol_floor: float = DEFAULT_VOL_FLOOR
+
+    def __post_init__(self) -> None:
+        if self.vol_target_annualized <= 0:
+            msg = f"vol_target_annualized must be > 0, got {self.vol_target_annualized}"
+            raise ValueError(msg)
+        if self.idm_cap < 1.0:
+            msg = f"idm_cap must be >= 1.0 (IDM is always >= 1), got {self.idm_cap}"
+            raise ValueError(msg)
+        if self.vol_lookback_days < 2:
+            msg = f"vol_lookback_days must be >= 2, got {self.vol_lookback_days}"
+            raise ValueError(msg)
+        if self.corr_lookback_days < 2:
+            msg = f"corr_lookback_days must be >= 2, got {self.corr_lookback_days}"
+            raise ValueError(msg)
+        if self.vol_floor < 0:
+            msg = f"vol_floor must be >= 0, got {self.vol_floor}"
+            raise ValueError(msg)
