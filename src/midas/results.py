@@ -135,7 +135,7 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
         "total_return_annualized": round(compute_annualized_return(total_return, total_days), 6),
         "cagr": result.cagr,
         "twr": result.twr,
-        "twr_annualized": round(compute_annualized_return(result.twr, total_days), 6),
+        "twr_annualized": round(compute_annualized_return(result.twr, total_days), 4),
         "buy_and_hold_value": result.buy_and_hold_value,
         "buy_and_hold_return": round(bh_return, 6),
         "buy_and_hold_return_annualized": round(compute_annualized_return(bh_return, total_days), 6),
@@ -155,15 +155,15 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
         summary["split"] = {
             "date": result.split_date.isoformat(),
             "train_return": result.train_return,
-            "train_return_annualized": round(compute_annualized_return(result.train_return, result.train_days), 6),
+            "train_return_annualized": round(compute_annualized_return(result.train_return, result.train_days), 4),
             "test_return": result.test_return,
-            "test_return_annualized": round(compute_annualized_return(result.test_return, result.test_days), 6),
+            "test_return_annualized": round(compute_annualized_return(result.test_return, result.test_days), 4),
             "train_bh_return": result.train_bh_return,
             "train_bh_return_annualized": round(
-                compute_annualized_return(result.train_bh_return, result.train_days), 6
+                compute_annualized_return(result.train_bh_return, result.train_days), 4
             ),
             "test_bh_return": result.test_bh_return,
-            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, result.test_days), 6),
+            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, result.test_days), 4),
             "train_trades": len(result.train_trades),
             "test_trades": len(result.test_trades),
         }

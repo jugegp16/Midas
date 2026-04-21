@@ -10,7 +10,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from midas.metrics import aggregate_strategy_stats, compute_annualized_return
+from midas.metrics import (
+    DAYS_PER_YEAR,
+    SHORT_WINDOW_THRESHOLD_DAYS,
+    aggregate_strategy_stats,
+    compute_annualized_return,
+)
 from midas.models import Direction, Order
 from midas.strategies.base import Strategy
 
@@ -135,14 +140,16 @@ def _return_row(cum: float, days: int) -> str:
 
     Args:
         cum: Cumulative return as a fraction (0.25 == +25%).
-        days: Calendar days spanned by the return window; passed through to
-            :func:`compute_annualized_return`, which returns 0.0 for
-            non-positive values.
+        days: Calendar days spanned by the return window. Non-positive values
+            have no meaningful annualization, so the annualized portion is
+            rendered as ``"—"``.
 
     Returns:
         Rich-formatted string of the form ``"+25.00% (+21.33% annualized)"``
         with each number sign-colored via :func:`color_signed`.
     """
+    if days <= 0:
+        return f"{color_signed(cum)} (— annualized)"
     annualized = compute_annualized_return(cum, days)
     return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
 
@@ -166,8 +173,8 @@ def print_backtest_summary(result: BacktestResult) -> None:
     perf.add_row("Buy & Hold Return", _return_row(bh_return, total_days))
     perf.add_row("Total Trades", str(len(result.trades)))
     print_centered(perf)
-    if 0 < total_days < 365:
-        years = total_days / 365.25
+    if 0 < total_days < SHORT_WINDOW_THRESHOLD_DAYS:
+        years = total_days / DAYS_PER_YEAR
         console.print(
             f"[yellow]Note: backtest window is {total_days} days (~{years:.2f} years). "
             f"Annualized figures extrapolate from a sub-one-year sample and can be "

@@ -18,7 +18,7 @@ import yaml
 
 from midas.allocator import Allocator
 from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
-from midas.metrics import compute_annualized_return
+from midas.metrics import DAYS_PER_YEAR, compute_annualized_return
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
@@ -165,7 +165,9 @@ class FoldResult:
 
     ``train_return`` and ``test_return`` are annualized (so folds of different
     lengths compare apples-to-apples). ``train_return_raw`` and
-    ``test_return_raw`` are cumulative returns over the fold's own window.
+    ``test_return_raw`` are the raw (un-annualized) TWR over the fold's own
+    window — used by the overall-CAGR compounding loop, which must not
+    double-annualize.
     """
 
     fold: int
@@ -176,9 +178,9 @@ class FoldResult:
     best_params: dict[str, dict[str, float]]
     train_return: float
     test_return: float
+    train_return_raw: float
+    test_return_raw: float
     trials_run: int
-    train_return_raw: float = 0.0
-    test_return_raw: float = 0.0
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
@@ -723,7 +725,7 @@ def walk_forward_optimize(
         compounded *= 1.0 + fold.test_return_raw
     first_test_start = fold_results[0].test_start
     last_test_end = fold_results[-1].test_end
-    years = (last_test_end - first_test_start).days / 365.25
+    years = (last_test_end - first_test_start).days / DAYS_PER_YEAR
     annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
 
     winning_folds = sum(1 for ret in test_returns if ret > 0)

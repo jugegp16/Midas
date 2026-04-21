@@ -1133,8 +1133,9 @@ def test_summary_json_includes_annualized_keys(tmp_path: Path) -> None:
         summary = json.load(f)
 
     # Top-level annualized keys exist and reconcile against cumulative + days.
-    # `total_return` in summary.json is rounded to 6 decimals, so recomputing
-    # from the stored value can drift by a few ulps — use abs_tol=1e-5.
+    # Annualized values are rounded to match their cumulative sibling's precision
+    # (6 decimals for total_return / buy_and_hold_return, 4 for twr and splits),
+    # so tolerances track that rounding.
     assert "total_return_annualized" in summary
     assert "twr_annualized" in summary
     assert "buy_and_hold_return_annualized" in summary
@@ -1147,7 +1148,7 @@ def test_summary_json_includes_annualized_keys(tmp_path: Path) -> None:
     assert math.isclose(
         summary["twr_annualized"],
         compute_annualized_return(result.twr, total_days),
-        abs_tol=1e-5,
+        abs_tol=5e-5,
     )
 
     # Split block likewise carries annualized mirrors.
@@ -1163,12 +1164,12 @@ def test_summary_json_includes_annualized_keys(tmp_path: Path) -> None:
     assert math.isclose(
         split["train_return_annualized"],
         compute_annualized_return(result.train_return, result.train_days),
-        abs_tol=1e-5,
+        abs_tol=5e-5,
     )
     assert math.isclose(
         split["test_return_annualized"],
         compute_annualized_return(result.test_return, result.test_days),
-        abs_tol=1e-5,
+        abs_tol=5e-5,
     )
 
 

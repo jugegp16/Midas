@@ -15,6 +15,8 @@ from datetime import date
 from midas.models import Direction, TradeRecord
 
 TRADING_DAYS_PER_YEAR = 252
+DAYS_PER_YEAR = 365.25  # average calendar days/year (accounts for leap years)
+SHORT_WINDOW_THRESHOLD_DAYS = 365  # windows below this are "sub-one-year" for UX warnings
 
 
 @dataclass
@@ -74,7 +76,7 @@ def compute_cagr(starting: float, final: float, days: int) -> float:
     """Compound annual growth rate from total return over *days* calendar days."""
     if starting <= 0 or final <= 0 or days <= 0:
         return 0.0
-    years = days / 365.25
+    years = days / DAYS_PER_YEAR
     return float((final / starting) ** (1.0 / years) - 1.0)
 
 
@@ -98,7 +100,7 @@ def compute_annualized_return(cumulative_return: float, days: int) -> float:
     growth = 1.0 + cumulative_return
     if growth <= 0:
         return -1.0
-    years = days / 365.25
+    years = days / DAYS_PER_YEAR
     return float(growth ** (1.0 / years) - 1.0)
 
 
