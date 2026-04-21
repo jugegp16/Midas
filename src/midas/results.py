@@ -152,18 +152,18 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
     }
 
     if result.split_date:
-        train_days = result.train_days
-        test_days = result.test_days
         summary["split"] = {
             "date": result.split_date.isoformat(),
             "train_return": result.train_return,
-            "train_return_annualized": round(compute_annualized_return(result.train_return, train_days), 6),
+            "train_return_annualized": round(compute_annualized_return(result.train_return, result.train_days), 6),
             "test_return": result.test_return,
-            "test_return_annualized": round(compute_annualized_return(result.test_return, test_days), 6),
+            "test_return_annualized": round(compute_annualized_return(result.test_return, result.test_days), 6),
             "train_bh_return": result.train_bh_return,
-            "train_bh_return_annualized": round(compute_annualized_return(result.train_bh_return, train_days), 6),
+            "train_bh_return_annualized": round(
+                compute_annualized_return(result.train_bh_return, result.train_days), 6
+            ),
             "test_bh_return": result.test_bh_return,
-            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, test_days), 6),
+            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, result.test_days), 6),
             "train_trades": len(result.train_trades),
             "test_trades": len(result.test_trades),
         }

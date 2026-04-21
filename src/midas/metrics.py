@@ -84,7 +84,14 @@ def compute_annualized_return(cumulative_return: float, days: int) -> float:
     ``cumulative_return`` is expressed as a fraction (0.25 == +25%). Returns
     0.0 for non-positive ``days`` and -1.0 when the cumulative loss wipes out
     the starting value (i.e. growth factor ≤ 0), since compounding past total
-    loss is undefined.
+    loss is undefined. The 0.0 sentinel for ``days <= 0`` matches
+    :func:`compute_cagr` so aggregates mixing the two don't get poisoned.
+
+    Caveat: annualizing windows shorter than one year extrapolates aggressively
+    — a 30-day +10% return projects to roughly +219% annualized. The number is
+    mathematically correct but statistically noisy; callers that display short
+    windows should surface the window length alongside so users can discount
+    accordingly.
     """
     if days <= 0:
         return 0.0

@@ -393,6 +393,16 @@ def optimize(
             )
         print_centered(fold_table)
 
+        short_folds = [fold for fold in wf_result.folds if (fold.test_end - fold.test_start).days < 365]
+        if short_folds:
+            shortest = min((fold.test_end - fold.test_start).days for fold in short_folds)
+            console.print(
+                f"[yellow]Note: {len(short_folds)}/{len(wf_result.folds)} OOS windows are "
+                f"under one year (shortest: {shortest} days). Per-fold annualized returns "
+                f"extrapolate from short samples and can be noisy.[/yellow]",
+                justify="center",
+            )
+
         # Aggregate metrics — same layout as the backtest summary tables.
         n_folds = len(wf_result.folds)
         agg = make_metric_table("Walk-Forward Aggregate")

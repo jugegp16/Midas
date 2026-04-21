@@ -1,11 +1,13 @@
 """Tests for the Optuna-based optimizer."""
 
+import math
 from datetime import date
 
 import pandas as pd
 import pytest
 from conftest import make_price_series
 
+from midas.metrics import compute_annualized_return
 from midas.models import Holding, PortfolioConfig
 from midas.optimizer import (
     PARAM_RANGES,
@@ -187,6 +189,86 @@ def test_walk_forward_folds_are_sequential() -> None:
     for i in range(1, len(result.folds)):
         assert result.folds[i].train_start == result.folds[0].train_start
         assert result.folds[i].train_end > result.folds[i - 1].train_end
+
+
+def test_walk_forward_per_fold_returns_are_annualized() -> None:
+    """Each fold's stored return must equal its raw return, annualized.
+
+    Guards against a regression where `train_return`/`test_return` silently
+    hold the cumulative value again (what this PR was meant to fix).
+    """
+    portfolio, price_data, start, end = _make_walk_forward_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+    for fold in result.folds:
+        train_days = (fold.train_end - fold.train_start).days
+        test_days = (fold.test_end - fold.test_start).days
+        expected_train = round(compute_annualized_return(fold.train_return_raw, train_days), 4)
+        expected_test = round(compute_annualized_return(fold.test_return_raw, test_days), 4)
+        assert fold.train_return == expected_train
+        assert fold.test_return == expected_test
+
+
+def test_walk_forward_cagr_compounds_raw_returns_not_annualized() -> None:
+    """Overall OOS CAGR must compound raw per-fold returns, not already-annualized ones.
+
+    This is the double-annualization trap the PR explicitly avoids. If a
+    future refactor swapped `test_return_raw` for `test_return` in the
+    compounding loop, the overall CAGR would be wildly inflated on short
+    folds — this test pins the correct semantics.
+    """
+    portfolio, price_data, start, end = _make_walk_forward_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+
+    compounded = 1.0
+    for fold in result.folds:
+        compounded *= 1.0 + fold.test_return_raw
+    first_test_start = result.folds[0].test_start
+    last_test_end = result.folds[-1].test_end
+    years = (last_test_end - first_test_start).days / 365.25
+    expected = compounded ** (1.0 / years) - 1.0 if compounded > 0 and years > 0 else 0.0
+    assert math.isclose(result.annualized_return, round(expected, 4), abs_tol=1e-4)
+
+    # Sanity: the double-annualized value would be computed from the
+    # already-annualized per-fold returns and should differ from the
+    # correct value (otherwise the test is vacuous).
+    double_compounded = 1.0
+    for fold in result.folds:
+        double_compounded *= 1.0 + fold.test_return
+    double_annualized = double_compounded ** (1.0 / years) - 1.0 if double_compounded > 0 and years > 0 else 0.0
+    assert not math.isclose(double_annualized, expected, abs_tol=1e-4)
+
+
+def test_walk_forward_efficiency_ratio_uses_annualized_returns() -> None:
+    """Efficiency ratio must be mean(annualized_test) / mean(annualized_train)."""
+    portfolio, price_data, start, end = _make_walk_forward_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+    mean_test = sum(fold.test_return for fold in result.folds) / len(result.folds)
+    mean_train = sum(fold.train_return for fold in result.folds) / len(result.folds)
+    if mean_train == 0:
+        pytest.skip("Degenerate fixture: no train-side return to compare against")
+    expected = round(mean_test / mean_train, 4)
+    assert result.efficiency_ratio == expected
 
 
 def test_walk_forward_too_few_days() -> None:

@@ -131,7 +131,18 @@ def print_params_table(
 
 
 def _return_row(cum: float, days: int) -> str:
-    """Format a return as 'cumulative (annualized)' for display."""
+    """Format a return as 'cumulative (annualized)' for display.
+
+    Args:
+        cum: Cumulative return as a fraction (0.25 == +25%).
+        days: Calendar days spanned by the return window; passed through to
+            :func:`compute_annualized_return`, which returns 0.0 for
+            non-positive values.
+
+    Returns:
+        Rich-formatted string of the form ``"+25.00% (+21.33% annualized)"``
+        with each number sign-colored via :func:`color_signed`.
+    """
     annualized = compute_annualized_return(cum, days)
     return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
 
@@ -149,12 +160,20 @@ def print_backtest_summary(result: BacktestResult) -> None:
     perf.add_row("Starting Value", f"${starting_val:,.2f}")
     perf.add_row("Final Value", f"${final_val:,.2f}")
     perf.add_row("Total Return", _return_row(total_return, total_days))
-    perf.add_row("CAGR", color_signed(result.cagr))
+    perf.add_row("CAGR (Annualized)", color_signed(result.cagr))
     perf.add_row("Time-Weighted Return", _return_row(result.twr, total_days))
     perf.add_row("Buy & Hold Value", f"${bh_val:,.2f}")
     perf.add_row("Buy & Hold Return", _return_row(bh_return, total_days))
     perf.add_row("Total Trades", str(len(result.trades)))
     print_centered(perf)
+    if 0 < total_days < 365:
+        years = total_days / 365.25
+        console.print(
+            f"[yellow]Note: backtest window is {total_days} days (~{years:.2f} years). "
+            f"Annualized figures extrapolate from a sub-one-year sample and can be "
+            f"noisy — interpret alongside the cumulative number.[/yellow]",
+            justify="center",
+        )
 
     # --- Train / Test Split ---
     if result.split_date:

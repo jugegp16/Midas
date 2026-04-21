@@ -176,9 +176,9 @@ class FoldResult:
     best_params: dict[str, dict[str, float]]
     train_return: float
     test_return: float
-    train_return_raw: float
-    test_return_raw: float
     trials_run: int
+    train_return_raw: float = 0.0
+    test_return_raw: float = 0.0
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
