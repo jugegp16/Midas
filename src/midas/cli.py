@@ -15,6 +15,7 @@ from midas.data import CachedYFinanceProvider
 from midas.models import (
     AllocationConstraints,
     PortfolioConfig,
+    RiskConfig,
     StrategyConfig,
 )
 from midas.order_sizer import OrderSizer
@@ -150,7 +151,9 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
+    strat_configs, constraints, _risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    )
 
     start_d, end_d = _to_date(start), _to_date(end)
 
@@ -211,7 +214,9 @@ def live(
     from midas.live import LiveEngine
 
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
+    strat_configs, constraints, _risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    )
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
@@ -330,7 +335,7 @@ def optimize(
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
     if strategies:
-        strat_configs, strat_constraints = load_strategies(Path(strategies))
+        strat_configs, strat_constraints, _ = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 

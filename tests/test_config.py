@@ -77,7 +77,7 @@ def test_load_portfolio_minimal(tmp_path: Path) -> None:
 
 
 def test_load_strategies(strategy_yaml: Path) -> None:
-    configs, constraints = load_strategies(strategy_yaml)
+    configs, constraints, risk = load_strategies(strategy_yaml)
     assert len(configs) == 3
 
     assert configs[0].name == "MeanReversion"
@@ -95,4 +95,43 @@ def test_load_strategies(strategy_yaml: Path) -> None:
     assert constraints.softmax_temperature == 0.25
     assert constraints.min_buy_delta == 0.03
     assert constraints.min_cash_pct == 0.10
-    assert constraints.max_position_pct is None  # not specified -> None
+    assert constraints.max_position_pct is None
+
+    # Risk config defaults (no risk: block in fixture)
+    assert risk.weighting == "inverse_vol"
+    assert risk.vol_target_annualized == 0.20
+    assert risk.idm_cap == 2.5
+
+
+def test_load_strategies_parses_risk_block(tmp_path: Path) -> None:
+    data = {
+        "strategies": [{"name": "Momentum"}],
+        "risk": {
+            "weighting": "equal",
+            "vol_target_annualized": 0.15,
+            "idm_cap": 2.0,
+            "vol_lookback_days": 30,
+            "corr_lookback_days": 120,
+            "vol_floor": 0.05,
+        },
+    }
+    p = tmp_path / "strategies.yaml"
+    p.write_text(yaml.dump(data))
+    _, _, risk = load_strategies(p)
+    assert risk.weighting == "equal"
+    assert risk.vol_target_annualized == 0.15
+    assert risk.idm_cap == 2.0
+    assert risk.vol_lookback_days == 30
+    assert risk.corr_lookback_days == 120
+    assert risk.vol_floor == 0.05
+
+
+def test_load_strategies_risk_validation_surfaces(tmp_path: Path) -> None:
+    data = {
+        "strategies": [{"name": "Momentum"}],
+        "risk": {"idm_cap": 0.5},
+    }
+    p = tmp_path / "strategies.yaml"
+    p.write_text(yaml.dump(data))
+    with pytest.raises(ValueError, match="idm_cap"):
+        load_strategies(p)

@@ -16,6 +16,7 @@ from midas.models import (
     CashInfusion,
     Holding,
     PortfolioConfig,
+    RiskConfig,
     StrategyConfig,
     TradingRestrictions,
 )
@@ -76,12 +77,14 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
 def load_strategies(
     path: Path,
-) -> tuple[list[StrategyConfig], AllocationConstraints]:
-    """Load strategy configs and allocation-level knobs from YAML.
+) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
+    """Load strategy configs, allocation-level knobs, and risk policy from YAML.
 
-    Returns (strategies, constraints) tuple. ``softmax_temperature`` and
-    ``min_buy_delta`` live at the top level of the strategies file because
-    they are meta-strategy knobs (how scores are blended/acted on).
+    Returns (strategies, constraints, risk) tuple. Top-level keys:
+      * ``softmax_temperature``, ``min_buy_delta``, ``min_cash_pct``,
+        ``max_position_pct`` — meta-strategy knobs.
+      * ``risk:`` — nested mapping forwarded to :class:`RiskConfig`. Missing
+        block defaults to risk-on.
     """
     raw = _load_yaml(path)
 
@@ -107,4 +110,14 @@ def load_strategies(
             raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
     )
-    return configs, constraints
+
+    risk_raw = raw.get("risk", {}) or {}
+    risk = RiskConfig(
+        weighting=risk_raw.get("weighting", "inverse_vol"),
+        vol_target_annualized=float(risk_raw.get("vol_target_annualized", 0.20)),
+        idm_cap=float(risk_raw.get("idm_cap", 2.5)),
+        vol_lookback_days=int(risk_raw.get("vol_lookback_days", 60)),
+        corr_lookback_days=int(risk_raw.get("corr_lookback_days", 252)),
+        vol_floor=float(risk_raw.get("vol_floor", 0.02)),
+    )
+    return configs, constraints, risk
