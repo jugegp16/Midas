@@ -530,3 +530,66 @@ class TestRiskOffRegression:
         # A should still dominate the softmax with its buy signal.
         assert result_off.targets["A"] > result_off.targets["B"]
         assert result_off.targets["A"] > result_off.targets["C"]
+
+
+class TestWarmupProgression:
+    def test_short_history_disables_all_risk_stages(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        # Only 30 bars — below any default lookback window.
+        histories = {name: ph(np.full(30, 100.0)) for name in ("A", "B")}
+        # Last-bar drop to generate signals.
+        histories["A"].close[-1] = 90.0
+        histories["B"].close[-1] = 90.0
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(),
+        )
+        allocator.precompute_signals(histories)
+        # Cache should be fully None.
+        assert allocator._risk_cache["cov"] is None
+        assert allocator._risk_cache["corr"] is None
+        assert allocator._risk_cache["per_ticker_vol"] == {"A": None, "B": None}
+
+        # Allocation still works — falls through all risk stages cleanly.
+        result = allocator.allocate(
+            ["A", "B"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0},
+        )
+        total = sum(result.targets.values())
+        assert math.isclose(total, 1 - 0.05, rel_tol=1e-9)
+
+    def test_mid_window_enables_per_ticker_vol_only(self):
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.90)
+        # 120 bars — enough for vol_lookback_days=60 but not corr_lookback_days=252.
+        rng = np.random.default_rng(22)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.5, 120))) for name in ("A", "B")}
+        histories["A"].close[-1] = histories["A"].close[-2] * 0.90
+        histories["B"].close[-1] = histories["B"].close[-2] * 0.90
+
+        allocator = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=2,
+            risk_config=RiskConfig(),
+        )
+        allocator.precompute_signals(histories)
+        # Per-ticker vol defined; cov/corr still None.
+        assert allocator._risk_cache["per_ticker_vol"]["A"] is not None
+        assert allocator._risk_cache["per_ticker_vol"]["B"] is not None
+        assert allocator._risk_cache["cov"] is None
+        assert allocator._risk_cache["corr"] is None
+
+        result = allocator.allocate(
+            ["A", "B"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0},
+        )
+        # IDM and vol targeting skipped → total ≈ investable.
+        total = sum(result.targets.values())
+        assert math.isclose(total, 1 - 0.05, rel_tol=1e-6)
