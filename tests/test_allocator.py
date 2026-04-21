@@ -491,3 +491,42 @@ class TestVolTargetingStage:
         total = sum(result.targets.values())
         # Below target vol → no scaling down.
         assert math.isclose(total, 1 - 0.05, rel_tol=1e-6)
+
+
+class TestRiskOffRegression:
+    def test_risk_off_matches_pre_risk_behavior(self):
+        """weighting=equal, idm_cap=1.0, vol_target=999 → no risk stage moves weights."""
+        mr = MeanReversion(window=5, threshold=0.20)
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=0.5,
+            max_position_pct=0.50,
+        )
+        rng = np.random.default_rng(11)
+        histories = {name: ph(100.0 + np.cumsum(rng.normal(0, 0.5, 260))) for name in ("A", "B", "C")}
+        # Only A gets a real buy signal; B and C are flat-ish.
+        histories["A"].close[-1] = histories["A"].close[-2] * 0.90
+
+        risk_off = Allocator(
+            [(mr, 1.0)],
+            constraints,
+            n_tickers=3,
+            risk_config=RiskConfig(
+                weighting="equal",
+                idm_cap=1.0,
+                vol_target_annualized=999.0,
+            ),
+        )
+        risk_off.precompute_signals(histories)
+        result_off = risk_off.allocate(
+            ["A", "B", "C"],
+            histories,
+            current_weights={"A": 0.0, "B": 0.0, "C": 0.0},
+        )
+        total = sum(result_off.targets.values())
+        # Investable budget preserved — no scale-up (IDM disabled), no scale-down
+        # (target vol 999% never binds).
+        assert math.isclose(total, 1 - 0.05, rel_tol=1e-9)
+        # A should still dominate the softmax with its buy signal.
+        assert result_off.targets["A"] > result_off.targets["B"]
+        assert result_off.targets["A"] > result_off.targets["C"]
