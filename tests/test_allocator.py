@@ -423,6 +423,9 @@ class TestIDMStage:
         # Re-cap (phase 3.6) must pull everything back to max_position_pct.
         for ticker, weight in result.targets.items():
             assert weight <= 0.40 + 1e-9, f"{ticker} exceeded cap after re-cap"
+        # Gross exposure must not exceed N * max_position_pct (no phantom lift
+        # from a stale budget in the re-cap loop).
+        assert sum(result.targets.values()) <= 3 * 0.40 + 1e-9
 
 
 class TestVolTargetingStage:

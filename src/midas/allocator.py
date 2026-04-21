@@ -275,7 +275,6 @@ class Allocator:
         self._apply_cap_with_redistribution(
             active,
             blended_scores,
-            budget_for_active,
             temperature,
             targets,
             score_offsets=score_offsets,
@@ -299,7 +298,6 @@ class Allocator:
         self._apply_cap_with_redistribution(
             active,
             blended_scores,
-            budget_for_active,
             temperature,
             targets,
             score_offsets=score_offsets,
@@ -352,7 +350,6 @@ class Allocator:
         self,
         active: list[str],
         blended_scores: dict[str, float],
-        initial_budget: float,
         temperature: float,
         targets: dict[str, float],
         score_offsets: dict[str, float] | None = None,
@@ -362,10 +359,14 @@ class Allocator:
         Soft cap: when a ticker hits the cap, the freed budget is redistributed
         to uncapped tickers in proportion to their softmax weight. The cap
         never forces a sell — it can only refuse to allocate more buy budget.
+
+        Budget is derived from the current sum of active targets at entry. That
+        keeps phase 3 (post-softmax sum == ``budget_for_active``) identical and
+        lets phase 3.6 preserve IDM's scaled-up gross exposure when caps bind.
         """
         cap = self._max_position_pct
         survivors = list(active)
-        budget = initial_budget
+        budget = sum(targets[ticker] for ticker in survivors)
         # At most one iteration per ticker (each pass pins at least one).
         for _ in range(len(active) + 1):
             over = [ticker for ticker in survivors if targets[ticker] > cap + 1e-12]
