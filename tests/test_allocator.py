@@ -303,15 +303,15 @@ class TestPerTickerVolScaling:
         assert result.targets["LOW"] > result.targets["HIGH"]
 
     def test_equal_weighting_disables_offset(self):
+        """Equal weighting must ignore per-ticker vol even when vols differ sharply."""
         mr = MeanReversion(window=5, threshold=0.20)
         constraints = AllocationConstraints(
             min_cash_pct=0.05,
             softmax_temperature=0.5,
             max_position_pct=0.90,
         )
+        # Same underlying prices -> identical blended scores.
         rng = np.random.default_rng(1)
-        # Use the same underlying prices for both tickers so blended scores are
-        # identical, isolating the vol-offset effect.
         shared = 100.0 + np.cumsum(rng.normal(0, 0.5, 260))
         shared[-1] = shared[-2] * 0.90
 
@@ -323,10 +323,12 @@ class TestPerTickerVolScaling:
         )
         histories = {"LOW": ph(shared.copy()), "HIGH": ph(shared.copy())}
         allocator.precompute_signals(histories)
+        # Inject wildly different per-ticker vols: under inverse_vol this would
+        # skew weights by a factor of log(100) ≈ 4.6; under equal it must not.
+        allocator._risk_cache["per_ticker_vol"] = {"LOW": 0.01, "HIGH": 1.0}
         result = allocator.allocate(
             ["LOW", "HIGH"],
             histories,
             current_weights={"LOW": 0.0, "HIGH": 0.0},
         )
-        # Without vol offset, equal signals → equal softmax weights (within 1e-9).
         assert math.isclose(result.targets["LOW"], result.targets["HIGH"], rel_tol=1e-6)
