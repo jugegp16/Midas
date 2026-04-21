@@ -18,6 +18,7 @@ from midas.metrics import (
     _drawdown_series,
     _pair_sells_with_basis,
     aggregate_strategy_stats,
+    compute_annualized_return,
 )
 from midas.models import Direction, TradeRecord
 
@@ -39,6 +40,9 @@ class BacktestResult:
     split_date: date | None
     twr: float  # time-weighted return (accounts for cash infusions)
     equity_curve: list[tuple[date, float]]  # daily (date, portfolio_value)
+    total_days: int  # calendar days spanned by the full backtest
+    train_days: int  # calendar days spanned by the train window (0 if no split)
+    test_days: int  # calendar days spanned by the test window (0 if no split)
     cagr: float  # compound annual growth rate
     max_drawdown: float  # peak-to-trough percentage decline
     sharpe_ratio: float  # annualized, risk-free=0
@@ -122,15 +126,19 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
     starting_val = result.starting_value
     total_return = (result.final_value - starting_val) / starting_val if starting_val > 0 else 0.0
     bh_return = (result.buy_and_hold_value - starting_val) / starting_val if starting_val > 0 else 0.0
+    total_days = result.total_days
 
     summary: dict[str, object] = {
         "starting_value": starting_val,
         "final_value": result.final_value,
         "total_return": round(total_return, 6),
+        "total_return_annualized": round(compute_annualized_return(total_return, total_days), 6),
         "cagr": result.cagr,
         "twr": result.twr,
+        "twr_annualized": round(compute_annualized_return(result.twr, total_days), 4),
         "buy_and_hold_value": result.buy_and_hold_value,
         "buy_and_hold_return": round(bh_return, 6),
+        "buy_and_hold_return_annualized": round(compute_annualized_return(bh_return, total_days), 6),
         "total_trades": len(result.trades),
         "max_drawdown": result.max_drawdown,
         "sharpe_ratio": result.sharpe_ratio,
@@ -147,9 +155,15 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
         summary["split"] = {
             "date": result.split_date.isoformat(),
             "train_return": result.train_return,
+            "train_return_annualized": round(compute_annualized_return(result.train_return, result.train_days), 4),
             "test_return": result.test_return,
+            "test_return_annualized": round(compute_annualized_return(result.test_return, result.test_days), 4),
             "train_bh_return": result.train_bh_return,
+            "train_bh_return_annualized": round(
+                compute_annualized_return(result.train_bh_return, result.train_days), 4
+            ),
             "test_bh_return": result.test_bh_return,
+            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, result.test_days), 4),
             "train_trades": len(result.train_trades),
             "test_trades": len(result.test_trades),
         }

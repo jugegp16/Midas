@@ -339,6 +339,7 @@ def optimize(
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, n_tickers)
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
+    from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
     from midas.output import (
         color_signed,
         console,
@@ -373,8 +374,8 @@ def optimize(
         fold_table.add_column("Fold", justify="center", style="bold")
         fold_table.add_column("IS Period")
         fold_table.add_column("OOS Period")
-        fold_table.add_column("IS Return", justify="right")
-        fold_table.add_column("OOS Return", justify="right")
+        fold_table.add_column("IS Return (Annualized)", justify="right")
+        fold_table.add_column("OOS Return (Annualized)", justify="right")
         fold_table.add_column("Max DD", justify="right")
         fold_table.add_column("Sharpe", justify="right")
         fold_table.add_column("Sortino", justify="right")
@@ -384,7 +385,7 @@ def optimize(
                 str(fold.fold),
                 f"{fold.train_start} → {fold.train_end}",
                 f"{fold.test_start} → {fold.test_end}",
-                f"{fold.train_return:.2%}",
+                color_signed(fold.train_return),
                 color_signed(fold.test_return),
                 f"[red]{fold.max_drawdown:.2%}[/red]",
                 color_signed(fold.sharpe_ratio, fmt=".2f"),
@@ -393,12 +394,24 @@ def optimize(
             )
         print_centered(fold_table)
 
+        short_folds = [
+            fold for fold in wf_result.folds if (fold.test_end - fold.test_start).days < SHORT_WINDOW_THRESHOLD_DAYS
+        ]
+        if short_folds:
+            shortest = min((fold.test_end - fold.test_start).days for fold in short_folds)
+            console.print(
+                f"[yellow]Note: {len(short_folds)}/{len(wf_result.folds)} OOS windows are "
+                f"under one year (shortest: {shortest} days). Per-fold annualized returns "
+                f"extrapolate from short samples and can be noisy.[/yellow]",
+                justify="center",
+            )
+
         # Aggregate metrics — same layout as the backtest summary tables.
         n_folds = len(wf_result.folds)
         agg = make_metric_table("Walk-Forward Aggregate")
         agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
         agg.add_row(
-            "Per-Fold OOS Mean ± Std",
+            "Per-Fold OOS Mean ± Std (Annualized)",
             f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
         )
         agg.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")

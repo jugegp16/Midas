@@ -10,7 +10,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from midas.metrics import aggregate_strategy_stats
+from midas.metrics import (
+    DAYS_PER_YEAR,
+    SHORT_WINDOW_THRESHOLD_DAYS,
+    aggregate_strategy_stats,
+    compute_annualized_return,
+)
 from midas.models import Direction, Order
 from midas.strategies.base import Strategy
 
@@ -130,34 +135,62 @@ def print_params_table(
     print_centered(table)
 
 
+def _return_row(cum: float, days: int) -> str:
+    """Format a return as 'cumulative (annualized)' for display.
+
+    Args:
+        cum: Cumulative return as a fraction (0.25 == +25%).
+        days: Calendar days spanned by the return window. Non-positive values
+            have no meaningful annualization, so the annualized portion is
+            rendered as ``"—"``.
+
+    Returns:
+        Rich-formatted string of the form ``"+25.00% (+21.33% annualized)"``
+        with each number sign-colored via :func:`color_signed`.
+    """
+    if days <= 0:
+        return f"{color_signed(cum)} (— annualized)"
+    annualized = compute_annualized_return(cum, days)
+    return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
+
+
 def print_backtest_summary(result: BacktestResult) -> None:
     starting_val = result.starting_value
     final_val = result.final_value
     bh_val = result.buy_and_hold_value
     total_return = (final_val - starting_val) / starting_val if starting_val > 0 else 0
     bh_return = (bh_val - starting_val) / starting_val if starting_val > 0 else 0
+    total_days = result.total_days
 
     # --- Performance ---
     perf = make_metric_table("Performance")
     perf.add_row("Starting Value", f"${starting_val:,.2f}")
     perf.add_row("Final Value", f"${final_val:,.2f}")
-    perf.add_row("Total Return", color_signed(total_return))
-    perf.add_row("CAGR", color_signed(result.cagr))
-    perf.add_row("Time-Weighted Return", color_signed(result.twr))
+    perf.add_row("Total Return", _return_row(total_return, total_days))
+    perf.add_row("CAGR (Annualized)", color_signed(result.cagr))
+    perf.add_row("Time-Weighted Return", _return_row(result.twr, total_days))
     perf.add_row("Buy & Hold Value", f"${bh_val:,.2f}")
-    perf.add_row("Buy & Hold Return", color_signed(bh_return))
+    perf.add_row("Buy & Hold Return", _return_row(bh_return, total_days))
     perf.add_row("Total Trades", str(len(result.trades)))
     print_centered(perf)
+    if 0 < total_days < SHORT_WINDOW_THRESHOLD_DAYS:
+        years = total_days / DAYS_PER_YEAR
+        console.print(
+            f"[yellow]Note: backtest window is {total_days} days (~{years:.2f} years). "
+            f"Annualized figures extrapolate from a sub-one-year sample and can be "
+            f"noisy — interpret alongside the cumulative number.[/yellow]",
+            justify="center",
+        )
 
     # --- Train / Test Split ---
     if result.split_date:
         split = make_metric_table("Train / Test Split")
         split.add_row("Split Date", result.split_date.isoformat())
-        split.add_row("Train Return", color_signed(result.train_return))
-        split.add_row("Train B&H Return", color_signed(result.train_bh_return))
+        split.add_row("Train Return", _return_row(result.train_return, result.train_days))
+        split.add_row("Train B&H Return", _return_row(result.train_bh_return, result.train_days))
         split.add_row("Train Trades", str(len(result.train_trades)))
-        split.add_row("Test Return", color_signed(result.test_return))
-        split.add_row("Test B&H Return", color_signed(result.test_bh_return))
+        split.add_row("Test Return", _return_row(result.test_return, result.test_days))
+        split.add_row("Test B&H Return", _return_row(result.test_bh_return, result.test_days))
         split.add_row("Test Trades", str(len(result.test_trades)))
         split.add_row("Efficiency Ratio", f"{result.efficiency_ratio:.0%}")
         print_centered(split)

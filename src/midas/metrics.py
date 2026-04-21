@@ -15,6 +15,8 @@ from datetime import date
 from midas.models import Direction, TradeRecord
 
 TRADING_DAYS_PER_YEAR = 252
+DAYS_PER_YEAR = 365.25  # average calendar days/year (accounts for leap years)
+SHORT_WINDOW_THRESHOLD_DAYS = 365  # windows below this are "sub-one-year" for UX warnings
 
 
 @dataclass
@@ -74,8 +76,32 @@ def compute_cagr(starting: float, final: float, days: int) -> float:
     """Compound annual growth rate from total return over *days* calendar days."""
     if starting <= 0 or final <= 0 or days <= 0:
         return 0.0
-    years = days / 365.25
+    years = days / DAYS_PER_YEAR
     return float((final / starting) ** (1.0 / years) - 1.0)
+
+
+def compute_annualized_return(cumulative_return: float, days: int) -> float:
+    """Annualize a cumulative return over *days* calendar days.
+
+    ``cumulative_return`` is expressed as a fraction (0.25 == +25%). Returns
+    0.0 for non-positive ``days`` and -1.0 when the cumulative loss wipes out
+    the starting value (i.e. growth factor ≤ 0), since compounding past total
+    loss is undefined. The 0.0 sentinel for ``days <= 0`` matches
+    :func:`compute_cagr` so aggregates mixing the two don't get poisoned.
+
+    Caveat: annualizing windows shorter than one year extrapolates aggressively
+    — a 30-day +10% return projects to roughly +219% annualized. The number is
+    mathematically correct but statistically noisy; callers that display short
+    windows should surface the window length alongside so users can discount
+    accordingly.
+    """
+    if days <= 0:
+        return 0.0
+    growth = 1.0 + cumulative_return
+    if growth <= 0:
+        return -1.0
+    years = days / DAYS_PER_YEAR
+    return float(growth ** (1.0 / years) - 1.0)
 
 
 def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:

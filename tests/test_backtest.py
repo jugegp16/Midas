@@ -19,6 +19,7 @@ from midas.backtest import (
 )
 from midas.metrics import (
     TRADING_DAYS_PER_YEAR,
+    compute_annualized_return,
     compute_cagr,
     compute_max_drawdown,
     compute_sharpe,
@@ -513,6 +514,9 @@ def test_write_backtest_results_rejects_existing_file(tmp_path: Path) -> None:
         split_date=None,
         twr=0,
         equity_curve=[],
+        total_days=0,
+        train_days=0,
+        test_days=0,
         cagr=0,
         max_drawdown=0,
         sharpe_ratio=0,
@@ -801,6 +805,60 @@ def test_cagr_loss() -> None:
     assert math.isclose(cagr, -0.5, abs_tol=1e-2)
 
 
+# --- compute_annualized_return ---
+
+
+def test_annualized_return_one_year_pass_through() -> None:
+    # A ~21% cumulative return over ~1 year annualizes to ~21%.
+    # Anchors the identity: annualized(r, 365.25 days) == r.
+    ann = compute_annualized_return(0.21, 366)
+    assert math.isclose(ann, 0.21, abs_tol=1e-2)
+
+
+def test_annualized_return_compounds_short_window() -> None:
+    # 10% over ~half a year compounds to ~21% annualized (1.10^2 - 1).
+    # This is the key guard against the PR's most likely regression —
+    # forgetting to exponentiate and just dividing.
+    ann = compute_annualized_return(0.10, 183)
+    assert math.isclose(ann, 0.21, abs_tol=2e-2)
+
+
+def test_annualized_return_multi_year_takes_root() -> None:
+    # 100% cumulative over 2 years ≈ 41.4% annualized (sqrt(2) - 1).
+    # Guards the inverse direction — the exponent is (1/years), not years.
+    ann = compute_annualized_return(1.0, 731)
+    assert math.isclose(ann, 2**0.5 - 1.0, abs_tol=1e-2)
+
+
+def test_annualized_return_zero_days_returns_zero() -> None:
+    # Matches compute_cagr's sentinel so aggregates mixing the two don't
+    # get poisoned by inf/NaN.
+    assert compute_annualized_return(0.25, 0) == 0.0
+    assert compute_annualized_return(0.25, -5) == 0.0
+
+
+def test_annualized_return_total_loss_returns_minus_one() -> None:
+    # Growth factor ≤ 0 (cumulative loss wipes out starting value). No
+    # sensible annualization exists, so the function returns -1.0 rather
+    # than raising or returning NaN.
+    assert compute_annualized_return(-1.0, 365) == -1.0
+    assert compute_annualized_return(-1.5, 365) == -1.0
+
+
+def test_annualized_return_survivable_loss() -> None:
+    # 100 → 50 over ~1 year annualizes to ~-50%.
+    ann = compute_annualized_return(-0.5, 366)
+    assert math.isclose(ann, -0.5, abs_tol=1e-2)
+
+
+def test_annualized_return_extrapolates_short_windows_aggressively() -> None:
+    # 30-day 10% → ~219% annualized. Documents the known amplification;
+    # if someone "fixes" this by clamping, this test will fail and prompt
+    # a discussion.
+    ann = compute_annualized_return(0.10, 30)
+    assert ann > 2.0
+
+
 # --- compute_max_drawdown ---
 
 
@@ -1011,6 +1069,108 @@ def test_backtest_populates_new_metrics() -> None:
     assert result.max_drawdown >= 0.0
     # Sortino must never be inf — even on a perfect run we cap to 0.
     assert not math.isinf(result.sortino_ratio)
+
+
+def test_efficiency_ratio_uses_annualized_returns() -> None:
+    """Efficiency ratio must divide annualized test return by annualized train.
+
+    Train and test windows have different lengths, so dividing cumulative
+    returns would mix periods of different duration. Annualizing both sides
+    makes the ratio dimensionally consistent (and matches the walk-forward
+    efficiency_ratio convention).
+    """
+    portfolio, price_data = _make_backtest_data()
+    mr = MeanReversion(window=10, threshold=-0.05)
+    engine = _build_engine(entries=[(mr, 1.0)], train_pct=0.4)
+    start = min(price_data["AAPL"].index)
+    end = max(price_data["AAPL"].index)
+    result = engine.run(portfolio, price_data, start, end)
+
+    assert result.split_date is not None
+    assert result.train_days > 0
+    assert result.test_days > 0
+    assert result.train_days != result.test_days  # 40/60 split on 100 bars
+
+    train_ann = compute_annualized_return(result.train_return, result.train_days)
+    test_ann = compute_annualized_return(result.test_return, result.test_days)
+    if train_ann == 0:
+        pytest.skip("Degenerate fixture: no train-side return to compare against")
+    expected = test_ann / train_ann
+    # Engine computes efficiency from unrounded returns then rounds the final
+    # ratio; recomputing from the rounded stored returns can drift slightly,
+    # so compare with a small tolerance rather than exact equality.
+    assert math.isclose(result.efficiency_ratio, expected, rel_tol=1e-2)
+
+    # Regression guard: the cumulative ratio (test_return / train_return) is
+    # wrong because train and test windows span different lengths here.
+    # Should differ meaningfully from the annualized ratio.
+    if result.train_return and result.test_return:
+        cumulative_ratio = result.test_return / result.train_return
+        assert not math.isclose(cumulative_ratio, expected, rel_tol=1e-2), (
+            "Efficiency ratio matches both cumulative and annualized ratios — "
+            "test fixture doesn't discriminate the fix. Use distinct train/test lengths."
+        )
+
+
+def test_summary_json_includes_annualized_keys(tmp_path: Path) -> None:
+    """summary.json must expose *_annualized alongside cumulative keys.
+
+    Downstream consumers key off these names; renaming or dropping them is
+    a breaking change. The annualized values must also match
+    compute_annualized_return applied to the matching cumulative value —
+    otherwise we've silently desynced the two.
+    """
+    portfolio, price_data = _make_backtest_data()
+    mr = MeanReversion(window=20, threshold=0.05)
+    engine = _build_engine(entries=[(mr, 1.0)], train_pct=0.7)
+    start = min(price_data["AAPL"].index)
+    end = max(price_data["AAPL"].index)
+    result = engine.run(portfolio, price_data, start, end)
+
+    out_dir = tmp_path / "results"
+    write_backtest_results(result, out_dir)
+    with open(out_dir / "summary.json") as f:
+        summary = json.load(f)
+
+    # Top-level annualized keys exist and reconcile against cumulative + days.
+    # Annualized values are rounded to match their cumulative sibling's precision
+    # (6 decimals for total_return / buy_and_hold_return, 4 for twr and splits),
+    # so tolerances track that rounding.
+    assert "total_return_annualized" in summary
+    assert "twr_annualized" in summary
+    assert "buy_and_hold_return_annualized" in summary
+    total_days = result.total_days
+    assert math.isclose(
+        summary["total_return_annualized"],
+        compute_annualized_return(summary["total_return"], total_days),
+        abs_tol=1e-5,
+    )
+    assert math.isclose(
+        summary["twr_annualized"],
+        compute_annualized_return(result.twr, total_days),
+        abs_tol=5e-5,
+    )
+
+    # Split block likewise carries annualized mirrors.
+    assert "split" in summary
+    split = summary["split"]
+    for key in (
+        "train_return_annualized",
+        "test_return_annualized",
+        "train_bh_return_annualized",
+        "test_bh_return_annualized",
+    ):
+        assert key in split
+    assert math.isclose(
+        split["train_return_annualized"],
+        compute_annualized_return(result.train_return, result.train_days),
+        abs_tol=5e-5,
+    )
+    assert math.isclose(
+        split["test_return_annualized"],
+        compute_annualized_return(result.test_return, result.test_days),
+        abs_tol=5e-5,
+    )
 
 
 # --- _fifo_consumed_basis unit tests ---

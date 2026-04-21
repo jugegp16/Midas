@@ -14,6 +14,7 @@ import pandas as pd
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.metrics import (
+    compute_annualized_return,
     compute_cagr,
     compute_max_drawdown,
     compute_sharpe,
@@ -979,12 +980,27 @@ class BacktestEngine:
         # New metrics
         equity_curve = state.equity_curve
         total_days = (trading_days[-1] - trading_days[0]).days if len(trading_days) > 1 else 0
+        if split_date and len(trading_days) > 1:
+            train_days = (split_date - trading_days[0]).days
+            test_days = (trading_days[-1] - split_date).days
+        else:
+            train_days = 0
+            test_days = 0
         cagr = compute_cagr(starting_val, final_value, total_days)
         max_drawdown = compute_max_drawdown(equity_curve)
         sharpe = compute_sharpe(equity_curve)
         sortino = compute_sortino(equity_curve)
         win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)
-        efficiency = test_return / train_return if split_date and train_return != 0 else 0.0
+        # Annualize both sides of the efficiency ratio so train and test windows
+        # of different lengths compare apples-to-apples (matches the walk-forward
+        # convention). Without this, a shorter test window's smaller cumulative
+        # return would understate parameter decay, and vice versa.
+        if split_date:
+            train_ann = compute_annualized_return(train_return, train_days)
+            test_ann = compute_annualized_return(test_return, test_days)
+            efficiency = test_ann / train_ann if train_ann != 0 else 0.0
+        else:
+            efficiency = 0.0
         strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
         # Unrealized P&L: mark-to-market gain on positions still held at end.
@@ -1009,6 +1025,9 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            total_days=total_days,
+            train_days=train_days,
+            test_days=test_days,
             cagr=round(cagr, 4),
             max_drawdown=round(max_drawdown, 4),
             sharpe_ratio=round(sharpe, 4),
