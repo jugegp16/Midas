@@ -2,6 +2,17 @@ softmax_temperature: 0.5
 min_buy_delta: 0.02
 min_cash_pct: 0.05
 
+# Optional risk-discipline block. Omit it to accept the defaults shown below.
+# See docs/architecture.md#risk-discipline-configuration for the semantics of
+# each field. These values are fixed policy — the optimizer does not search them.
+# risk:
+#   weighting: inverse_vol       # "equal" disables the inverse-vol tilt
+#   vol_target_annualized: 0.20  # 20% annualized portfolio vol cap
+#   idm_cap: 2.5                 # ceiling on diversification multiplier (1.0 disables IDM)
+#   vol_lookback_days: 60
+#   corr_lookback_days: 252
+#   vol_floor: 0.02
+
 strategies:
   # -- Entry signals --
   - name: Momentum

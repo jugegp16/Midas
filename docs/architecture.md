@@ -45,7 +45,7 @@ See [Strategies](strategies.md) for the full reference.
 
 ### Allocator
 
-The allocator turns entry-signal scores into target portfolio weights. It runs in three phases.
+The allocator turns entry-signal scores into target portfolio weights. It runs in three core phases (score-and-blend → softmax → soft cap) with optional risk-discipline phases interleaved: an inverse-vol score offset before softmax, and an instrument diversification multiplier + portfolio vol target after the cap. The risk phases are policy — they trim exposure, never inflate a conviction that wasn't there.
 
 #### Phase 1: Score and Blend
 
@@ -56,15 +56,21 @@ Tickers fall into two buckets:
 - **Active** — at least one entry signal scored > 0. The blended score is positive.
 - **Held** — every entry signal returned 0 or `None`. The allocator treats this as "no opinion" and holds the ticker at its current weight (or the equal-weight base on the very first allocation).
 
+#### Phase 1.5: Inverse-Vol Score Offset (optional)
+
+When `risk.weighting: inverse_vol` (the default), the allocator precomputes an additive score offset per ticker equal to `-log(max(realized_vol, vol_floor))`. This offset is added to the blended score *inside* the softmax exponent, which — because softmax normalizes — is mathematically equivalent to multiplying each ticker's weight by `1/realized_vol`. The result is an inverse-vol tilt: lower-vol tickers get larger target weights for the same conviction, higher-vol tickers get smaller ones. Realized vol is computed over `vol_lookback_days` (default 60) and floored at `vol_floor` (default 0.02) to keep ultra-quiet tickers from inhaling budget.
+
+Set `risk.weighting: equal` to disable this stage — the allocator then runs straight softmax over the blended scores.
+
 #### Phase 2: Softmax Budget Allocation
 
 The active tickers' blended scores need to become target portfolio weights that sum to the *active* budget — that is, the investable budget (`1 − min_cash_pct`) minus whatever the held tickers consume. The allocator uses softmax — the same construct-to-budget operator used by QuantConnect LEAN's `InsightWeightingPortfolioConstructionModel`, mean-variance optimizers, and risk-parity libraries.
 
 ```
-target_i = active_budget * exp(blended_i / T) / sum_j(exp(blended_j / T))
+target_i = active_budget * exp((blended_i + offset_i) / T) / sum_j(exp((blended_j + offset_j) / T))
 ```
 
-By construction, `sum(active targets) == active_budget` exactly, always. There is no separate normalize step — oversubscription is mathematically impossible. The `softmax_temperature` parameter `T` follows the standard ML softmax convention: low `T` concentrates budget on the highest-conviction ticker (winner-take-most, `T → 0` is argmax), `T = 1` is the unscaled softmax over raw scores, and high `T` approaches a uniform split. Midas defaults to `T = 0.5`, a mild concentration bias.
+The `offset` term is the Phase 1.5 inverse-vol offset (zero when `weighting: equal`). By construction, `sum(active targets) == active_budget` exactly, always. There is no separate normalize step — oversubscription is mathematically impossible. The `softmax_temperature` parameter `T` follows the standard ML softmax convention: low `T` concentrates budget on the highest-conviction ticker (winner-take-most, `T → 0` is argmax), `T = 1` is the unscaled softmax over raw scores, and high `T` approaches a uniform split. Midas defaults to `T = 0.5`, a mild concentration bias.
 
 **Neutral = hold.** When all entry signals abstain or score 0 for a ticker, the allocator holds that ticker's current weight rather than dragging it back to equal-weight. This avoids churn from drift-correction trades on days when no signal is firing on a held position.
 
@@ -75,6 +81,38 @@ Any active ticker whose softmax target exceeds `max_position_pct` is pinned at t
 The cap is **soft**: it can refuse to allocate *more* budget to an over-target ticker, but it never forces a sell. If a ticker drifts above the cap because of price appreciation, the allocator simply stops buying more — it does not generate a corrective sell. Sells are exclusively the domain of `ExitRule` strategies. This is the cleanest way to keep the buy-only allocator from accidentally producing exits.
 
 If `max_position_pct` is not configured, it's auto-computed as 2.5x the equal-weight baseline (capped at 25%), which allows meaningful overweighting without extreme concentration.
+
+#### Phase 3.5: Instrument Diversification Multiplier
+
+The allocator multiplies every active weight by `idm = min(1/sqrt(w · corr · w), idm_cap)`, where `w` is the normalized active-weight vector and `corr` is the LedoitWolf-shrunk correlation matrix of daily returns over `corr_lookback_days` (default 252). When holdings are uncorrelated, `idm ≈ sqrt(N_active)` — the portfolio can carry more gross exposure because diversification absorbs the single-name risk. When holdings are tightly correlated, `idm ≈ 1` — no diversification benefit, so no scale-up. This is Carver's IDM from *Systematic Trading*.
+
+The multiplier is capped at `idm_cap` (default 2.5) to keep a universe of uncorrelated names from levering the portfolio without bound. Setting `idm_cap: 1.0` disables this stage.
+
+#### Phase 3.6: Re-Cap After IDM
+
+Because IDM scaled weights up, a ticker that was below `max_position_pct` in Phase 3 can now exceed it. Phase 3.6 re-runs the cap-and-redistribute loop, this time taking its budget from the current sum of active targets (so the IDM scale-up is preserved wherever the caps aren't binding).
+
+#### Phase 3.7: Portfolio Vol Targeting
+
+Finally, the allocator predicts portfolio vol as `sqrt(w · cov · w)` on the annualized covariance matrix (LedoitWolf correlation composed with per-ticker realized vols). If the prediction exceeds `vol_target_annualized` (default 0.20 = 20%), every weight is scaled down by `target / predicted`. This stage **only scales down** — a portfolio predicted below target is left alone rather than levered up to hit it.
+
+Scaling down all weights proportionally (including held tickers) keeps the target-weight mix intact and pushes the extra budget into cash. Effectively disable this stage by setting `vol_target_annualized` to an unreachably large number.
+
+#### Risk Discipline Configuration
+
+All risk-phase parameters live under a top-level `risk:` block in the strategies YAML:
+
+```yaml
+risk:
+  weighting: inverse_vol      # or "equal" to disable Phase 1.5
+  vol_target_annualized: 0.20 # target annualized portfolio vol (Phase 3.7)
+  idm_cap: 2.5                # ceiling on the diversification multiplier
+  vol_lookback_days: 60       # window for per-ticker realized vol
+  corr_lookback_days: 252     # window for LedoitWolf correlation fit
+  vol_floor: 0.02             # min realized vol (annualized) to avoid divide-by-tiny
+```
+
+The block is optional — an omitted `risk:` block applies all defaults above. All six fields are **fixed policy**, not search parameters: the optimizer does not vary them. To try a different risk stance, edit the YAML directly and re-run. A degenerate input at any stage (insufficient history, NaN closes, singular covariance) causes that stage to pass through unchanged rather than raise, so the allocator degrades gracefully during warmup.
 
 ### Exit Rules
 
@@ -124,6 +162,8 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointl
 | Max position % | Maximum weight for any single position | 0.15 to 0.50 |
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
+
+The `risk:` block fields (`weighting`, `vol_target_annualized`, `idm_cap`, `vol_lookback_days`, `corr_lookback_days`, `vol_floor`) are **not** searched — they're user-chosen risk policy. Whatever you set in the input YAML is passed through to the output YAML unchanged.
 
 **Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination, runs a full backtest with train/test split, and returns the training return as the optimization objective. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
