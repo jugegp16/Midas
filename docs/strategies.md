@@ -52,6 +52,37 @@ A strategy file needs at least one entry signal and at least one exit rule. With
 - **[Dip-Buying](../example-strategies/dip-buying.yaml)** — `BollingerBand` and `RSIOversold` for independent confirmation that an asset is oversold, protected by a `StopLoss` floor.
 - **[Balanced Growth](../example-strategies/balanced-growth.yaml)** — `Momentum` and `MeanReversion` give entries in both trending and recovering markets; `ProfitTaking` harvests gains at a fixed target and `ChandelierStop` provides a volatility-adjusted trailing stop that works whether the position is in profit or underwater.
 
+## Risk Discipline
+
+The allocator applies four optional risk phases on top of the softmax core: an inverse-vol tilt on per-ticker scores, an instrument diversification multiplier (IDM) that scales exposure up when holdings are uncorrelated, a re-cap pass to honor `max_position_pct` after IDM, and a portfolio vol target that scales everything down when predicted vol exceeds the cap. See [Architecture: Allocator](architecture.md#allocator) for the full phase-by-phase description.
+
+All four phases are configured by an optional top-level `risk:` block in the strategies YAML. Omit the block to accept the defaults shown:
+
+```yaml
+risk:
+  weighting: inverse_vol       # "equal" disables the inverse-vol score offset
+  vol_target_annualized: 0.20  # max annualized portfolio vol (scales weights down only)
+  idm_cap: 2.5                 # ceiling on the diversification multiplier (1.0 disables IDM)
+  vol_lookback_days: 60        # window for per-ticker realized vol
+  corr_lookback_days: 252      # window for the LedoitWolf correlation fit
+  vol_floor: 0.02              # min realized vol (annualized) to avoid divide-by-tiny
+```
+
+**Field reference:**
+
+| Field | Default | What it controls |
+|-------|---------|------------------|
+| `weighting` | `inverse_vol` | `inverse_vol` adds a `-log(vol)` offset to each blended score before softmax (low-vol tickers get more weight per unit conviction). `equal` skips the offset — the softmax runs on raw blended scores. |
+| `vol_target_annualized` | `0.20` | Upper bound on the portfolio's predicted annualized vol. If the prediction exceeds the target, every weight is scaled by `target / predicted`. Never scales up. Set unreachably high to disable. |
+| `idm_cap` | `2.5` | Ceiling on the instrument diversification multiplier. IDM equals `min(1/sqrt(w · corr · w), cap)` — it scales exposure up when holdings are uncorrelated, capped here to prevent a universe of uncorrelated names from levering without bound. Set to `1.0` to disable IDM entirely. |
+| `vol_lookback_days` | `60` | Trailing window for realized-vol calculations (used by the inverse-vol offset and the covariance diagonals). |
+| `corr_lookback_days` | `252` | Trailing window for the LedoitWolf-shrunk correlation fit used by IDM and portfolio-vol prediction. |
+| `vol_floor` | `0.02` | Minimum annualized realized vol applied before the inverse-vol offset and covariance composition. Prevents quiet tickers from inhaling budget and keeps the covariance matrix well-conditioned. |
+
+**Fixed policy, not searched.** The optimizer does not vary any of these fields — they're a risk stance you choose. Whatever you put in the input YAML is passed through to the output YAML unchanged. To try a different risk stance, edit the YAML and re-run.
+
+**Graceful warmup.** Each phase falls back to a pass-through when it can't compute (insufficient history, NaN closes, singular covariance). The allocator degrades to its pre-risk behavior rather than raising, so the first N bars of a backtest just produce unscaled weights until enough history accumulates.
+
 ## Entry Signals
 
 Entry signals score a ticker's bullishness in `[0, 1]`. They contribute to the allocator's per-ticker blend via a configurable `weight` (default 1.0). A signal returning `None` is excluded from the blend entirely — it doesn't pull the average toward zero, it simply doesn't participate. A signal returning 0 means "no opinion" — the ticker is treated as held at its current weight rather than as an active buy candidate.

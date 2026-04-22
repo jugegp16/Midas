@@ -98,21 +98,7 @@ Finally, the allocator predicts portfolio vol as `sqrt(w · cov · w)` on the an
 
 Scaling down all weights proportionally (including held tickers) keeps the target-weight mix intact and pushes the extra budget into cash. Effectively disable this stage by setting `vol_target_annualized` to an unreachably large number.
 
-#### Risk Discipline Configuration
-
-All risk-phase parameters live under a top-level `risk:` block in the strategies YAML:
-
-```yaml
-risk:
-  weighting: inverse_vol      # or "equal" to disable Phase 1.5
-  vol_target_annualized: 0.20 # target annualized portfolio vol (Phase 3.7)
-  idm_cap: 2.5                # ceiling on the diversification multiplier
-  vol_lookback_days: 60       # window for per-ticker realized vol
-  corr_lookback_days: 252     # window for LedoitWolf correlation fit
-  vol_floor: 0.02             # min realized vol (annualized) to avoid divide-by-tiny
-```
-
-The block is optional — an omitted `risk:` block applies all defaults above. All six fields are **fixed policy**, not search parameters: the optimizer does not vary them. To try a different risk stance, edit the YAML directly and re-run. A degenerate input at any stage (insufficient history, NaN closes, singular covariance) causes that stage to pass through unchanged rather than raise, so the allocator degrades gracefully during warmup.
+All four risk phases are configured via the optional `risk:` block in the strategies YAML — see [Strategies: Risk Discipline](strategies.md#risk-discipline). A degenerate input at any stage (insufficient history, NaN closes, singular covariance) causes that stage to pass through unchanged rather than raise, so the allocator degrades gracefully during warmup.
 
 ### Exit Rules
 
