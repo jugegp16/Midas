@@ -53,10 +53,12 @@ Disable rules:
 
 - No `risk:` block → all features off, current behavior bit-for-bit.
 - `weighting:` defaults to `equal`. Setting `inverse_vol` uses `vol_lookback_days` (default 60).
-- `vol_target` is independently nullable. Omit/`null` skips the predicted-vol scaler. When set, it shares `vol_lookback_days` with inverse-vol.
+- `vol_target` is independently nullable. Omit/`null` skips the predicted-vol scaler. When set, it shares `vol_lookback_days` with inverse-vol — a deliberate consolidation, since inverse-vol is a relative tilt (where responsiveness matters less than stability) and Ledoit-Wolf already shrinks the covariance toward stable estimates. If a future user genuinely needs separate windows, split the knob then; don't pre-build the option.
 - `drawdown_penalty` and `drawdown_floor` must both be set or both omitted; either missing disables CPPI.
 
 The optimizer does not search `risk.*`. Risk knobs are policy and easily overfit; setting them is a deliberate user act, not a search problem. There is no `--no-risk` flag — versioning two YAMLs is the right way to A/B.
+
+All vol quantities in this spec (`vol_target`, `vol_floor`, internal `vol_i`) are annualized via `* sqrt(252)`. Daily log-return stdev is annualized at the `realized_vol` helper boundary, and never appears in daily units anywhere in this design.
 
 ## Allocator Phases
 
@@ -83,6 +85,8 @@ investable     = (1 - min_cash_pct) * exposure_scale
 
 `current_drawdown` is passed into `allocate()` by the driver. Backtest engine tracks the running peak of total portfolio value (already computed daily for TWR). Live mode does *not* support CPPI v1 — peak persistence requires a state file that's out of scope for this pass; `LiveEngine` warns at startup if `drawdown_penalty` is configured, similar to the existing `TrailingStop` inert-in-live warning.
 
+This is a documented backtest/live divergence: a strategy backtested with `drawdown_penalty: 1.5` will scale exposure down during drawdowns in backtest but not in live deployment. Users setting `drawdown_penalty` should expect backtest numbers to overstate live behavior during drawdown periods. Resolving this is tracked for v2 (peak persistence via state file).
+
 ### Phase 2 — inverse-vol offset
 
 When `weighting: inverse_vol`, modify the softmax exponent for every active ticker:
@@ -97,7 +101,7 @@ Crucially: the offset is added *after* the `/T` divider, not inside it. PR #63 u
 
 Equal weighting (`offset_i = 0`) reduces to current behavior bit-for-bit.
 
-Tickers with insufficient history (`len(prices) < vol_lookback_days`) fall back to Option A (held at current weight, excluded from the softmax), matching how the existing allocator handles missing scores.
+Tickers with insufficient history (`len(prices) < vol_lookback_days`) or zero realized vol over the window fall back to Option A (held at current weight, excluded from the softmax), matching how the existing allocator handles missing scores. The `vol_floor` covers low-but-nonzero vols; literal zero indicates no valid signal and the fallback applies.
 
 ### Phase 4 — portfolio vol target
 
@@ -111,7 +115,9 @@ if predicted > vol_target:
     w         = w * scale                                  # slack → cash
 ```
 
-If any active ticker has fewer than `vol_lookback_days` of history, the entire Phase 4 step is skipped for that bar (covariance over a short common window is unreliable; partial coverage would silently bias the estimate). Cap is *not* re-applied after scaling — scaling can only shrink weights, so caps that bound from above remain satisfied.
+If any active ticker has fewer than `vol_lookback_days` of history, or zero realized vol over the window, the entire Phase 4 step is skipped for that bar (covariance over a short common window is unreliable; partial coverage would silently bias the estimate; a constant-price ticker produces a singular row in `Σ`). Cap is *not* re-applied after scaling — scaling can only shrink weights, so caps that bound from above remain satisfied.
+
+Phase 0 and Phase 4 stack multiplicatively. A 20% drawdown with `drawdown_penalty: 1.5` shrinks `investable` to 70% of its base value; if the resulting weight vector still has predicted vol above target, Phase 4 scales it down further. With aggressive settings on both knobs (e.g., `drawdown_penalty: 2.0, vol_target: 0.10` during a 25% drawdown on a high-vol portfolio) gross exposure can drop well below 50%. This is intentional — both phases are reduce-only — but worth being aware of when configuring both.
 
 ## Pure-Function Discipline
 
@@ -149,7 +155,19 @@ class RiskMetrics:
 
 Computed each bar in backtest, each tick in live. Backtest threads it through `BacktestResult`; live threads it through the existing periodic output. Strictly observational — no feedback into construction.
 
-Per-strategy attribution: when a buy fills, attribute its share of P&L by the strategy's contribution to the blended score that produced the order (data already on `OrderContext.contributions`). Closing P&L flows back to the same attribution buckets.
+Per-strategy attribution uses a **cost-basis-weighted** attribution dict per position. On each buy, the position's attribution dict is updated as a size-weighted blend of the prior dict (weighted by existing basis) and the order's contribution dict (weighted by buy size, sourced from `OrderContext.contributions`):
+
+```python
+new_basis = position.basis + buy_size
+for strat, contrib in order.contributions.items():
+    position.attribution[strat] = (
+        position.attribution.get(strat, 0.0) * (position.basis / new_basis)
+        + contrib * (buy_size / new_basis)
+    )
+position.basis = new_basis
+```
+
+On sell or mark-to-market, P&L is split into per-strategy buckets by the current attribution shares. This is consistent with midas's existing aggregate-position philosophy (`docs/architecture.md:187`) — no lot-level tracking required. The accuracy loss vs lot-level is bounded and only material when a position grows over many bars with rapidly shifting attribution mixes; the typical case (one strategy entering, optionally adding) is exact.
 
 ## Files to Create or Modify
 
@@ -190,9 +208,11 @@ Allocator integration (`test_allocator_risk.py`):
 
 - `weighting: equal` matches current allocator output bit-for-bit (regression).
 - `weighting: inverse_vol`: high-vol ticker gets less weight at same blended score.
+- `weighting: inverse_vol` is **T-independent**: two tickers with identical blended scores and 2:1 vol ratio produce ≈ 2:1 weight ratio at both `softmax_temperature=0.2` and `softmax_temperature=2.0`. Targets the PR #63 `1/vol^(1/T)` regression directly — that bug would produce ~32:1 and ~1.4:1 instead.
 - Phase 0: synthetic 20% drawdown shrinks `investable` to `(1 - min_cash_pct) * 0.7`.
 - Phase 4: predicted vol exceeds target → all weights scale by `target/predicted`; sum drops below investable, slack to cash.
-- Insufficient history: vol targeting and inverse-vol both fall back gracefully (no crash, no silent zeros).
+- Phase 0 + Phase 4 composition: synthetic 20% drawdown plus vol-target-binding portfolio → final exposure ≈ `(1 - min_cash_pct) * 0.7 * (target / predicted)`. Confirms the two reduce-only phases stack as expected.
+- Insufficient history or zero realized vol: vol targeting skips the bar entirely; inverse-vol falls back to Option A for the affected ticker (no crash, no silent zeros).
 
 Telemetry (`test_risk_metrics.py`):
 
