@@ -22,7 +22,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, DEFAULT_VOL_FLOOR, AllocationConstraints, RiskConfig
-from midas.risk import apply_drawdown_overlay, inverse_vol_offset, realized_vol
+from midas.risk import (
+    apply_drawdown_overlay,
+    inverse_vol_offset,
+    predict_portfolio_vol,
+    realized_vol,
+)
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -259,6 +264,12 @@ class Allocator:
         # allocate more budget. Sells are exclusively ExitRule territory.
         self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
+        # Phase 4: portfolio vol target. Scale all weights down when predicted
+        # annualized vol exceeds the target. Skipped if any active ticker has
+        # insufficient or degenerate history (constant-price → singular Σ row).
+        if self._risk_config is not None and self._risk_config.vol_target is not None and active:
+            self._apply_vol_target(active, price_data, targets)
+
         return AllocationResult(targets, contributions, blended_scores)
 
     def _softmax_allocate(
@@ -334,3 +345,42 @@ class Allocator:
                     targets[ticker] = 0.0
                 return
             self._softmax_allocate(survivors, blended_scores, budget, temperature, targets, offsets)
+
+    def _apply_vol_target(
+        self,
+        active: list[str],
+        price_data: dict[str, PriceHistory],
+        targets: dict[str, float],
+    ) -> None:
+        """Scale all active weights so predicted annualized vol ≤ vol_target.
+
+        Skipped silently if any active ticker has insufficient history, a
+        non-positive close in the lookback window, or zero realized vol
+        (constant-price ticker → singular row in the covariance estimate).
+        Reduce-only: when scaling fires, the slack flows to cash; the soft
+        cap remains satisfied because scaling can only shrink weights.
+        """
+        assert self._risk_config is not None and self._risk_config.vol_target is not None
+        lookback = self._risk_config.vol_lookback_days
+        log_returns_per_ticker: list[np.ndarray] = []
+        for ticker in active:
+            history = price_data.get(ticker)
+            if history is None or len(history) < lookback + 1:
+                return
+            window = np.asarray(history.close[-(lookback + 1) :])
+            if np.any(window <= 0):
+                return
+            series = np.diff(np.log(window))
+            if np.std(series, ddof=1) == 0.0:
+                return
+            log_returns_per_ticker.append(series)
+        if not log_returns_per_ticker:
+            return
+        log_returns = np.column_stack(log_returns_per_ticker)
+        weights = np.array([targets[ticker] for ticker in active])
+        predicted = predict_portfolio_vol(weights, log_returns)
+        target = self._risk_config.vol_target
+        if predicted > target > 0.0:
+            scale = target / predicted
+            for ticker in active:
+                targets[ticker] *= scale

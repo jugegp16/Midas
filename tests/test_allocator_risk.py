@@ -205,3 +205,103 @@ def test_inverse_vol_insufficient_history_falls_back() -> None:
     current = {"SHORT": 0.10, "FULL": 0.0}
     result = alloc.allocate(["SHORT", "FULL"], prices, current_weights=current)
     assert math.isclose(result.targets["SHORT"], 0.10, abs_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: portfolio vol target
+# ---------------------------------------------------------------------------
+
+
+def test_phase_4_vol_target_scales_when_predicted_exceeds() -> None:
+    """High-vol portfolio with tight target → all weights scale way down."""
+    risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "HI1": _diverging_history(120, daily_vol=0.05, seed=1),
+        "HI2": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    result = alloc.allocate(["HI1", "HI2"], prices)
+    investable = 1.0 - 0.05
+    # Predicted vol on a ~80% annualized portfolio with 0.10 target → ~12%
+    # of investable. Sum drops well below half investable.
+    assert sum(result.targets.values()) < investable * 0.5
+
+
+def test_phase_4_no_scale_when_below_target() -> None:
+    """Low-vol portfolio under target → no scaling."""
+    risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.50)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "LO1": _diverging_history(120, daily_vol=0.005, seed=1),
+        "LO2": _diverging_history(120, daily_vol=0.005, seed=2),
+    }
+    result = alloc.allocate(["LO1", "LO2"], prices)
+    investable = 1.0 - 0.05
+    assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
+
+
+def test_phase_4_skips_on_insufficient_history() -> None:
+    """If any active ticker lacks enough history, the entire Phase 4 step is skipped."""
+    risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "FULL": _diverging_history(120, daily_vol=0.05, seed=1),
+        "SHORT": _diverging_history(30, daily_vol=0.05, seed=2),  # < lookback + 1
+    }
+    result = alloc.allocate(["FULL", "SHORT"], prices)
+    # No vol scaling fires; both tickers active; sum = investable.
+    investable = 1.0 - 0.05
+    assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
+
+
+def test_phase_0_phase_4_compose_when_only_phase_0_binds() -> None:
+    """With a loose vol_target that Phase 4 doesn't activate, the CPPI overlay
+    drives the final gross alone — its 0.7x multiplier reaches the output.
+
+    (When Phase 4 binds it normalizes predicted vol to target, mathematically
+    erasing any prior gross-scaling. The two phases compose multiplicatively
+    only while Phase 4 is non-binding.)
+    """
+    risk = RiskConfig(
+        weighting="equal",
+        vol_lookback_days=60,
+        vol_target=2.0,  # 200% — Phase 4 cannot bind on a long-only equity book
+        drawdown_penalty=1.5,
+        drawdown_floor=0.5,
+    )
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "HI1": _diverging_history(120, daily_vol=0.05, seed=1),
+        "HI2": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    result_no_dd = alloc.allocate(["HI1", "HI2"], prices, current_drawdown=0.0)
+    result_dd = alloc.allocate(["HI1", "HI2"], prices, current_drawdown=0.20)
+    sum_no_dd = sum(result_no_dd.targets.values())
+    sum_dd = sum(result_dd.targets.values())
+    assert math.isclose(sum_dd, sum_no_dd * 0.70, rel_tol=1e-6)
+
+
+def test_phase_0_phase_4_both_reduce_only() -> None:
+    """Sum with both phases enabled <= sum with neither. Both are reduce-only."""
+    base_risk = RiskConfig(weighting="equal")
+    full_risk = RiskConfig(
+        weighting="equal",
+        vol_lookback_days=60,
+        vol_target=0.10,
+        drawdown_penalty=1.5,
+        drawdown_floor=0.5,
+    )
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    base = _build_allocator(risk_config=base_risk, constraints=constraints)
+    full = _build_allocator(risk_config=full_risk, constraints=constraints)
+    prices = {
+        "HI1": _diverging_history(120, daily_vol=0.05, seed=1),
+        "HI2": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    base_sum = sum(base.allocate(["HI1", "HI2"], prices, current_drawdown=0.20).targets.values())
+    full_sum = sum(full.allocate(["HI1", "HI2"], prices, current_drawdown=0.20).targets.values())
+    assert full_sum <= base_sum + 1e-9
