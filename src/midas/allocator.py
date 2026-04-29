@@ -22,6 +22,7 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
+from midas.risk import apply_drawdown_overlay
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -152,7 +153,20 @@ class Allocator:
         if num_tickers == 0:
             return AllocationResult({}, {}, {})
 
-        investable = 1.0 - self._constraints.min_cash_pct
+        # Phase 0: CPPI drawdown overlay (no-op if not configured).
+        exposure_scale = 1.0
+        if (
+            self._risk_config is not None
+            and self._risk_config.drawdown_penalty is not None
+            and self._risk_config.drawdown_floor is not None
+        ):
+            exposure_scale = apply_drawdown_overlay(
+                current_drawdown=current_drawdown,
+                penalty=self._risk_config.drawdown_penalty,
+                floor=self._risk_config.drawdown_floor,
+            )
+
+        investable = (1.0 - self._constraints.min_cash_pct) * exposure_scale
         base_weight = investable / num_tickers  # fallback when current_weights unknown
         temperature = self._constraints.softmax_temperature
 
