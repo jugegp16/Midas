@@ -11,6 +11,9 @@ DEFAULT_MIN_BUY_DELTA = 0.02
 DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
 DEFAULT_ENTRY_WEIGHT = 1
+DEFAULT_VOL_LOOKBACK_DAYS = 60
+DEFAULT_VOL_FLOOR = 0.005
+WEIGHTING_OPTIONS: frozenset[str] = frozenset({"equal", "inverse_vol"})
 
 FREQUENCY_DAYS: dict[str, int] = {
     "weekly": 7,
@@ -139,3 +142,35 @@ class StrategyConfig:
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None
     weight: float = DEFAULT_ENTRY_WEIGHT
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    """Optional risk-discipline policy. Defaults reduce the engine to current behavior.
+
+    weighting:         "equal" (current softmax) or "inverse_vol" (score offset of -log(vol)).
+    vol_lookback_days: rolling window for vol and covariance estimates.
+    vol_target:        annualized portfolio vol cap; None disables Phase 4 vol scaling.
+    drawdown_penalty/floor: CPPI overlay; both required, both must be set or both None.
+    """
+
+    weighting: str = "equal"
+    vol_lookback_days: int = DEFAULT_VOL_LOOKBACK_DAYS
+    vol_target: float | None = None
+    drawdown_penalty: float | None = None
+    drawdown_floor: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate weighting option and drawdown parameter pairing.
+
+        Raises:
+            ValueError: If weighting is not a recognised option, or if exactly
+                one of drawdown_penalty/drawdown_floor is provided.
+        """
+        if self.weighting not in WEIGHTING_OPTIONS:
+            msg = f"weighting must be one of {sorted(WEIGHTING_OPTIONS)}, got {self.weighting!r}"
+            raise ValueError(msg)
+        if (self.drawdown_penalty is None) != (self.drawdown_floor is None):
+            missing = "drawdown_floor" if self.drawdown_penalty is not None else "drawdown_penalty"
+            msg = f"drawdown_penalty and drawdown_floor must both be set or both omitted; missing {missing}"
+            raise ValueError(msg)
