@@ -141,6 +141,9 @@ class _SimState:
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    # Running peak portfolio value, updated each bar. Read by the allocator's
+    # CPPI overlay to compute the bar's current_drawdown.
+    peak_value: float = 0.0
     # Decision made at the previous decision day, waiting to execute on
     # the current bar under ``execution_mode="next_open"|"next_close"``.
     # Always ``None`` under legacy ``execution_mode="close"``.
@@ -376,6 +379,7 @@ class BacktestEngine:
             lot.shares * lot.cost_basis for lots in state.lots.values() for lot in lots
         )
         state.twr_base_value = state.starting_value
+        state.peak_value = state.starting_value
         return state
 
     def _find_deferred(
@@ -448,7 +452,10 @@ class BacktestEngine:
 
             self._run_day(state, portfolio, current_data, day)
 
-            state.equity_curve.append((day, state.portfolio_value(_close_prices(current_data))))
+            value = state.portfolio_value(_close_prices(current_data))
+            state.equity_curve.append((day, value))
+            if value > state.peak_value:
+                state.peak_value = value
 
     def _activate_deferred(
         self,
@@ -605,10 +612,18 @@ class BacktestEngine:
         )
 
         # Phase 1: allocator scores entry signals and blends to target weights.
+        # current_drawdown feeds the optional CPPI overlay (Phase 0); when the
+        # overlay is disabled the allocator ignores this argument.
+        current_drawdown = (
+            (state.peak_value - total_value) / state.peak_value
+            if state.peak_value > 0 and total_value < state.peak_value
+            else 0.0
+        )
         allocation = self._allocator.allocate(
             active_tickers,
             current_data,
             current_weights=current_weights,
+            current_drawdown=current_drawdown,
         )
 
         # Phase 2: exit rules clamp targets downward (LEAN pattern). Each
