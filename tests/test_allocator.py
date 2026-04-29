@@ -7,7 +7,7 @@ from conftest import ph
 
 from midas.allocator import Allocator
 from midas.data.price_history import PriceHistory
-from midas.models import AllocationConstraints
+from midas.models import AllocationConstraints, RiskConfig
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
 
@@ -207,3 +207,38 @@ class TestAllocator:
         # redistribution loop runs twice.
         assert abs(result.targets["A"] - 0.35) < 1e-9
         assert abs(result.targets["B"] - 0.35) < 1e-9
+
+
+class TestAllocatorRiskConfigPlumbing:
+    """Threading-only tests. RiskConfig is wired through but the allocator
+    behaviour with the default config must match the no-config baseline.
+    """
+
+    def test_default_risk_config_matches_no_config(self) -> None:
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.50)
+        prices = {"A": _prices([100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 85.0]), "B": _prices([100.0] * 7)}
+
+        baseline = Allocator([(mr, 1.0)], constraints, n_tickers=2)
+        with_default_risk = Allocator([(mr, 1.0)], constraints, n_tickers=2, risk_config=RiskConfig())
+
+        r1 = baseline.allocate(["A", "B"], prices)
+        r2 = with_default_risk.allocate(["A", "B"], prices)
+        assert r1.targets == r2.targets
+        assert r1.blended_scores == r2.blended_scores
+
+    def test_risk_config_property_round_trips(self) -> None:
+        mr = MeanReversion(window=5, threshold=0.01)
+        constraints = AllocationConstraints()
+        risk = RiskConfig(weighting="inverse_vol", vol_target=0.20)
+        allocator = Allocator([(mr, 1.0)], constraints, n_tickers=2, risk_config=risk)
+        assert allocator.risk_config is risk
+
+    def test_current_drawdown_kwarg_accepted(self) -> None:
+        # Phase 0 implementation lands later; for now this just guards the API.
+        mr = MeanReversion(window=5, threshold=0.01)
+        allocator = Allocator([(mr, 1.0)], AllocationConstraints(), n_tickers=2)
+        prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}
+        result = allocator.allocate(["A", "B"], prices, current_drawdown=0.20)
+        # Without a configured CPPI overlay, current_drawdown is a no-op.
+        assert sum(result.targets.values()) > 0

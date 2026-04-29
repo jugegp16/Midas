@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from midas.data.price_history import PriceHistory
-from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
+from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -61,10 +61,12 @@ class Allocator:
         entries: list[tuple[EntrySignal, float]],
         constraints: AllocationConstraints,
         n_tickers: int,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         self._entries: list[_ScoredEntry] = [_ScoredEntry(strat, wt) for strat, wt in entries]
         self._constraints = constraints
         self._n_tickers = n_tickers
+        self._risk_config = risk_config
         self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
 
         # Auto-compute max_position_pct if not set.
@@ -94,6 +96,10 @@ class Allocator:
     def strategies(self) -> list[EntrySignal]:
         return [entry.strategy for entry in self._entries]
 
+    @property
+    def risk_config(self) -> RiskConfig | None:
+        return self._risk_config
+
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
         """Precompute entry-signal scores for all tickers over the full price arrays."""
         self._signal_cache = {}
@@ -120,6 +126,7 @@ class Allocator:
         price_data: dict[str, PriceHistory],
         context: dict[str, dict[str, Any]] | None = None,
         current_weights: dict[str, float] | None = None,
+        current_drawdown: float = 0.0,
     ) -> AllocationResult:
         """Compute target weights for all tickers.
 
@@ -131,6 +138,9 @@ class Allocator:
                 signal scores a ticker, the allocator holds the current weight
                 instead of reverting to equal-weight (Option A: neutral = hold).
                 If omitted, falls back to equal-weight base.
+            current_drawdown: Positive fraction (e.g. ``0.20`` for 20% drawdown
+                from running peak), used by the optional CPPI overlay. Default
+                ``0.0`` is a no-op when the overlay is disabled.
 
         Returns:
             AllocationResult with target weights, per-ticker contributions,
