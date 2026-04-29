@@ -305,3 +305,66 @@ def test_phase_0_phase_4_both_reduce_only() -> None:
     base_sum = sum(base.allocate(["HI1", "HI2"], prices, current_drawdown=0.20).targets.values())
     full_sum = sum(full.allocate(["HI1", "HI2"], prices, current_drawdown=0.20).targets.values())
     assert full_sum <= base_sum + 1e-9
+
+
+def test_phase_4_single_active_ticker_n_eq_1() -> None:
+    """Spec line 124: Phase 4 fires for any N >= 1; a 1x1 covariance is well-defined."""
+    risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints, n_tickers=1)
+    prices = {"SOLO": _diverging_history(120, daily_vol=0.05, seed=1)}
+    result = alloc.allocate(["SOLO"], prices)
+    investable = 1.0 - 0.05
+    # High-vol single-asset portfolio with tight target → vol target binds.
+    assert result.targets["SOLO"] < investable * 0.5
+
+
+def test_phase_4_held_positions_pass_through_unchanged() -> None:
+    """Spec line 122: held tickers' weights are not scaled when Phase 4 binds."""
+    risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = Allocator(
+        [(_ConstantScore(0.0), 1.0)],  # scores 0 → all tickers HELD via Option A
+        constraints,
+        n_tickers=2,
+        risk_config=risk,
+    )
+    prices = {
+        "H1": _diverging_history(120, daily_vol=0.05, seed=1),
+        "H2": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    current = {"H1": 0.30, "H2": 0.20}
+    result = alloc.allocate(["H1", "H2"], prices, current_weights=current)
+    # Held weights pass through unchanged; Phase 4 sees no active and is a no-op.
+    assert math.isclose(result.targets["H1"], 0.30, abs_tol=1e-9)
+    assert math.isclose(result.targets["H2"], 0.20, abs_tol=1e-9)
+
+
+def test_all_active_tickers_hit_inverse_vol_fallback_holds_all() -> None:
+    """Spec line 108: every active hits Phase 2 fallback → all held; Phase 4 skipped; no crash."""
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60, vol_target=0.10)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    # Both tickers have insufficient history → fall back to Option A.
+    prices = {
+        "S1": _diverging_history(30, daily_vol=0.05, seed=1),
+        "S2": _diverging_history(30, daily_vol=0.05, seed=2),
+    }
+    current = {"S1": 0.20, "S2": 0.10}
+    result = alloc.allocate(["S1", "S2"], prices, current_weights=current)
+    assert math.isclose(result.targets["S1"], 0.20, abs_tol=1e-9)
+    assert math.isclose(result.targets["S2"], 0.10, abs_tol=1e-9)
+
+
+def test_phase_0_min_cash_pct_compose_multiplicatively() -> None:
+    """Spec line 90: investable = (1 - min_cash_pct) * exposure_scale, never the
+    other way. With min_cash_pct=0.05 + drawdown_floor=0.5 + 50% DD, investable
+    is 0.95 * 0.5 = 0.475, not 0.5 - 0.05 = 0.45.
+    """
+    risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {"A": _flat_history(60), "B": _flat_history(60)}
+    result = alloc.allocate(["A", "B"], prices, current_drawdown=0.50)
+    expected_investable = (1.0 - 0.05) * 0.50  # = 0.475
+    assert math.isclose(sum(result.targets.values()), expected_investable, abs_tol=1e-6)

@@ -126,6 +126,12 @@ class TestApplyDrawdownOverlay:
         scale = apply_drawdown_overlay(current_drawdown=0.30, penalty=0.0, floor=0.5)
         assert scale == 1.0
 
+    def test_negative_drawdown_clamps_at_one(self) -> None:
+        # Defensive: a negative current_drawdown can only result from a driver
+        # bug. Spec demands exposure_scale saturate at 1.0, never above.
+        scale = apply_drawdown_overlay(current_drawdown=-0.10, penalty=1.5, floor=0.5)
+        assert scale == 1.0
+
 
 class TestInverseVolOffset:
     def test_offset_is_negative_log_vol(self) -> None:
@@ -133,9 +139,19 @@ class TestInverseVolOffset:
         assert math.isclose(inverse_vol_offset(0.50, vol_floor=DEFAULT_VOL_FLOOR), -math.log(0.50))
 
     def test_floor_clamps_low_vols(self) -> None:
+        # Floor is a log(0) guard well below any realistic annualized vol;
+        # use an explicit floor parameter to exercise the clamp behavior.
         assert math.isclose(
-            inverse_vol_offset(0.001, vol_floor=DEFAULT_VOL_FLOOR),
-            -math.log(DEFAULT_VOL_FLOOR),
+            inverse_vol_offset(0.001, vol_floor=0.005),
+            -math.log(0.005),
+        )
+
+    def test_default_floor_does_not_bind_for_normal_vols(self) -> None:
+        # A 0.5% annualized vol is unusually quiet but realistic for some
+        # ETFs; the default floor must not bind there.
+        assert math.isclose(
+            inverse_vol_offset(0.005, vol_floor=DEFAULT_VOL_FLOOR),
+            -math.log(0.005),
         )
 
     def test_zero_vol_returns_nan(self) -> None:

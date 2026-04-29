@@ -1086,6 +1086,18 @@ class BacktestEngine:
                 unrealized_pnl_by_ticker[ticker] = round(ticker_pnl, 2)
         unrealized_pnl = sum(unrealized_pnl_by_ticker.values())
 
+        # Per-strategy attribution covers realised P&L from sells. At end-of-run,
+        # split each ticker's unrealised P&L into the same per-strategy buckets
+        # by current attribution shares so the final RiskMetrics.per_strategy_pnl
+        # reflects total attributed P&L (realised + unrealised), per spec line 183.
+        attributed_strategy_pnl = dict(state.cumulative_strategy_pnl)
+        for ticker, ticker_unrealized in unrealized_pnl_by_ticker.items():
+            attr = state.attribution.get(ticker)
+            if not attr:
+                continue
+            for strat, share in attr.items():
+                attributed_strategy_pnl[strat] = attributed_strategy_pnl.get(strat, 0.0) + ticker_unrealized * share
+
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
@@ -1119,6 +1131,6 @@ class BacktestEngine:
             risk_metrics=compute_risk_metrics(
                 equity_curve=equity_curve,
                 vol_target=(self._allocator.risk_config.vol_target if self._allocator.risk_config else None),
-                per_strategy_pnl=dict(state.cumulative_strategy_pnl),
+                per_strategy_pnl=attributed_strategy_pnl,
             ),
         )

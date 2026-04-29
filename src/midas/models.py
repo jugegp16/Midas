@@ -12,7 +12,9 @@ DEFAULT_SOFTMAX_TEMPERATURE = 0.5
 DEFAULT_MAX_POSITION_PCT = 0.25
 DEFAULT_ENTRY_WEIGHT = 1
 DEFAULT_VOL_LOOKBACK_DAYS = 60
-DEFAULT_VOL_FLOOR = 0.005
+# Numerical log(0) guard for inverse-vol scoring. Set well below any realistic
+# annualized vol so the floor never binds for assets with normal price activity.
+DEFAULT_VOL_FLOOR = 1e-8
 WEIGHTING_OPTIONS: frozenset[str] = frozenset({"equal", "inverse_vol"})
 
 FREQUENCY_DAYS: dict[str, int] = {

@@ -76,18 +76,22 @@ def predict_portfolio_vol(weights: np.ndarray, log_returns: np.ndarray) -> float
 
 
 def apply_drawdown_overlay(current_drawdown: float, penalty: float, floor: float) -> float:
-    """CPPI-style exposure scaler: ``max(1 - penalty * dd, floor)``.
+    """CPPI-style exposure scaler clamped to ``[floor, 1.0]``.
 
     Args:
-        current_drawdown: positive fraction (e.g. ``0.20`` for 20% drawdown
-            from the running peak).
+        current_drawdown: non-negative fraction (e.g. ``0.20`` for 20% drawdown
+            from the running peak). The driver is responsible for never passing
+            a negative value; this function additionally clamps the output at
+            ``1.0`` to defend against future drift in that contract — a negative
+            ``current_drawdown`` saturates ``exposure_scale`` at ``1.0``, never
+            above.
         penalty: how aggressively to de-risk per unit of drawdown.
         floor: minimum exposure scale; never reduce below this.
 
     Returns:
         Scalar in ``[floor, 1.0]`` to multiply the gross investable budget by.
     """
-    return max(1.0 - penalty * current_drawdown, floor)
+    return min(max(1.0 - penalty * current_drawdown, floor), 1.0)
 
 
 def inverse_vol_offset(vol: float, vol_floor: float) -> float:
