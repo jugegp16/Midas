@@ -21,8 +21,8 @@ from typing import Any
 import numpy as np
 
 from midas.data.price_history import PriceHistory
-from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints, RiskConfig
-from midas.risk import apply_drawdown_overlay
+from midas.models import DEFAULT_MAX_POSITION_PCT, DEFAULT_VOL_FLOOR, AllocationConstraints, RiskConfig
+from midas.risk import apply_drawdown_overlay, inverse_vol_offset, realized_vol
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -220,6 +220,28 @@ class Allocator:
                 return base_weight
             return cur_weights.get(ticker, 0.0)
 
+        # Phase 2 prep: when ``weighting=inverse_vol``, compute per-ticker
+        # ``-log(vol)`` offsets and reclassify tickers with insufficient or
+        # zero vol as held (Option A). Offsets are added *outside* the /T
+        # divider in _softmax_allocate, so inverse-vol intensity is invariant
+        # to softmax_temperature (PR #63 used (1/vol)^(1/T) and was rejected).
+        offsets: dict[str, float] = {}
+        if self._risk_config is not None and self._risk_config.weighting == "inverse_vol" and active:
+            still_active: list[str] = []
+            for ticker in active:
+                history = price_data.get(ticker)
+                if history is None or len(history) < self._risk_config.vol_lookback_days + 1:
+                    held.append(ticker)
+                    continue
+                vol = realized_vol(np.asarray(history.close), self._risk_config.vol_lookback_days)
+                offset = inverse_vol_offset(vol, vol_floor=DEFAULT_VOL_FLOOR)
+                if math.isnan(offset):
+                    held.append(ticker)
+                    continue
+                offsets[ticker] = offset
+                still_active.append(ticker)
+            active = still_active
+
         held_total = 0.0
         for ticker in held:
             weight = _held_target(ticker)
@@ -229,13 +251,13 @@ class Allocator:
         budget_for_active = max(investable - held_total, 0.0)
 
         # Phase 2: Softmax construct-to-budget over active tickers.
-        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
+        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
         # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
         # max_position_pct and re-softmax the survivors over the reduced
         # remaining budget. Cap *never* forces a sell — it just refuses to
         # allocate more budget. Sells are exclusively ExitRule territory.
-        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets)
+        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
         return AllocationResult(targets, contributions, blended_scores)
 
@@ -246,22 +268,33 @@ class Allocator:
         budget: float,
         temperature: float,
         targets: dict[str, float],
+        offsets: dict[str, float] | None = None,
     ) -> None:
-        """Distribute `budget` across `tickers` via softmax(blended_scores / T).
+        """Distribute `budget` across `tickers` via softmax(blended/T + offset).
+
+        Without offsets, this is the standard softmax: ``exp(score/T)``.
+        With offsets (e.g. inverse-vol ``-log(vol)``), each ticker's exponent
+        becomes ``score/T + offset``. The offset is *outside* the /T divider
+        so its relative impact is invariant to ``temperature``.
 
         Temperature semantics:
-            T → 0   winner-take-all (budget to the argmax ticker)
-            T = 1   standard softmax over raw scores
-            T → ∞   uniform split regardless of conviction
+            T → 0   winner-take-all on (score + T * offset) — at very low T
+                    the score term dominates the offset.
+            T = 1   standard softmax over (score + offset).
+            T → ∞   weights ∝ exp(offset), pure offset-driven (e.g. pure
+                    inverse-vol regardless of conviction).
         """
         if not tickers or budget <= 0:
             for ticker in tickers:
                 targets[ticker] = 0.0
             return
         temp_safe = max(temperature, MIN_TEMPERATURE)
-        # Subtract max for numerical stability — softmax is translation-invariant.
-        max_score = max(blended_scores[ticker] for ticker in tickers)
-        exps = {ticker: math.exp((blended_scores[ticker] - max_score) / temp_safe) for ticker in tickers}
+        offsets = offsets or {}
+        # Subtract max-exponent for numerical stability — softmax is
+        # translation-invariant in the exponent.
+        exponents = {ticker: blended_scores[ticker] / temp_safe + offsets.get(ticker, 0.0) for ticker in tickers}
+        max_exp = max(exponents.values())
+        exps = {ticker: math.exp(exponents[ticker] - max_exp) for ticker in tickers}
         total_exp = sum(exps.values())
         for ticker in tickers:
             targets[ticker] = budget * exps[ticker] / total_exp
@@ -273,6 +306,7 @@ class Allocator:
         initial_budget: float,
         temperature: float,
         targets: dict[str, float],
+        offsets: dict[str, float] | None = None,
     ) -> None:
         """Clamp targets exceeding max_position_pct; re-softmax the survivors.
 
@@ -299,4 +333,4 @@ class Allocator:
                 for ticker in survivors:
                     targets[ticker] = 0.0
                 return
-            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)
+            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets, offsets)

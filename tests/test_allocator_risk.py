@@ -109,3 +109,99 @@ def test_phase_0_ignored_when_overlay_disabled() -> None:
     result = alloc.allocate(["A", "B"], prices, current_drawdown=0.50)
     investable = 1.0 - 0.05
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: inverse-vol score offset (T-independence is the PR #63 regression)
+# ---------------------------------------------------------------------------
+
+
+def test_inverse_vol_high_vol_gets_less_weight() -> None:
+    """10x vol gap at identical scores → ~10x weight ratio in favour of low-vol."""
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60)
+    # max_position_pct must be high enough that the soft cap doesn't bind and
+    # mask the inverse-vol effect (LO would otherwise get ~95% of the budget).
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "LO": _diverging_history(120, daily_vol=0.005, seed=1),
+        "HI": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    result = alloc.allocate(["LO", "HI"], prices)
+    ratio = result.targets["LO"] / max(result.targets["HI"], 1e-12)
+    assert 7.0 < ratio < 13.0
+
+
+def test_inverse_vol_t_independence() -> None:
+    """The offset is added *outside* /T, so the inverse-vol weight ratio at
+    identical scores is invariant to softmax_temperature.
+
+    Regression for PR #63 — that bug used (1/vol)^(1/T), which would produce
+    wildly different ratios at T=0.2 vs T=2.0 (~32:1 vs ~1.4:1 instead of ~10:1).
+    """
+    prices = {
+        "LO": _diverging_history(120, daily_vol=0.005, seed=1),
+        "HI": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+
+    def ratio_at_t(temperature: float) -> float:
+        constraints = AllocationConstraints(
+            min_cash_pct=0.05,
+            softmax_temperature=temperature,
+            max_position_pct=0.95,
+        )
+        alloc = _build_allocator(
+            risk_config=RiskConfig(weighting="inverse_vol", vol_lookback_days=60),
+            constraints=constraints,
+        )
+        result = alloc.allocate(["LO", "HI"], prices)
+        return result.targets["LO"] / max(result.targets["HI"], 1e-12)
+
+    r_cold = ratio_at_t(0.2)
+    r_hot = ratio_at_t(2.0)
+    # Identical scores → score term cancels at any T → ratio comes from the
+    # offset alone, which is T-independent.
+    assert math.isclose(r_cold, r_hot, rel_tol=0.10)
+
+
+def test_equal_weighting_unaffected_by_vol() -> None:
+    """Default weighting='equal' ignores vol entirely."""
+    alloc = _build_allocator(risk_config=RiskConfig())
+    prices = {
+        "LO": _diverging_history(120, daily_vol=0.005, seed=1),
+        "HI": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    result = alloc.allocate(["LO", "HI"], prices)
+    # Equal scores + equal weighting → equal targets.
+    assert math.isclose(result.targets["LO"], result.targets["HI"], rel_tol=1e-9)
+
+
+def test_inverse_vol_falls_back_when_vol_is_zero() -> None:
+    """A constant-price ticker has zero realized vol → falls back to Option A (held)."""
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "FLAT": _flat_history(120),
+        "HI": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    current = {"FLAT": 0.10, "HI": 0.0}
+    result = alloc.allocate(["FLAT", "HI"], prices, current_weights=current)
+    # FLAT held at its current weight; HI consumes the active budget.
+    assert math.isclose(result.targets["FLAT"], 0.10, abs_tol=1e-9)
+    investable = 1.0 - 0.05
+    assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
+
+
+def test_inverse_vol_insufficient_history_falls_back() -> None:
+    """Tickers with fewer than vol_lookback_days+1 bars fall back to held."""
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60)
+    constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
+    alloc = _build_allocator(risk_config=risk, constraints=constraints)
+    prices = {
+        "SHORT": _diverging_history(30, daily_vol=0.05, seed=1),  # < lookback+1
+        "FULL": _diverging_history(120, daily_vol=0.05, seed=2),
+    }
+    current = {"SHORT": 0.10, "FULL": 0.0}
+    result = alloc.allocate(["SHORT", "FULL"], prices, current_weights=current)
+    assert math.isclose(result.targets["SHORT"], 0.10, abs_tol=1e-9)
