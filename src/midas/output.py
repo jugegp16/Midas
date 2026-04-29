@@ -200,7 +200,23 @@ def print_backtest_summary(result: BacktestResult) -> None:
     risk_table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
     risk_table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
     risk_table.add_row("Sortino Ratio", color_signed(result.sortino_ratio, fmt=".2f"))
+    if result.risk_metrics is not None:
+        risk_table.add_row("Realized Vol (60d)", f"{result.risk_metrics.realized_vol_60d:.2%}")
+        if result.risk_metrics.vol_target is not None:
+            risk_table.add_row("Vol Target", f"{result.risk_metrics.vol_target:.2%}")
+        risk_table.add_row("Drawdown From Peak", f"[red]{result.risk_metrics.drawdown_from_peak:.2%}[/red]")
+        risk_table.add_row("Rolling Sharpe (252d)", color_signed(result.risk_metrics.rolling_sharpe_252d, fmt=".2f"))
     print_centered(risk_table)
+
+    # --- Per-Strategy P&L Attribution ---
+    if result.risk_metrics is not None and result.risk_metrics.per_strategy_pnl:
+        attr_table = make_metric_table("Per-Strategy P&L Attribution")
+        for strat, pnl in sorted(
+            result.risk_metrics.per_strategy_pnl.items(),
+            key=lambda kv: -kv[1],
+        ):
+            attr_table.add_row(strat, f"${pnl:+,.2f}")
+        print_centered(attr_table)
 
     # --- Trade Quality ---
     if any(trade.direction == Direction.SELL for trade in result.trades):

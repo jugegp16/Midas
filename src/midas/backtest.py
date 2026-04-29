@@ -34,6 +34,7 @@ from midas.models import (
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
 from midas.results import BacktestResult
+from midas.risk_metrics import compute_risk_metrics
 from midas.strategies.base import ExitRule, max_warmup
 
 # ---------------------------------------------------------------------------
@@ -1115,4 +1116,9 @@ class BacktestEngine:
             unrealized_pnl=round(unrealized_pnl, 2),
             unrealized_pnl_by_ticker=unrealized_pnl_by_ticker,
             basis_per_sell=state.basis_per_sell,
+            risk_metrics=compute_risk_metrics(
+                equity_curve=equity_curve,
+                vol_target=(self._allocator.risk_config.vol_target if self._allocator.risk_config else None),
+                per_strategy_pnl=dict(state.cumulative_strategy_pnl),
+            ),
         )
