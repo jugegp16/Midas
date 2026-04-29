@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from midas.risk import realized_vol
+from midas.risk import covariance_matrix, realized_vol
 
 
 class TestRealizedVol:
@@ -33,3 +33,35 @@ class TestRealizedVol:
         prices = np.array([100.0, 101.0])
         # Lookback bigger than available history → 0 (caller must check).
         assert realized_vol(prices, lookback=60) == 0.0
+
+
+class TestCovarianceMatrix:
+    def test_shape_and_symmetry(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(252, 3))
+        cov = covariance_matrix(log_returns)
+        assert cov.shape == (3, 3)
+        np.testing.assert_allclose(cov, cov.T, atol=1e-12)
+
+    def test_positive_semidefinite(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(252, 4))
+        cov = covariance_matrix(log_returns)
+        eigenvalues = np.linalg.eigvalsh(cov)
+        assert (eigenvalues >= -1e-12).all()
+
+    def test_diagonal_dominant_for_independent_series(self) -> None:
+        rng = np.random.default_rng(0)
+        n = 5_000
+        log_returns = np.column_stack(
+            [
+                rng.normal(0, 0.005, n),
+                rng.normal(0, 0.01, n),
+                rng.normal(0, 0.02, n),
+            ],
+        )
+        cov = covariance_matrix(log_returns)
+        # Diagonal scales with per-series vol; off-diagonals stay small.
+        assert cov[0, 0] < cov[1, 1] < cov[2, 2]
+        assert abs(cov[0, 1]) < cov[0, 0]
+        assert abs(cov[0, 2]) < cov[0, 0]

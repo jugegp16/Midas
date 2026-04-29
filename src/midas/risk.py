@@ -12,6 +12,7 @@ never escape this module.
 from __future__ import annotations
 
 import numpy as np
+from sklearn.covariance import LedoitWolf  # type: ignore[import-untyped]
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -37,3 +38,18 @@ def realized_vol(prices: np.ndarray, lookback: int) -> float:
     if log_returns.size < 2:
         return 0.0
     return float(np.std(log_returns, ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR))
+
+
+def covariance_matrix(log_returns: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf-shrunk covariance of daily log returns.
+
+    Args:
+        log_returns: shape ``(n_bars, n_tickers)``. Each column is one ticker's
+            daily log-return series over a common window.
+
+    Returns:
+        ``(n_tickers, n_tickers)`` shrunk covariance matrix in daily units.
+        Annualize at the call site if needed.
+    """
+    estimator = LedoitWolf().fit(log_returns)
+    return np.asarray(estimator.covariance_)
