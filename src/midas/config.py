@@ -12,10 +12,12 @@ from midas.models import (
     DEFAULT_MIN_BUY_DELTA,
     DEFAULT_MIN_CASH_PCT,
     DEFAULT_SOFTMAX_TEMPERATURE,
+    DEFAULT_VOL_LOOKBACK_DAYS,
     AllocationConstraints,
     CashInfusion,
     Holding,
     PortfolioConfig,
+    RiskConfig,
     StrategyConfig,
     TradingRestrictions,
 )
@@ -76,12 +78,11 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
 def load_strategies(
     path: Path,
-) -> tuple[list[StrategyConfig], AllocationConstraints]:
-    """Load strategy configs and allocation-level knobs from YAML.
+) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
+    """Load strategy configs, allocation knobs, and optional risk policy from YAML.
 
-    Returns (strategies, constraints) tuple. ``softmax_temperature`` and
-    ``min_buy_delta`` live at the top level of the strategies file because
-    they are meta-strategy knobs (how scores are blended/acted on).
+    Returns (strategies, constraints, risk_config). The risk block is optional;
+    omitting it yields a default ``RiskConfig`` (all features off, current behavior).
     """
     raw = _load_yaml(path)
 
@@ -107,4 +108,16 @@ def load_strategies(
             raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
     )
-    return configs, constraints
+
+    risk_raw = raw.get("risk") or {}
+    risk = RiskConfig(
+        weighting=str(risk_raw.get("weighting", "equal")),
+        vol_lookback_days=int(risk_raw.get("vol_lookback_days", DEFAULT_VOL_LOOKBACK_DAYS)),
+        vol_target=float(risk_raw["vol_target"]) if risk_raw.get("vol_target") is not None else None,
+        drawdown_penalty=(
+            float(risk_raw["drawdown_penalty"]) if risk_raw.get("drawdown_penalty") is not None else None
+        ),
+        drawdown_floor=(float(risk_raw["drawdown_floor"]) if risk_raw.get("drawdown_floor") is not None else None),
+    )
+
+    return configs, constraints, risk
