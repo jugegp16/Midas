@@ -78,6 +78,20 @@ class LiveEngine:
                 "your live config or wait for per-lot HWM persistence."
             )
 
+        # CPPI overlay also depends on a persistent peak across runs. Live
+        # mode is stateless across ticks (re-derives from YAML each cycle),
+        # so the CPPI overlay is inert in live v1. Warn at startup so
+        # operators know backtests with drawdown_penalty configured will
+        # diverge from live behavior during drawdown periods.
+        risk_config = getattr(self._allocator, "risk_config", None)
+        if risk_config is not None and risk_config.drawdown_penalty is not None:
+            logger.warning(
+                "drawdown_penalty is configured but live mode does not yet "
+                "track a persistent peak across runs — the CPPI overlay is "
+                "inert in live and behavior will diverge from backtest. "
+                "Peak persistence is tracked for v2."
+            )
+
     def run(self) -> None:
         tickers = [holding.ticker for holding in self._portfolio.holdings]
         print_status(
