@@ -144,6 +144,13 @@ class _SimState:
     # Running peak portfolio value, updated each bar. Read by the allocator's
     # CPPI overlay to compute the bar's current_drawdown.
     peak_value: float = 0.0
+    # Per-ticker cost-basis-weighted attribution: {ticker: {strategy: share}}.
+    # Shares sum to 1.0 per ticker. Updated on buy as a basis-weighted blend
+    # of the prior dict and the order's contributions; consumed on sell to
+    # split realized P&L into per-strategy buckets. Reset on full exit.
+    attribution: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Cumulative attributed realised P&L by strategy. Surfaced via RiskMetrics.
+    cumulative_strategy_pnl: dict[str, float] = field(default_factory=dict)
     # Decision made at the previous decision day, waiting to execute on
     # the current bar under ``execution_mode="next_open"|"next_close"``.
     # Always ``None`` under legacy ``execution_mode="close"``.
@@ -167,6 +174,51 @@ class _SimState:
 def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
     """Latest close price for every ticker in *current_data*."""
     return {ticker: float(current_data[ticker].close[-1]) for ticker in current_data}
+
+
+def _ticker_basis(state: _SimState, ticker: str) -> float:
+    """Aggregate cost basis for *ticker* — sum of (shares * cost_basis) across open lots."""
+    return sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
+
+
+def _update_buy_attribution(state: _SimState, ticker: str, order: Order) -> None:
+    """Blend the order's contributions into the ticker's running attribution dict.
+
+    The blend is cost-basis-weighted: prior attribution gets weight
+    ``prior_basis / new_basis``; the new order's contributions get
+    ``buy_size / new_basis``. The resulting dict is renormalised to sum to 1.
+
+    The typical case (a single strategy entering, optionally adding) is exact;
+    accuracy degrades gracefully when many strategies contribute over many bars
+    (spec §"Risk Telemetry").
+    """
+    contributions = order.context.contributions
+    if not contributions:
+        return
+    buy_size = order.shares * order.price
+    if buy_size <= 0:
+        return
+    # Prior basis = sum of all open lots EXCLUDING the buy we just appended.
+    prior_basis = max(_ticker_basis(state, ticker) - buy_size, 0.0)
+    new_basis = prior_basis + buy_size
+    if new_basis <= 0:
+        return
+    prior = state.attribution.get(ticker, {})
+    blended: dict[str, float] = {strat: share * (prior_basis / new_basis) for strat, share in prior.items()}
+    for strat, contrib in contributions.items():
+        blended[strat] = blended.get(strat, 0.0) + contrib * (buy_size / new_basis)
+    total = sum(blended.values())
+    if total > 0:
+        state.attribution[ticker] = {strat: share / total for strat, share in blended.items()}
+
+
+def _split_pnl_by_attribution(state: _SimState, ticker: str, realized_pnl: float) -> None:
+    """Add *realized_pnl* into ``state.cumulative_strategy_pnl`` split by current attribution."""
+    attr = state.attribution.get(ticker)
+    if not attr:
+        return
+    for strat, share in attr.items():
+        state.cumulative_strategy_pnl[strat] = state.cumulative_strategy_pnl.get(strat, 0.0) + realized_pnl * share
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +879,7 @@ class BacktestEngine:
             state.lots.setdefault(ticker, []).append(
                 PositionLot(shares=order.shares, purchase_date=day, cost_basis=order.price)
             )
+            _update_buy_attribution(state, ticker, order)
             return [
                 (
                     TradeRecord(
@@ -883,12 +936,18 @@ class BacktestEngine:
         )
         state.positions[ticker] = new_position
 
-        # Full exit resets the high-water mark. Otherwise a subsequent
-        # re-entry would inherit the old peak and TrailingStop (or any
-        # future HWM-driven rule) could misfire on day 1 of the new
-        # position against a price that the new lot has never seen.
+        # Split realised P&L into per-strategy buckets via the running
+        # cost-basis-weighted attribution dict for this ticker.
+        total_basis = st_weighted_basis + lt_weighted_basis
+        realized_pnl = order.price * order.shares - total_basis
+        _split_pnl_by_attribution(state, ticker, realized_pnl)
+
+        # Full exit resets the high-water mark and the attribution dict.
+        # Otherwise a subsequent re-entry would inherit stale attribution
+        # shares from the closed position.
         if new_position == 0:
             state.high_water_marks.pop(ticker, None)
+            state.attribution.pop(ticker, None)
 
         records: list[tuple[TradeRecord, float]] = []
         if st_shares > 0:
