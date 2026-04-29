@@ -53,3 +53,51 @@ def covariance_matrix(log_returns: np.ndarray) -> np.ndarray:
     """
     estimator = LedoitWolf().fit(log_returns)
     return np.asarray(estimator.covariance_)
+
+
+def predict_portfolio_vol(weights: np.ndarray, log_returns: np.ndarray) -> float:
+    """Annualized predicted portfolio volatility from weights and log-return history.
+
+    Args:
+        weights: shape ``(n_tickers,)``. Same column order as ``log_returns``.
+        log_returns: shape ``(n_bars, n_tickers)``. Daily log returns over a
+            common window.
+
+    Returns:
+        Annualized stdev of the portfolio's daily returns under the given
+        weights. Returns ``0.0`` when the implied daily variance is non-positive
+        (e.g., zero weights, or pathological covariance).
+    """
+    cov = covariance_matrix(log_returns)
+    daily_var = float(weights @ cov @ weights)
+    if daily_var <= 0:
+        return 0.0
+    return float(np.sqrt(daily_var) * np.sqrt(TRADING_DAYS_PER_YEAR))
+
+
+def apply_drawdown_overlay(current_drawdown: float, penalty: float, floor: float) -> float:
+    """CPPI-style exposure scaler: ``max(1 - penalty * dd, floor)``.
+
+    Args:
+        current_drawdown: positive fraction (e.g. ``0.20`` for 20% drawdown
+            from the running peak).
+        penalty: how aggressively to de-risk per unit of drawdown.
+        floor: minimum exposure scale; never reduce below this.
+
+    Returns:
+        Scalar in ``[floor, 1.0]`` to multiply the gross investable budget by.
+    """
+    return max(1.0 - penalty * current_drawdown, floor)
+
+
+def inverse_vol_offset(vol: float, vol_floor: float) -> float:
+    """Score offset for inverse-vol weighting: ``-log(max(vol, vol_floor))``.
+
+    Returns ``NaN`` when ``vol == 0``: the caller must treat this as
+    "insufficient signal" and fall back (typically Option A: hold the current
+    weight). The floor handles low-but-nonzero vols; literal zero indicates
+    no valid signal at all.
+    """
+    if vol == 0.0:
+        return float("nan")
+    return -float(np.log(max(vol, vol_floor)))

@@ -6,7 +6,14 @@ import math
 
 import numpy as np
 
-from midas.risk import covariance_matrix, realized_vol
+from midas.models import DEFAULT_VOL_FLOOR
+from midas.risk import (
+    apply_drawdown_overlay,
+    covariance_matrix,
+    inverse_vol_offset,
+    predict_portfolio_vol,
+    realized_vol,
+)
 
 
 class TestRealizedVol:
@@ -65,3 +72,72 @@ class TestCovarianceMatrix:
         assert cov[0, 0] < cov[1, 1] < cov[2, 2]
         assert abs(cov[0, 1]) < cov[0, 0]
         assert abs(cov[0, 2]) < cov[0, 0]
+
+
+class TestPredictPortfolioVol:
+    def test_uncorrelated_equal_weight_diversification(self) -> None:
+        # Three independent series, daily stdev 0.01 each → annualized ≈ 0.1587.
+        # Equal weight across 3 → predicted ≈ 0.1587 / sqrt(3) ≈ 0.0916.
+        n = 20_000
+        rng = np.random.default_rng(0)
+        log_returns = np.column_stack(
+            [
+                rng.normal(0, 0.01, n),
+                rng.normal(0, 0.01, n),
+                rng.normal(0, 0.01, n),
+            ],
+        )
+        weights = np.array([1 / 3, 1 / 3, 1 / 3])
+        predicted = predict_portfolio_vol(weights, log_returns)
+        assert math.isclose(predicted, 0.01 * math.sqrt(252) / math.sqrt(3), rel_tol=0.10)
+
+    def test_perfectly_correlated_no_diversification(self) -> None:
+        rng = np.random.default_rng(0)
+        x = rng.normal(0, 0.01, 5_000)
+        log_returns = np.column_stack([x, x])
+        weights = np.array([0.5, 0.5])
+        predicted = predict_portfolio_vol(weights, log_returns)
+        # Same as either ticker's vol — no diversification.
+        assert math.isclose(predicted, 0.01 * math.sqrt(252), rel_tol=0.05)
+
+    def test_zero_weights_yields_zero(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(100, 3))
+        weights = np.array([0.0, 0.0, 0.0])
+        assert predict_portfolio_vol(weights, log_returns) == 0.0
+
+
+class TestApplyDrawdownOverlay:
+    def test_no_drawdown_no_change(self) -> None:
+        scale = apply_drawdown_overlay(current_drawdown=0.0, penalty=1.5, floor=0.5)
+        assert scale == 1.0
+
+    def test_moderate_drawdown(self) -> None:
+        # 20% DD * 1.5 penalty = 0.30 reduction → 0.70 exposure.
+        scale = apply_drawdown_overlay(current_drawdown=0.20, penalty=1.5, floor=0.5)
+        assert math.isclose(scale, 0.70)
+
+    def test_floor_binds_at_deep_drawdown(self) -> None:
+        # 50% DD * 1.5 penalty = 0.75 reduction → 0.25 raw, floored at 0.5.
+        scale = apply_drawdown_overlay(current_drawdown=0.50, penalty=1.5, floor=0.5)
+        assert scale == 0.5
+
+    def test_penalty_zero_disables(self) -> None:
+        scale = apply_drawdown_overlay(current_drawdown=0.30, penalty=0.0, floor=0.5)
+        assert scale == 1.0
+
+
+class TestInverseVolOffset:
+    def test_offset_is_negative_log_vol(self) -> None:
+        assert math.isclose(inverse_vol_offset(0.20, vol_floor=DEFAULT_VOL_FLOOR), -math.log(0.20))
+        assert math.isclose(inverse_vol_offset(0.50, vol_floor=DEFAULT_VOL_FLOOR), -math.log(0.50))
+
+    def test_floor_clamps_low_vols(self) -> None:
+        assert math.isclose(
+            inverse_vol_offset(0.001, vol_floor=DEFAULT_VOL_FLOOR),
+            -math.log(DEFAULT_VOL_FLOOR),
+        )
+
+    def test_zero_vol_returns_nan(self) -> None:
+        # Caller must check; zero indicates insufficient signal.
+        assert math.isnan(inverse_vol_offset(0.0, vol_floor=DEFAULT_VOL_FLOOR))
