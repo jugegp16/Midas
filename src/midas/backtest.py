@@ -11,7 +11,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from midas.allocator import AllocationResult, Allocator
+from midas.allocator import AllocationResult, Allocator, AllocatorRiskTelemetry
 from midas.data.price_history import PriceHistory
 from midas.metrics import (
     compute_annualized_return,
@@ -34,6 +34,8 @@ from midas.models import (
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
 from midas.results import BacktestResult
+from midas.risk import per_ticker_vol_contribution
+from midas.risk_metrics import RiskHistory, compute_risk_metrics
 from midas.strategies.base import ExitRule, max_warmup
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,7 @@ class _Decision:
                 blended_scores={
                     ticker: val for ticker, val in self.allocation.blended_scores.items() if ticker in keep
                 },
+                risk_telemetry=self.allocation.risk_telemetry,
             ),
             clamp_attribution={key: val for key, val in self.clamp_attribution.items() if key in keep},
             active_tickers=active,
@@ -141,10 +144,32 @@ class _SimState:
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    # Buy-and-hold equity curve: portfolio.available_cash + sum(bh_positions *
+    # close_prices) per bar. Same semantics as the final B&H value in
+    # _build_result — ignores cash infusions, contributes 0 for tickers
+    # whose data hasn't yet started — so the curve aligns with the strategy
+    # equity curve at t=0 and at the activation step of deferred tickers.
+    bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    # Running peak portfolio value, updated each bar. Read by the allocator's
+    # CPPI overlay to compute the bar's current_drawdown.
+    peak_value: float = 0.0
+    # Per-ticker cost-basis-weighted attribution: {ticker: {strategy: share}}.
+    # Shares sum to 1.0 per ticker. Updated on buy as a basis-weighted blend
+    # of the prior dict and the order's contributions; consumed on sell to
+    # split realized P&L into per-strategy buckets. Reset on full exit.
+    attribution: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Cumulative attributed realised P&L by strategy. Surfaced via RiskMetrics.
+    cumulative_strategy_pnl: dict[str, float] = field(default_factory=dict)
     # Decision made at the previous decision day, waiting to execute on
     # the current bar under ``execution_mode="next_open"|"next_close"``.
     # Always ``None`` under legacy ``execution_mode="close"``.
     pending: _Decision | None = None
+    # Per-bar risk-engine telemetry from the latest allocator call. Refreshed
+    # each tick by ``_run_day``; consumed by ``_simulate`` when appending to
+    # ``risk_history`` so per-bar arrays stay aligned with ``equity_curve``.
+    last_risk_telemetry: AllocatorRiskTelemetry = field(default_factory=AllocatorRiskTelemetry)
+    risk_history: RiskHistory = field(default_factory=RiskHistory)
+    vol_target_skip_count: int = 0
 
     def portfolio_value(self, close_prices: dict[str, float]) -> float:
         """Cash + mark-to-market of held positions at *close_prices*."""
@@ -164,6 +189,51 @@ class _SimState:
 def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
     """Latest close price for every ticker in *current_data*."""
     return {ticker: float(current_data[ticker].close[-1]) for ticker in current_data}
+
+
+def _ticker_basis(state: _SimState, ticker: str) -> float:
+    """Aggregate cost basis for *ticker* — sum of (shares * cost_basis) across open lots."""
+    return sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
+
+
+def _update_buy_attribution(state: _SimState, ticker: str, order: Order) -> None:
+    """Blend the order's contributions into the ticker's running attribution dict.
+
+    The blend is cost-basis-weighted: prior attribution gets weight
+    ``prior_basis / new_basis``; the new order's contributions get
+    ``buy_size / new_basis``. The resulting dict is renormalised to sum to 1.
+
+    The typical case (a single strategy entering, optionally adding) is exact;
+    accuracy degrades gracefully when many strategies contribute over many bars
+    (spec §"Risk Telemetry").
+    """
+    contributions = order.context.contributions
+    if not contributions:
+        return
+    buy_size = order.shares * order.price
+    if buy_size <= 0:
+        return
+    # Prior basis = sum of all open lots EXCLUDING the buy we just appended.
+    prior_basis = max(_ticker_basis(state, ticker) - buy_size, 0.0)
+    new_basis = prior_basis + buy_size
+    if new_basis <= 0:
+        return
+    prior = state.attribution.get(ticker, {})
+    blended: dict[str, float] = {strat: share * (prior_basis / new_basis) for strat, share in prior.items()}
+    for strat, contrib in contributions.items():
+        blended[strat] = blended.get(strat, 0.0) + contrib * (buy_size / new_basis)
+    total = sum(blended.values())
+    if total > 0:
+        state.attribution[ticker] = {strat: share / total for strat, share in blended.items()}
+
+
+def _split_pnl_by_attribution(state: _SimState, ticker: str, realized_pnl: float) -> None:
+    """Add *realized_pnl* into ``state.cumulative_strategy_pnl`` split by current attribution."""
+    attr = state.attribution.get(ticker)
+    if not attr:
+        return
+    for strat, share in attr.items():
+        state.cumulative_strategy_pnl[strat] = state.cumulative_strategy_pnl.get(strat, 0.0) + realized_pnl * share
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +446,7 @@ class BacktestEngine:
             lot.shares * lot.cost_basis for lots in state.lots.values() for lot in lots
         )
         state.twr_base_value = state.starting_value
+        state.peak_value = state.starting_value
         return state
 
     def _find_deferred(
@@ -448,7 +519,25 @@ class BacktestEngine:
 
             self._run_day(state, portfolio, current_data, day)
 
-            state.equity_curve.append((day, state.portfolio_value(_close_prices(current_data))))
+            close_prices = _close_prices(current_data)
+            value = state.portfolio_value(close_prices)
+            state.equity_curve.append((day, value))
+            if value > state.peak_value:
+                state.peak_value = value
+
+            bh_value = portfolio.available_cash + sum(
+                shares * close_prices.get(ticker, 0.0) for ticker, shares in state.bh_positions.items()
+            )
+            state.bh_equity_curve.append((day, bh_value))
+
+            telemetry = state.last_risk_telemetry
+            drawdown = (state.peak_value - value) / state.peak_value if state.peak_value > 0 else 0.0
+            state.risk_history.dates.append(day)
+            state.risk_history.gross_exposure.append(telemetry.gross_exposure)
+            state.risk_history.cppi_scale.append(telemetry.cppi_scale)
+            state.risk_history.vol_target_scale.append(telemetry.vol_target_scale)
+            state.risk_history.predicted_vol.append(telemetry.predicted_vol)
+            state.risk_history.drawdown.append(drawdown)
 
     def _activate_deferred(
         self,
@@ -517,7 +606,12 @@ class BacktestEngine:
         self._update_high_water_marks(state, current_data)
         decision = self._decide(state, current_data, day)
         if decision is None:
+            state.last_risk_telemetry = AllocatorRiskTelemetry()
             return
+
+        state.last_risk_telemetry = decision.allocation.risk_telemetry
+        if state.last_risk_telemetry.vol_target_skipped:
+            state.vol_target_skip_count += 1
 
         if self._execution_mode == "close":
             self._size_and_execute(state, decision, _close_prices(current_data), day)
@@ -605,10 +699,18 @@ class BacktestEngine:
         )
 
         # Phase 1: allocator scores entry signals and blends to target weights.
+        # current_drawdown feeds the optional CPPI overlay (Phase 4a); when the
+        # overlay is disabled the allocator ignores this argument.
+        current_drawdown = (
+            (state.peak_value - total_value) / state.peak_value
+            if state.peak_value > 0 and total_value < state.peak_value
+            else 0.0
+        )
         allocation = self._allocator.allocate(
             active_tickers,
             current_data,
             current_weights=current_weights,
+            current_drawdown=current_drawdown,
         )
 
         # Phase 2: exit rules clamp targets downward (LEAN pattern). Each
@@ -647,6 +749,7 @@ class BacktestEngine:
             targets=clamped_targets,
             contributions=allocation.contributions,
             blended_scores=allocation.blended_scores,
+            risk_telemetry=allocation.risk_telemetry,
         )
         return _Decision(
             allocation=clamped_allocation,
@@ -696,6 +799,7 @@ class BacktestEngine:
             targets=rebalanced_targets,
             contributions=contribs_map,
             blended_scores=decision.allocation.blended_scores,
+            risk_telemetry=decision.allocation.risk_telemetry,
         )
 
         # Phase 3: size sells and filter restriction-blocked ones *before*
@@ -812,6 +916,7 @@ class BacktestEngine:
             state.lots.setdefault(ticker, []).append(
                 PositionLot(shares=order.shares, purchase_date=day, cost_basis=order.price)
             )
+            _update_buy_attribution(state, ticker, order)
             return [
                 (
                     TradeRecord(
@@ -868,12 +973,18 @@ class BacktestEngine:
         )
         state.positions[ticker] = new_position
 
-        # Full exit resets the high-water mark. Otherwise a subsequent
-        # re-entry would inherit the old peak and TrailingStop (or any
-        # future HWM-driven rule) could misfire on day 1 of the new
-        # position against a price that the new lot has never seen.
+        # Split realised P&L into per-strategy buckets via the running
+        # cost-basis-weighted attribution dict for this ticker.
+        total_basis = st_weighted_basis + lt_weighted_basis
+        realized_pnl = order.price * order.shares - total_basis
+        _split_pnl_by_attribution(state, ticker, realized_pnl)
+
+        # Full exit resets the high-water mark and the attribution dict.
+        # Otherwise a subsequent re-entry would inherit stale attribution
+        # shares from the closed position.
         if new_position == 0:
             state.high_water_marks.pop(ticker, None)
+            state.attribution.pop(ticker, None)
 
         records: list[tuple[TradeRecord, float]] = []
         if st_shares > 0:
@@ -1011,6 +1122,18 @@ class BacktestEngine:
                 unrealized_pnl_by_ticker[ticker] = round(ticker_pnl, 2)
         unrealized_pnl = sum(unrealized_pnl_by_ticker.values())
 
+        # Per-strategy attribution covers realised P&L from sells. At end-of-run,
+        # split each ticker's unrealised P&L into the same per-strategy buckets
+        # by current attribution shares so the final RiskMetrics.per_strategy_pnl
+        # reflects total attributed P&L (realised + unrealised), per spec line 183.
+        attributed_strategy_pnl = dict(state.cumulative_strategy_pnl)
+        for ticker, ticker_unrealized in unrealized_pnl_by_ticker.items():
+            attr = state.attribution.get(ticker)
+            if not attr:
+                continue
+            for strat, share in attr.items():
+                attributed_strategy_pnl[strat] = attributed_strategy_pnl.get(strat, 0.0) + ticker_unrealized * share
+
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
@@ -1041,4 +1164,62 @@ class BacktestEngine:
             unrealized_pnl=round(unrealized_pnl, 2),
             unrealized_pnl_by_ticker=unrealized_pnl_by_ticker,
             basis_per_sell=state.basis_per_sell,
+            risk_metrics=compute_risk_metrics(
+                equity_curve=equity_curve,
+                vol_target=(self._allocator.risk_config.vol_target if self._allocator.risk_config else None),
+                per_strategy_pnl=attributed_strategy_pnl,
+                per_ticker_vol_contribution=self._end_state_vol_contribution(state, price_data, end_day),
+                risk_history=state.risk_history,
+                vol_target_skip_count=state.vol_target_skip_count,
+            ),
+            risk_history=state.risk_history,
+            bh_equity_curve=state.bh_equity_curve,
         )
+
+    def _end_state_vol_contribution(
+        self,
+        state: _SimState,
+        price_data: dict[str, pd.DataFrame],
+        end_day: date,
+    ) -> dict[str, float]:
+        """Per-ticker share of portfolio vol from end-of-run positions.
+
+        Uses the same lookback window as the configured Phase 4b (default 60
+        bars when no ``risk_config`` is set). Returns ``{}`` when no risk
+        config is configured, or when any held ticker has insufficient
+        history / non-positive prices / zero stdev in the window — same
+        skip semantics as ``_apply_vol_target``.
+        """
+        risk_config = self._allocator.risk_config
+        if risk_config is None:
+            return {}
+        held = [ticker for ticker, shares in state.positions.items() if shares > 0]
+        if not held:
+            return {}
+        lookback = risk_config.vol_lookback_days
+        end_prices: dict[str, float] = {}
+        log_return_columns: list[np.ndarray] = []
+        for ticker in held:
+            df = price_data.get(ticker)
+            if df is None:
+                return {}
+            in_range = df[df.index <= end_day]
+            if len(in_range) < lookback + 1:
+                return {}
+            window = np.asarray(in_range["close"].iloc[-(lookback + 1) :], dtype=float)
+            if np.any(window <= 0):
+                return {}
+            series = np.diff(np.log(window))
+            if np.std(series, ddof=1) == 0.0:
+                return {}
+            log_return_columns.append(series)
+            end_prices[ticker] = float(window[-1])
+
+        position_values = np.array([state.positions[ticker] * end_prices[ticker] for ticker in held], dtype=float)
+        total_value = state.cash + float(position_values.sum())
+        if total_value <= 0:
+            return {}
+        weights = position_values / total_value
+        log_returns = np.column_stack(log_return_columns)
+        contributions = per_ticker_vol_contribution(weights, log_returns)
+        return {ticker: float(contrib) for ticker, contrib in zip(held, contributions, strict=True)}

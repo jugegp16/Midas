@@ -77,7 +77,7 @@ def test_load_portfolio_minimal(tmp_path: Path) -> None:
 
 
 def test_load_strategies(strategy_yaml: Path) -> None:
-    configs, constraints = load_strategies(strategy_yaml)
+    configs, constraints, _risk = load_strategies(strategy_yaml)
     assert len(configs) == 3
 
     assert configs[0].name == "MeanReversion"
@@ -96,3 +96,85 @@ def test_load_strategies(strategy_yaml: Path) -> None:
     assert constraints.min_buy_delta == 0.03
     assert constraints.min_cash_pct == 0.10
     assert constraints.max_position_pct is None  # not specified -> None
+
+
+# ---------------------------------------------------------------------------
+# Risk: block parsing
+# ---------------------------------------------------------------------------
+
+import textwrap  # noqa: E402
+
+from midas.models import RiskConfig  # noqa: E402
+
+
+def _write_strategies(tmp_path: Path, body: str) -> Path:
+    p = tmp_path / "s.yaml"
+    p.write_text(textwrap.dedent(body))
+    return p
+
+
+class TestLoadStrategiesRisk:
+    def test_no_risk_block_returns_default(self, tmp_path: Path) -> None:
+        path = _write_strategies(
+            tmp_path,
+            """
+            strategies:
+              - name: BollingerBand
+                params: {window: 20}
+            """,
+        )
+        _configs, _constraints, risk = load_strategies(path)
+        assert risk == RiskConfig()
+
+    def test_full_risk_block(self, tmp_path: Path) -> None:
+        path = _write_strategies(
+            tmp_path,
+            """
+            strategies:
+              - name: BollingerBand
+                params: {window: 20}
+            risk:
+              weighting: inverse_vol
+              vol_lookback_days: 90
+              vol_target: 0.20
+              drawdown_penalty: 1.5
+              drawdown_floor: 0.5
+            """,
+        )
+        _configs, _constraints, risk = load_strategies(path)
+        assert risk.weighting == "inverse_vol"
+        assert risk.vol_lookback_days == 90
+        assert risk.vol_target == 0.20
+        assert risk.drawdown_penalty == 1.5
+        assert risk.drawdown_floor == 0.5
+
+    def test_partial_risk_block_only_vol_target(self, tmp_path: Path) -> None:
+        path = _write_strategies(
+            tmp_path,
+            """
+            strategies:
+              - name: BollingerBand
+                params: {window: 20}
+            risk:
+              vol_target: 0.18
+            """,
+        )
+        _configs, _constraints, risk = load_strategies(path)
+        assert risk.vol_target == 0.18
+        assert risk.weighting == "equal"
+        assert risk.drawdown_penalty is None
+        assert risk.drawdown_floor is None
+
+    def test_drawdown_one_sided_raises_at_load_time(self, tmp_path: Path) -> None:
+        path = _write_strategies(
+            tmp_path,
+            """
+            strategies:
+              - name: BollingerBand
+                params: {window: 20}
+            risk:
+              drawdown_penalty: 1.5
+            """,
+        )
+        with pytest.raises(ValueError, match="drawdown_floor"):
+            load_strategies(path)

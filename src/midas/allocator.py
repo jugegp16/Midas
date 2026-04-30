@@ -15,13 +15,19 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from midas.data.price_history import PriceHistory
-from midas.models import DEFAULT_MAX_POSITION_PCT, AllocationConstraints
+from midas.models import DEFAULT_MAX_POSITION_PCT, DEFAULT_VOL_FLOOR, AllocationConstraints, RiskConfig
+from midas.risk import (
+    apply_drawdown_overlay,
+    inverse_vol_offset,
+    predict_portfolio_vol,
+    realized_vol,
+)
 from midas.strategies.base import EntrySignal
 
 log = logging.getLogger(__name__)
@@ -47,10 +53,28 @@ class _ScoredEntry:
 
 
 @dataclass
+class AllocatorRiskTelemetry:
+    """Per-allocation snapshot of risk-engine activity.
+
+    Recorded for every ``Allocator.allocate`` call so the engine can build a
+    bar-by-bar history. Defaults are inert (``cppi_scale=1.0``,
+    ``vol_target_scale=1.0``, etc.) when the corresponding phase is disabled
+    or didn't bind, so a disabled risk config produces a flat-line history.
+    """
+
+    cppi_scale: float = 1.0
+    vol_target_scale: float = 1.0
+    vol_target_skipped: bool = False
+    predicted_vol: float = 0.0
+    gross_exposure: float = 0.0
+
+
+@dataclass
 class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
+    risk_telemetry: AllocatorRiskTelemetry = field(default_factory=AllocatorRiskTelemetry)
 
 
 class Allocator:
@@ -61,10 +85,12 @@ class Allocator:
         entries: list[tuple[EntrySignal, float]],
         constraints: AllocationConstraints,
         n_tickers: int,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         self._entries: list[_ScoredEntry] = [_ScoredEntry(strat, wt) for strat, wt in entries]
         self._constraints = constraints
         self._n_tickers = n_tickers
+        self._risk_config = risk_config
         self._signal_cache: dict[int, dict[str, np.ndarray]] = {}
 
         # Auto-compute max_position_pct if not set.
@@ -94,6 +120,10 @@ class Allocator:
     def strategies(self) -> list[EntrySignal]:
         return [entry.strategy for entry in self._entries]
 
+    @property
+    def risk_config(self) -> RiskConfig | None:
+        return self._risk_config
+
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
         """Precompute entry-signal scores for all tickers over the full price arrays."""
         self._signal_cache = {}
@@ -120,6 +150,7 @@ class Allocator:
         price_data: dict[str, PriceHistory],
         context: dict[str, dict[str, Any]] | None = None,
         current_weights: dict[str, float] | None = None,
+        current_drawdown: float = 0.0,
     ) -> AllocationResult:
         """Compute target weights for all tickers.
 
@@ -131,6 +162,9 @@ class Allocator:
                 signal scores a ticker, the allocator holds the current weight
                 instead of reverting to equal-weight (Option A: neutral = hold).
                 If omitted, falls back to equal-weight base.
+            current_drawdown: Positive fraction (e.g. ``0.20`` for 20% drawdown
+                from running peak), used by the optional CPPI overlay. Default
+                ``0.0`` is a no-op when the overlay is disabled.
 
         Returns:
             AllocationResult with target weights, per-ticker contributions,
@@ -142,7 +176,23 @@ class Allocator:
         if num_tickers == 0:
             return AllocationResult({}, {}, {})
 
-        investable = 1.0 - self._constraints.min_cash_pct
+        telemetry = AllocatorRiskTelemetry()
+
+        # Phase 4a: CPPI drawdown overlay (no-op if not configured).
+        exposure_scale = 1.0
+        if (
+            self._risk_config is not None
+            and self._risk_config.drawdown_penalty is not None
+            and self._risk_config.drawdown_floor is not None
+        ):
+            exposure_scale = apply_drawdown_overlay(
+                current_drawdown=current_drawdown,
+                penalty=self._risk_config.drawdown_penalty,
+                floor=self._risk_config.drawdown_floor,
+            )
+        telemetry.cppi_scale = exposure_scale
+
+        investable = (1.0 - self._constraints.min_cash_pct) * exposure_scale
         base_weight = investable / num_tickers  # fallback when current_weights unknown
         temperature = self._constraints.softmax_temperature
 
@@ -196,6 +246,28 @@ class Allocator:
                 return base_weight
             return cur_weights.get(ticker, 0.0)
 
+        # Phase 2 prep: when ``weighting=inverse_vol``, compute per-ticker
+        # ``-log(vol)`` offsets and reclassify tickers with insufficient or
+        # zero vol as held (Option A). Offsets are added *outside* the /T
+        # divider in _softmax_allocate, so inverse-vol intensity is invariant
+        # to softmax_temperature (PR #63 used (1/vol)^(1/T) and was rejected).
+        offsets: dict[str, float] = {}
+        if self._risk_config is not None and self._risk_config.weighting == "inverse_vol" and active:
+            still_active: list[str] = []
+            for ticker in active:
+                history = price_data.get(ticker)
+                if history is None or len(history) < self._risk_config.vol_lookback_days + 1:
+                    held.append(ticker)
+                    continue
+                vol = realized_vol(np.asarray(history.close), self._risk_config.vol_lookback_days)
+                offset = inverse_vol_offset(vol, vol_floor=DEFAULT_VOL_FLOOR)
+                if math.isnan(offset):
+                    held.append(ticker)
+                    continue
+                offsets[ticker] = offset
+                still_active.append(ticker)
+            active = still_active
+
         held_total = 0.0
         for ticker in held:
             weight = _held_target(ticker)
@@ -205,15 +277,22 @@ class Allocator:
         budget_for_active = max(investable - held_total, 0.0)
 
         # Phase 2: Softmax construct-to-budget over active tickers.
-        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets)
+        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
         # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
         # max_position_pct and re-softmax the survivors over the reduced
         # remaining budget. Cap *never* forces a sell — it just refuses to
         # allocate more budget. Sells are exclusively ExitRule territory.
-        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets)
+        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
-        return AllocationResult(targets, contributions, blended_scores)
+        # Phase 4b: portfolio vol target. Scale all weights down when predicted
+        # annualized vol exceeds the target. Skipped if any active ticker has
+        # insufficient or degenerate history (constant-price → singular Σ row).
+        if self._risk_config is not None and self._risk_config.vol_target is not None and active:
+            self._apply_vol_target(active, price_data, targets, telemetry)
+
+        telemetry.gross_exposure = float(sum(targets.values()))
+        return AllocationResult(targets, contributions, blended_scores, risk_telemetry=telemetry)
 
     def _softmax_allocate(
         self,
@@ -222,22 +301,33 @@ class Allocator:
         budget: float,
         temperature: float,
         targets: dict[str, float],
+        offsets: dict[str, float] | None = None,
     ) -> None:
-        """Distribute `budget` across `tickers` via softmax(blended_scores / T).
+        """Distribute `budget` across `tickers` via softmax(blended/T + offset).
+
+        Without offsets, this is the standard softmax: ``exp(score/T)``.
+        With offsets (e.g. inverse-vol ``-log(vol)``), each ticker's exponent
+        becomes ``score/T + offset``. The offset is *outside* the /T divider
+        so its relative impact is invariant to ``temperature``.
 
         Temperature semantics:
-            T → 0   winner-take-all (budget to the argmax ticker)
-            T = 1   standard softmax over raw scores
-            T → ∞   uniform split regardless of conviction
+            T → 0   winner-take-all on (score + T * offset) — at very low T
+                    the score term dominates the offset.
+            T = 1   standard softmax over (score + offset).
+            T → ∞   weights ∝ exp(offset), pure offset-driven (e.g. pure
+                    inverse-vol regardless of conviction).
         """
         if not tickers or budget <= 0:
             for ticker in tickers:
                 targets[ticker] = 0.0
             return
         temp_safe = max(temperature, MIN_TEMPERATURE)
-        # Subtract max for numerical stability — softmax is translation-invariant.
-        max_score = max(blended_scores[ticker] for ticker in tickers)
-        exps = {ticker: math.exp((blended_scores[ticker] - max_score) / temp_safe) for ticker in tickers}
+        offsets = offsets or {}
+        # Subtract max-exponent for numerical stability — softmax is
+        # translation-invariant in the exponent.
+        exponents = {ticker: blended_scores[ticker] / temp_safe + offsets.get(ticker, 0.0) for ticker in tickers}
+        max_exp = max(exponents.values())
+        exps = {ticker: math.exp(exponents[ticker] - max_exp) for ticker in tickers}
         total_exp = sum(exps.values())
         for ticker in tickers:
             targets[ticker] = budget * exps[ticker] / total_exp
@@ -249,6 +339,7 @@ class Allocator:
         initial_budget: float,
         temperature: float,
         targets: dict[str, float],
+        offsets: dict[str, float] | None = None,
     ) -> None:
         """Clamp targets exceeding max_position_pct; re-softmax the survivors.
 
@@ -275,4 +366,53 @@ class Allocator:
                 for ticker in survivors:
                     targets[ticker] = 0.0
                 return
-            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets)
+            self._softmax_allocate(survivors, blended_scores, budget, temperature, targets, offsets)
+
+    def _apply_vol_target(
+        self,
+        active: list[str],
+        price_data: dict[str, PriceHistory],
+        targets: dict[str, float],
+        telemetry: AllocatorRiskTelemetry,
+    ) -> None:
+        """Scale all active weights so predicted annualized vol ≤ vol_target.
+
+        Skipped silently if any active ticker has insufficient history, a
+        non-positive close in the lookback window, or zero realized vol
+        (constant-price ticker → singular row in the covariance estimate).
+        Reduce-only: when scaling fires, the slack flows to cash; the soft
+        cap remains satisfied because scaling can only shrink weights.
+
+        Records ``predicted_vol`` and ``vol_target_scale`` on ``telemetry``,
+        and flips ``vol_target_skipped=True`` on any silent early return.
+        """
+        assert self._risk_config is not None and self._risk_config.vol_target is not None
+        lookback = self._risk_config.vol_lookback_days
+        log_returns_per_ticker: list[np.ndarray] = []
+        for ticker in active:
+            history = price_data.get(ticker)
+            if history is None or len(history) < lookback + 1:
+                telemetry.vol_target_skipped = True
+                return
+            window = np.asarray(history.close[-(lookback + 1) :])
+            if np.any(window <= 0):
+                telemetry.vol_target_skipped = True
+                return
+            series = np.diff(np.log(window))
+            if np.std(series, ddof=1) == 0.0:
+                telemetry.vol_target_skipped = True
+                return
+            log_returns_per_ticker.append(series)
+        if not log_returns_per_ticker:
+            telemetry.vol_target_skipped = True
+            return
+        log_returns = np.column_stack(log_returns_per_ticker)
+        weights = np.array([targets[ticker] for ticker in active])
+        predicted = predict_portfolio_vol(weights, log_returns)
+        telemetry.predicted_vol = predicted
+        target = self._risk_config.vol_target
+        if predicted > target > 0.0:
+            scale = target / predicted
+            telemetry.vol_target_scale = scale
+            for ticker in active:
+                targets[ticker] *= scale

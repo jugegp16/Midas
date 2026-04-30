@@ -15,6 +15,7 @@ from midas.data import CachedYFinanceProvider
 from midas.models import (
     AllocationConstraints,
     PortfolioConfig,
+    RiskConfig,
     StrategyConfig,
 )
 from midas.order_sizer import OrderSizer
@@ -36,6 +37,7 @@ def _build_components(
     strategy_configs: list[StrategyConfig] | None,
     constraints: AllocationConstraints,
     n_tickers: int,
+    risk_config: RiskConfig | None = None,
 ) -> tuple[Allocator, OrderSizer, list[ExitRule]]:
     """Build allocator, order sizer, and exit rules from config."""
     configs = strategy_configs or [StrategyConfig(name=name) for name in STRATEGY_REGISTRY]
@@ -54,7 +56,7 @@ def _build_components(
             msg = f"Strategy {cfg.name!r} is neither EntrySignal nor ExitRule"
             raise click.ClickException(msg)
 
-    allocator = Allocator(entries, constraints, n_tickers)
+    allocator = Allocator(entries, constraints, n_tickers, risk_config=risk_config)
     order_sizer = OrderSizer()
 
     return allocator, order_sizer, exits
@@ -138,6 +140,12 @@ def cli() -> None:
         "'next_close' = next session's close."
     ),
 )
+@click.option(
+    "--charts/--no-charts",
+    default=True,
+    show_default=True,
+    help="Render terminal ASCII charts (equity, drawdown, exposure) after the summary.",
+)
 def backtest(
     portfolio: str,
     strategies: str | None,
@@ -147,10 +155,13 @@ def backtest(
     train_pct: float,
     no_split: bool,
     execution_mode: ExecutionMode,
+    charts: bool,
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    )
 
     start_d, end_d = _to_date(start), _to_date(end)
 
@@ -159,6 +170,7 @@ def backtest(
         strat_configs,
         constraints,
         n_tickers,
+        risk_config=risk_config,
     )
 
     warmup_bars = max_warmup([*allocator.strategies, *exit_rules])
@@ -181,7 +193,7 @@ def backtest(
     out_path = Path(output)
     write_backtest_results(result, out_path)
     print_status(f"Results written to {out_path}/")
-    print_backtest_summary(result)
+    print_backtest_summary(result, show_charts=charts)
 
 
 @cli.command()
@@ -211,7 +223,9 @@ def live(
     from midas.live import LiveEngine
 
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints = load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints())
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    )
     provider = CachedYFinanceProvider()
 
     n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
@@ -219,6 +233,7 @@ def live(
         strat_configs,
         constraints,
         n_tickers,
+        risk_config=risk_config,
     )
 
     engine = LiveEngine(
@@ -329,8 +344,9 @@ def optimize(
 
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
+    risk_config: RiskConfig = RiskConfig()
     if strategies:
-        strat_configs, strat_constraints = load_strategies(Path(strategies))
+        strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 
@@ -363,9 +379,10 @@ def optimize(
             min_train_pct=wf_min_train_pct or WF_MIN_TRAIN_PCT,
             min_test_days=wf_min_test_days or WF_MIN_TEST_DAYS,
             log_fn=print_status,
+            risk_config=risk_config,
         )
 
-        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct)
+        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
 
         console.print()
 
@@ -447,9 +464,10 @@ def optimize(
             min_cash_pct=min_cash_pct,
             train_pct=train_pct,
             log_fn=print_status,
+            risk_config=risk_config,
         )
 
-        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
+        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
 
         console.print()
 
