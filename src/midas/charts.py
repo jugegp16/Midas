@@ -30,7 +30,7 @@ console = Console()
 
 # Strips CSI escape sequences (colors, styles) so visible width can be measured
 # independently of the ANSI codes plotext emits.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def render_charts(result: BacktestResult) -> None:
@@ -76,7 +76,7 @@ def _flush_centered(title: str) -> None:
     console.print()
     console.print(f"[bold]{title}[/bold]", justify="center")
     lines = chart.split("\n")
-    visible_widths = [len(_ANSI_RE.sub("", line)) for line in lines]
+    visible_widths = [len(ANSI_RE.sub("", line)) for line in lines]
     max_width = max(visible_widths) if visible_widths else 0
     padded = [line + " " * (max_width - width) for line, width in zip(lines, visible_widths, strict=True)]
     console.print(Text.from_ansi("\n".join(padded)), justify="center")

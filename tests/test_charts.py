@@ -55,19 +55,19 @@ def _populated_result(*, vol_target: float | None = None, with_history: bool = T
     # 100 bars: above the rolling-Sharpe skip threshold (SHARPE_LOOKBACK_BARS//4
     # ≈ 63), short enough to keep tests fast. The CPPI-active range starting
     # at i=30 stays valid (still 70 active bars in the second half).
-    n = 100
+    bar_count = 100
     start = date(2024, 1, 1)
-    dates = [start + timedelta(days=i) for i in range(n)]
-    equity = [100.0 + i for i in range(n)]
+    dates = [start + timedelta(days=i) for i in range(bar_count)]
+    equity = [100.0 + i for i in range(bar_count)]
     history: RiskHistory | None = None
     if with_history:
         history = RiskHistory(
             dates=list(dates),
-            gross_exposure=[0.95] * n,
-            cppi_scale=[1.0 if i < 30 else 0.85 for i in range(n)],
-            vol_target_scale=[1.0 if vol_target is None else 0.9] * n,
-            vol_target_predicted_vol=[0.0 if vol_target is None else 0.12] * n,
-            drawdown=[0.0] * n,
+            gross_exposure=[0.95] * bar_count,
+            cppi_scale=[1.0 if i < 30 else 0.85 for i in range(bar_count)],
+            vol_target_scale=[1.0 if vol_target is None else 0.9] * bar_count,
+            vol_target_predicted_vol=[0.0 if vol_target is None else 0.12] * bar_count,
+            drawdown=[0.0] * bar_count,
         )
     metrics = RiskMetrics(
         realized_vol_60d=0.15,

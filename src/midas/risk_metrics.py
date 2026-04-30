@@ -145,12 +145,12 @@ def _aggregate_history(history: RiskHistory | None) -> dict[str, float]:
     cppi = np.asarray(history.cppi_scale, dtype=float)
     vol_scale = np.asarray(history.vol_target_scale, dtype=float)
     gross = np.asarray(history.gross_exposure, dtype=float)
-    n = float(len(history.dates))
+    bar_count = float(len(history.dates))
     return {
-        "cppi_active_pct": float(np.sum(cppi < 1.0) / n),
+        "cppi_active_pct": float(np.sum(cppi < 1.0) / bar_count),
         "cppi_avg_scale": float(np.mean(cppi)),
         "cppi_min_scale": float(np.min(cppi)),
-        "vol_target_bind_pct": float(np.sum(vol_scale < 1.0) / n),
+        "vol_target_bind_pct": float(np.sum(vol_scale < 1.0) / bar_count),
         "vol_target_avg_scale": float(np.mean(vol_scale)),
         "avg_gross_exposure": float(np.mean(gross)),
         "min_gross_exposure": float(np.min(gross)),
