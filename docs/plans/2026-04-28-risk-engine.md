@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, numpy, scikit-learn (`LedoitWolf`), pytest, optuna.
 
-**Spec:** `docs/superpowers/specs/2026-04-27-risk-engine-design.md`
+**Spec:** `docs/specs/2026-04-27-risk-engine-design.md`
 
 ---
 
