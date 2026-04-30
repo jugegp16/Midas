@@ -384,8 +384,8 @@ def test_telemetry_inert_when_no_risk_config() -> None:
     assert tel.cppi_scale == 1.0
     assert tel.vol_target_scale == 1.0
     assert tel.vol_target_skipped is False
-    assert tel.predicted_vol == 0.0
-    assert math.isclose(tel.gross_exposure, sum(result.targets.values()), abs_tol=1e-9)
+    assert tel.vol_target_predicted_vol == 0.0
+    assert math.isclose(tel.target_gross_exposure, sum(result.targets.values()), abs_tol=1e-9)
 
 
 def test_telemetry_records_cppi_scale() -> None:
@@ -398,7 +398,7 @@ def test_telemetry_records_cppi_scale() -> None:
 
 
 def test_telemetry_records_vol_target_bind() -> None:
-    """When Phase 4b binds, telemetry captures predicted_vol and the scale."""
+    """When Phase 4b binds, telemetry captures vol_target_predicted_vol and the scale."""
     risk = RiskConfig(vol_target=0.05, vol_lookback_days=60)
     alloc = _build_allocator(risk_config=risk)
     prices = {
@@ -408,7 +408,7 @@ def test_telemetry_records_vol_target_bind() -> None:
     result = alloc.allocate(["A", "B"], prices)
     tel = result.risk_telemetry
     # Daily vol 0.03 → annualized ≈ 0.476 — well above the 0.05 target.
-    assert tel.predicted_vol > 0.05
+    assert tel.vol_target_predicted_vol > 0.05
     assert tel.vol_target_scale < 1.0
     assert tel.vol_target_skipped is False
 
@@ -424,10 +424,16 @@ def test_telemetry_flags_vol_target_skip() -> None:
     assert tel.vol_target_scale == 1.0
 
 
-def test_telemetry_gross_exposure_matches_target_sum() -> None:
-    """gross_exposure on telemetry equals sum of final targets — invariant."""
+def test_telemetry_target_gross_exposure_matches_target_sum() -> None:
+    """target_gross_exposure on telemetry equals sum of final targets — invariant.
+
+    The field name is *target* gross exposure because the engine separately
+    records *actual* market deployment (positions_value / NAV) on
+    ``RiskHistory.gross_exposure``. The two diverge intraday from execution
+    lag, ``min_buy_delta``, and exit clamps.
+    """
     risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
     alloc = _build_allocator(risk_config=risk)
     prices = {"A": _flat_history(60), "B": _flat_history(60)}
     result = alloc.allocate(["A", "B"], prices, current_drawdown=0.30)
-    assert math.isclose(result.risk_telemetry.gross_exposure, sum(result.targets.values()), abs_tol=1e-12)
+    assert math.isclose(result.risk_telemetry.target_gross_exposure, sum(result.targets.values()), abs_tol=1e-12)

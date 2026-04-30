@@ -78,7 +78,7 @@ class TestPhaseAggregates:
         cppi_scale: list[float],
         vol_target_scale: list[float],
         gross_exposure: list[float],
-        predicted_vol: list[float] | None = None,
+        vol_target_predicted_vol: list[float] | None = None,
     ) -> RiskHistory:
         n = len(cppi_scale)
         start = date(2020, 1, 1)
@@ -87,7 +87,7 @@ class TestPhaseAggregates:
             gross_exposure=gross_exposure,
             cppi_scale=cppi_scale,
             vol_target_scale=vol_target_scale,
-            predicted_vol=predicted_vol if predicted_vol is not None else [0.0] * n,
+            vol_target_predicted_vol=vol_target_predicted_vol if vol_target_predicted_vol is not None else [0.0] * n,
             drawdown=[0.0] * n,
         )
 

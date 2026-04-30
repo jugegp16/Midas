@@ -65,8 +65,15 @@ class AllocatorRiskTelemetry:
     cppi_scale: float = 1.0
     vol_target_scale: float = 1.0
     vol_target_skipped: bool = False
-    predicted_vol: float = 0.0
-    gross_exposure: float = 0.0
+    vol_target_predicted_vol: float = 0.0
+    # Sum of allocator-target weights this bar (the *target* gross, before
+    # execution lag, min_buy_delta, exit clamps, etc.). This is the construct-
+    # to-budget output and is by design near ``1 - min_cash_pct`` whenever the
+    # softmax has any positive scores. *Not* the actual market deployment —
+    # that's recorded separately on ``RiskHistory.gross_exposure`` per bar
+    # from ``positions_value / total_value`` and is what the ``Avg/Min Gross
+    # Exposure`` metrics reflect.
+    target_gross_exposure: float = 0.0
 
 
 @dataclass
@@ -291,7 +298,7 @@ class Allocator:
         if self._risk_config is not None and self._risk_config.vol_target is not None and active:
             self._apply_vol_target(active, price_data, targets, telemetry)
 
-        telemetry.gross_exposure = float(sum(targets.values()))
+        telemetry.target_gross_exposure = float(sum(targets.values()))
         return AllocationResult(targets, contributions, blended_scores, risk_telemetry=telemetry)
 
     def _softmax_allocate(
@@ -383,8 +390,9 @@ class Allocator:
         Reduce-only: when scaling fires, the slack flows to cash; the soft
         cap remains satisfied because scaling can only shrink weights.
 
-        Records ``predicted_vol`` and ``vol_target_scale`` on ``telemetry``,
-        and flips ``vol_target_skipped=True`` on any silent early return.
+        Records ``vol_target_predicted_vol`` and ``vol_target_scale`` on
+        ``telemetry``, and flips ``vol_target_skipped=True`` on any silent
+        early return.
         """
         assert self._risk_config is not None and self._risk_config.vol_target is not None
         lookback = self._risk_config.vol_lookback_days
@@ -409,7 +417,7 @@ class Allocator:
         log_returns = np.column_stack(log_returns_per_ticker)
         weights = np.array([targets[ticker] for ticker in active])
         predicted = predict_portfolio_vol(weights, log_returns)
-        telemetry.predicted_vol = predicted
+        telemetry.vol_target_predicted_vol = predicted
         target = self._risk_config.vol_target
         if predicted > target > 0.0:
             scale = target / predicted

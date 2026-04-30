@@ -55,7 +55,7 @@ def render_charts(result: BacktestResult) -> None:
         return
     _render_gross_exposure(result)
     if (result.risk_metrics is not None and result.risk_metrics.vol_target is not None) and any(
-        value > 0 for value in result.risk_history.predicted_vol
+        value > 0 for value in result.risk_history.vol_target_predicted_vol
     ):
         _render_predicted_vs_target_vol(result)
 
@@ -268,7 +268,7 @@ def _render_predicted_vs_target_vol(result: BacktestResult) -> None:
     assert metrics is not None and metrics.vol_target is not None
 
     dates = [dt.isoformat() for dt in history.dates]
-    predicted_pct = [value * 100.0 for value in history.predicted_vol]
+    predicted_pct = [value * 100.0 for value in history.vol_target_predicted_vol]
     target_pct = [metrics.vol_target * 100.0] * len(dates)
 
     _setup_single_figure()

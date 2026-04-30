@@ -1,15 +1,23 @@
 """End-to-end regression for risk telemetry plumbing through the backtest engine.
 
 These tests run a full ``BacktestEngine.run`` and assert that the resulting
-``RiskMetrics`` reflects what the risk engine actually did. The bug they
-guard against (PR #65 critical issue): the engine reconstructs
-``AllocationResult`` after exit-rule clamping and target rebalancing, and
-historically dropped ``risk_telemetry`` on those copies. With telemetry
-dropped, every per-bar metric (CPPI scale, vol-target scale, gross exposure)
-defaults to its inert value and the headline observability deliverable is
-silently broken.
+``RiskMetrics`` reflects what the risk engine actually did. The specific
+plumbing they guard: ``BacktestEngine._decide`` rebuilds
+``AllocationResult`` after exit-rule clamping (``backtest.py:759``) and
+threads ``risk_telemetry`` through that rebuild — the engine then reads
+``decision.allocation.risk_telemetry`` in ``_run_day`` to populate
+``RiskHistory``. Drop ``risk_telemetry`` on that single rebuild and every
+per-bar metric (CPPI scale, vol-target scale, vol-target predicted vol)
+silently defaults to its inert value while the rest of the pipeline still
+works — backtests look correct, telemetry quietly returns nothing.
 
-Allocator-level tests can't catch this — they bypass the engine.
+The other ``AllocationResult`` rebuilds (in ``_Decision.filtered`` and
+``_size_and_execute``'s rebalance) do *not* feed telemetry back into
+``RiskHistory``; they only feed the order sizer. Those paths intentionally
+don't carry ``risk_telemetry``.
+
+Allocator-level tests can't catch the ``_decide`` regression — they
+bypass the engine.
 """
 
 from __future__ import annotations

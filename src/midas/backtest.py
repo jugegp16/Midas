@@ -97,6 +97,11 @@ class _Decision:
         if not active:
             return None
         keep = set(active)
+        # ``risk_telemetry`` is intentionally not threaded through this copy —
+        # the engine consumes telemetry once, in ``_run_day``, from the
+        # original ``_decide`` output (before any pending-fill or
+        # rebalance copy is made). A filtered/pending decision feeds only
+        # the order sizer, which doesn't read ``risk_telemetry``.
         return _Decision(
             allocation=AllocationResult(
                 targets={ticker: weight for ticker, weight in self.allocation.targets.items() if ticker in keep},
@@ -104,7 +109,6 @@ class _Decision:
                 blended_scores={
                     ticker: val for ticker, val in self.allocation.blended_scores.items() if ticker in keep
                 },
-                risk_telemetry=self.allocation.risk_telemetry,
             ),
             clamp_attribution={key: val for key, val in self.clamp_attribution.items() if key in keep},
             active_tickers=active,
@@ -547,7 +551,7 @@ class BacktestEngine:
             state.risk_history.gross_exposure.append(actual_gross)
             state.risk_history.cppi_scale.append(telemetry.cppi_scale)
             state.risk_history.vol_target_scale.append(telemetry.vol_target_scale)
-            state.risk_history.predicted_vol.append(telemetry.predicted_vol)
+            state.risk_history.vol_target_predicted_vol.append(telemetry.vol_target_predicted_vol)
             state.risk_history.drawdown.append(drawdown)
 
     def _activate_deferred(
@@ -806,11 +810,13 @@ class BacktestEngine:
                 continue
             rebalanced_targets[ticker] = (positions[ticker] * exec_prices[ticker]) / total_value
 
+        # ``risk_telemetry`` is intentionally omitted: this rebalance feeds
+        # only the order sizer, and ``state.last_risk_telemetry`` was already
+        # captured from the pre-rebalance ``decision`` in ``_run_day``.
         rebalanced_allocation = AllocationResult(
             targets=rebalanced_targets,
             contributions=contribs_map,
             blended_scores=decision.allocation.blended_scores,
-            risk_telemetry=decision.allocation.risk_telemetry,
         )
 
         # Phase 3: size sells and filter restriction-blocked ones *before*

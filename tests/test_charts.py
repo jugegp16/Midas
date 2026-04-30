@@ -66,7 +66,7 @@ def _populated_result(*, vol_target: float | None = None, with_history: bool = T
             gross_exposure=[0.95] * n,
             cppi_scale=[1.0 if i < 30 else 0.85 for i in range(n)],
             vol_target_scale=[1.0 if vol_target is None else 0.9] * n,
-            predicted_vol=[0.0 if vol_target is None else 0.12] * n,
+            vol_target_predicted_vol=[0.0 if vol_target is None else 0.12] * n,
             drawdown=[0.0] * n,
         )
     metrics = RiskMetrics(

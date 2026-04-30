@@ -47,14 +47,19 @@ class RiskHistory:
     Empty when the backtest produced no equity-curve points. Otherwise every
     list has length ``len(dates)``. Populated unconditionally — when a phase
     is disabled its array is a flat line of inert values (``cppi_scale=1.0``,
-    ``vol_target_scale=1.0``, ``predicted_vol=0.0``).
+    ``vol_target_scale=1.0``, ``vol_target_predicted_vol=0.0``).
     """
 
     dates: list[date] = field(default_factory=list)
     gross_exposure: list[float] = field(default_factory=list)
     cppi_scale: list[float] = field(default_factory=list)
     vol_target_scale: list[float] = field(default_factory=list)
-    predicted_vol: list[float] = field(default_factory=list)
+    # Predicted annualized portfolio vol from the vol-target mechanic only —
+    # ``0.0`` when ``vol_target`` is not configured for the run. The naming
+    # reflects this: it is *not* a general portfolio observable; it only
+    # gets populated inside ``_apply_vol_target``. Callers that need a
+    # vol-time-series independent of risk config must compute it themselves.
+    vol_target_predicted_vol: list[float] = field(default_factory=list)
     drawdown: list[float] = field(default_factory=list)
 
 
