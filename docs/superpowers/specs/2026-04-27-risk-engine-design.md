@@ -68,17 +68,17 @@ The new phases bracket the existing softmax + cap. Numbering keeps existing phas
 
 ```
 Per bar:
-  Phase 0  CPPI overlay         [new]   modifies investable budget
+  Phase 4a  CPPI overlay         [new]   modifies investable budget
   Phase 1  score entry signals  [exists]
   Phase 2  softmax over scores  [exists, +inverse-vol offset if configured]
   Phase 3  soft cap + redistribute [exists]
-  Phase 4  portfolio vol target [new]   scales weight vector down if needed
+  Phase 4b  portfolio vol target [new]   scales weight vector down if needed
 
 After bar (driver responsibility):
   update running peak; recompute drawdown; update RiskMetrics
 ```
 
-### Phase 0 — CPPI overlay
+### Phase 4a — CPPI overlay
 
 ```
 exposure_scale = max(1 - drawdown_penalty * current_drawdown, drawdown_floor)
@@ -87,7 +87,7 @@ investable     = (1 - min_cash_pct) * exposure_scale
 
 `current_drawdown` is a **non-negative magnitude**: 0 at a new peak, 0.20 at 20% below peak. The backtest driver computes it as `max(0, 1 - portfolio_value / running_peak)` and passes it into `allocate()`. The allocator additionally clamps `exposure_scale` to `[drawdown_floor, 1.0]` to defend against future drift in the input contract — a negative `current_drawdown` (a "drawdown above peak", which can only result from a driver bug) saturates `exposure_scale` at `1.0`, never above. Backtest engine tracks the running peak of total portfolio value (already computed daily for TWR). Live mode does *not* support CPPI v1 — peak persistence requires a state file that's out of scope for this pass; `LiveEngine` warns at startup if `drawdown_penalty` is configured, similar to the existing `TrailingStop` inert-in-live warning.
 
-`min_cash_pct` and `drawdown_floor` compose multiplicatively: a user choosing `drawdown_floor: 0.0` still holds `min_cash_pct` in cash because Phase 0 multiplies `(1 - min_cash_pct)` by `exposure_scale`, never the other way around. With `min_cash_pct: 0.05, drawdown_floor: 0.5`, deep drawdowns leave `investable = 0.95 * 0.5 = 0.475`.
+`min_cash_pct` and `drawdown_floor` compose multiplicatively: a user choosing `drawdown_floor: 0.0` still holds `min_cash_pct` in cash because Phase 4a multiplies `(1 - min_cash_pct)` by `exposure_scale`, never the other way around. With `min_cash_pct: 0.05, drawdown_floor: 0.5`, deep drawdowns leave `investable = 0.95 * 0.5 = 0.475`.
 
 This is a documented backtest/live divergence: a strategy backtested with `drawdown_penalty: 1.5` will scale exposure down during drawdowns in backtest but not in live deployment. Users setting `drawdown_penalty` should expect backtest numbers to overstate live behavior during drawdown periods. Resolving this is tracked for v2 (peak persistence via state file). See [Live Mode v1 Limitations](#live-mode-v1-limitations) for the consolidated list.
 
@@ -105,9 +105,9 @@ Crucially: the offset is added *after* the `/T` divider, not inside it. PR #63 u
 
 Equal weighting (`offset_i = 0`) reduces to current behavior bit-for-bit.
 
-Tickers with insufficient history (`len(prices) < vol_lookback_days`), zero realized vol, or all-NaN closes over the lookback window fall back to Option A (held at current weight, excluded from the softmax), matching how the existing allocator handles missing scores. The `vol_floor` is a numerical `log(0)` guard set well below any realistic annualized vol; it never binds for assets with normal price activity. If **every** active ticker hits the fallback, Phase 2 holds all positions at current weight (the softmax has no inputs and produces no new targets) and Phase 4 is skipped for the same bar.
+Tickers with insufficient history (`len(prices) < vol_lookback_days`), zero realized vol, or all-NaN closes over the lookback window fall back to Option A (held at current weight, excluded from the softmax), matching how the existing allocator handles missing scores. The `vol_floor` is a numerical `log(0)` guard set well below any realistic annualized vol; it never binds for assets with normal price activity. If **every** active ticker hits the fallback, Phase 2 holds all positions at current weight (the softmax has no inputs and produces no new targets) and Phase 4b is skipped for the same bar.
 
-### Phase 4 — portfolio vol target
+### Phase 4b — portfolio vol target
 
 After cap-with-redistribution converges:
 
@@ -119,11 +119,11 @@ if predicted > vol_target:
     w         = w * scale                                  # slack → cash
 ```
 
-Phase 4 operates on the **active subset's weights only**. Held positions (excluded from softmax in Phase 2 or carried forward via the fallback) pass through unchanged — their weights are not scaled and their covariance rows do not enter the `sqrt(w'Σw)` calculation. The vol target therefore caps risk from *new conviction*, not total portfolio risk; held positions reflect prior allocation decisions whose risk was already evaluated at entry, and re-targeting their size based on present vol would introduce path-dependent re-allocation drift.
+Phase 4b operates on the **active subset's weights only**. Held positions (excluded from softmax in Phase 2 or carried forward via the fallback) pass through unchanged — their weights are not scaled and their covariance rows do not enter the `sqrt(w'Σw)` calculation. The vol target therefore caps risk from *new conviction*, not total portfolio risk; held positions reflect prior allocation decisions whose risk was already evaluated at entry, and re-targeting their size based on present vol would introduce path-dependent re-allocation drift.
 
-If any active ticker has fewer than `vol_lookback_days` of history, or zero realized vol over the window, the entire Phase 4 step is skipped for that bar (covariance over a short common window is unreliable; partial coverage would silently bias the estimate; a constant-price ticker produces a singular row in `Σ`). Phase 4 runs for any `N ≥ 1` active tickers — a `1×1` covariance is well-defined and the math reduces to scaling the single active weight by `vol_target / annualized_realized_vol`. Cap is *not* re-applied after scaling — scaling can only shrink weights, so caps that bound from above remain satisfied.
+If any active ticker has fewer than `vol_lookback_days` of history, or zero realized vol over the window, the entire Phase 4b step is skipped for that bar (covariance over a short common window is unreliable; partial coverage would silently bias the estimate; a constant-price ticker produces a singular row in `Σ`). Phase 4b runs for any `N ≥ 1` active tickers — a `1×1` covariance is well-defined and the math reduces to scaling the single active weight by `vol_target / annualized_realized_vol`. Cap is *not* re-applied after scaling — scaling can only shrink weights, so caps that bound from above remain satisfied.
 
-Phase 0 and Phase 4 stack multiplicatively. A 20% drawdown with `drawdown_penalty: 1.5` shrinks `investable` to 70% of its base value; if the resulting weight vector still has predicted vol above target, Phase 4 scales it down further. With aggressive settings on both knobs (e.g., `drawdown_penalty: 2.0, vol_target: 0.10` during a 25% drawdown on a high-vol portfolio) gross exposure can drop well below 50%. This is intentional — both phases are reduce-only — but worth being aware of when configuring both.
+Phase 4a and Phase 4b stack multiplicatively. A 20% drawdown with `drawdown_penalty: 1.5` shrinks `investable` to 70% of its base value; if the resulting weight vector still has predicted vol above target, Phase 4b scales it down further. With aggressive settings on both knobs (e.g., `drawdown_penalty: 2.0, vol_target: 0.10` during a 25% drawdown on a high-vol portfolio) gross exposure can drop well below 50%. This is intentional — both phases are reduce-only — but worth being aware of when configuring both.
 
 ## Pure-Function Discipline
 
@@ -208,7 +208,7 @@ Modified:
 
 - `src/midas/models.py` — `RiskConfig` dataclass with frozen defaults.
 - `src/midas/config.py` — parse the `risk:` block from YAML; validate consistency (e.g., `inverse_vol` requires `vol_lookback_days`; `drawdown_*` are both-or-neither).
-- `src/midas/allocator.py` — accept `RiskConfig`, optional `current_drawdown`; new Phase 0 (CPPI) and Phase 4 (vol target); inverse-vol offset in softmax.
+- `src/midas/allocator.py` — accept `RiskConfig`, optional `current_drawdown`; new Phase 4a (CPPI) and Phase 4b (vol target); inverse-vol offset in softmax.
 - `src/midas/backtest.py` — track running peak, pass `current_drawdown` into `allocate()`, populate `RiskMetrics` per bar, attach to `BacktestResult`.
 - `src/midas/live.py` — log warning at startup if `drawdown_*` is configured (CPPI inert in live v1); populate `RiskMetrics` per tick.
 - `src/midas/optimizer.py` — thread `RiskConfig` through trial backtests; add regression test.
@@ -232,13 +232,13 @@ Allocator integration (`test_allocator_risk.py`):
 - `weighting: equal` matches current allocator output bit-for-bit (regression).
 - `weighting: inverse_vol`: high-vol ticker gets less weight at same blended score.
 - `weighting: inverse_vol` is **T-independent**: two tickers with identical blended scores and 2:1 vol ratio produce ≈ 2:1 weight ratio at both `softmax_temperature=0.2` and `softmax_temperature=2.0`. Targets the PR #63 `1/vol^(1/T)` regression directly — that bug would produce ~32:1 and ~1.4:1 instead.
-- Phase 0: synthetic 20% drawdown shrinks `investable` to `(1 - min_cash_pct) * 0.7`.
-- Phase 4: predicted vol exceeds target → all weights scale by `target/predicted`; sum drops below investable, slack to cash.
-- Phase 0 + Phase 4 composition: synthetic 20% drawdown plus vol-target-binding portfolio → final exposure ≈ `(1 - min_cash_pct) * 0.7 * (target / predicted)`. Confirms the two reduce-only phases stack as expected.
-- Phase 0 + `min_cash_pct` composition: `min_cash_pct=0.05, drawdown_floor=0.5`, 50% drawdown → `investable = 0.95 * 0.5 = 0.475`. Confirms the cash-side floors compose multiplicatively.
-- Phase 4 single-ticker (`N=1`): vol-target-binding with one active ticker scales the single weight by `vol_target / annualized_realized_vol`; no degenerate-singular-cov fallback fires.
-- Phase 4 with held positions: held tickers' weights pass through unchanged when Phase 4 binds; only active weights scale.
-- All-fallback degenerate: every active ticker hits Phase 2 fallback (insufficient history or all-NaN closes) → all positions held at current weight, Phase 4 skipped, no crash.
+- Phase 4a: synthetic 20% drawdown shrinks `investable` to `(1 - min_cash_pct) * 0.7`.
+- Phase 4b: predicted vol exceeds target → all weights scale by `target/predicted`; sum drops below investable, slack to cash.
+- Phase 4a + Phase 4b composition: synthetic 20% drawdown plus vol-target-binding portfolio → final exposure ≈ `(1 - min_cash_pct) * 0.7 * (target / predicted)`. Confirms the two reduce-only phases stack as expected.
+- Phase 4a + `min_cash_pct` composition: `min_cash_pct=0.05, drawdown_floor=0.5`, 50% drawdown → `investable = 0.95 * 0.5 = 0.475`. Confirms the cash-side floors compose multiplicatively.
+- Phase 4b single-ticker (`N=1`): vol-target-binding with one active ticker scales the single weight by `vol_target / annualized_realized_vol`; no degenerate-singular-cov fallback fires.
+- Phase 4b with held positions: held tickers' weights pass through unchanged when Phase 4b binds; only active weights scale.
+- All-fallback degenerate: every active ticker hits Phase 2 fallback (insufficient history or all-NaN closes) → all positions held at current weight, Phase 4b skipped, no crash.
 - Insufficient history or zero realized vol: vol targeting skips the bar entirely; inverse-vol falls back to Option A for the affected ticker (no crash, no silent zeros).
 
 Telemetry (`test_risk_metrics.py`):

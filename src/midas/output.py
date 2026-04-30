@@ -211,11 +211,13 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
     print_centered(risk_table)
 
     # --- Risk Engine Activity ---
-    # Show this section whenever any risk feature is configured. We gate on
-    # *configuration* (vol_target set, drawdown_penalty fired at least once)
-    # rather than on activity, so users with a configured-but-non-binding
-    # vol target see "Avg Scale: 100.00%" as confirmation it ran instead of
-    # an empty section that's indistinguishable from "feature was disabled".
+    # Show this section when CPPI fired on any bar OR when vol target is
+    # configured (regardless of whether it bound). The vol-target clause is
+    # configuration-gated so a configured-but-non-binding target shows
+    # "Avg Scale: 100.00%" as confirmation it ran, rather than an empty
+    # section indistinguishable from "feature was disabled". CPPI does not
+    # have an analogous configuration field on RiskMetrics, so its rows
+    # surface only when activity registers.
     if result.risk_metrics is not None and (
         result.risk_metrics.cppi_active_pct > 0
         or result.risk_metrics.cppi_min_scale < 1.0

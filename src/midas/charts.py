@@ -142,6 +142,11 @@ def _render_excess_return(result: BacktestResult) -> None:
     starting = result.starting_value
     if starting <= 0:
         return
+    if len(result.bh_equity_curve) != len(result.equity_curve):
+        # Curves should be parallel by construction; defensive against test
+        # fixtures or future shape regressions so chart rendering doesn't
+        # crash the whole summary output.
+        return
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     excess_pct = [
         ((eq - bh) / starting) * 100.0
@@ -194,7 +199,15 @@ def _render_rolling_sharpe(result: BacktestResult) -> None:
     The summary table reports a single end-of-run scalar; this chart shows when
     the strategy was producing risk-adjusted returns vs underperforming. Same
     log-return window the spec uses for ``rolling_sharpe_252d``.
+
+    Skipped on backtests too short for the lookback to fill — rendering a
+    near-flat-zero curve would be visually indistinguishable from a real
+    Sharpe-zero strategy. Threshold is a quarter of the lookback (~63 bars
+    of a 252-bar window): below that, the chart is mostly noise from
+    too-small windows.
     """
+    if len(result.equity_curve) < SHARPE_LOOKBACK_BARS // 4:
+        return
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     equity = [value for _, value in result.equity_curve]
     sharpe = _rolling_sharpe_series(equity, SHARPE_LOOKBACK_BARS)

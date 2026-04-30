@@ -84,7 +84,7 @@ When `risk.drawdown_penalty` and `risk.drawdown_floor` are both configured, the 
 
 After the cap converges, if `risk.vol_target` is configured, the allocator computes predicted annualized portfolio vol from a Ledoit-Wolf-shrunk covariance matrix and scales the entire weight vector down by `vol_target / predicted` if the predicted exceeds the target. Slack flows to cash. The cap is *not* re-applied after scaling — scaling only shrinks weights, so an upper cap remains satisfied.
 
-Phases 4a and 4b are both reduce-only risk overlays that bracket the core 1-3 pipeline (4a wraps the input budget, 4b wraps the output weights). While Phase 4b is non-binding, the two stack multiplicatively (e.g. a 20% drawdown with `drawdown_penalty: 1.5` shrinks gross to 70% and Phase 4b leaves it alone). When Phase 4b binds it normalizes predicted vol to target, mathematically erasing prior gross-scaling. With aggressive settings during deep drawdowns the resulting gross can drop well below `drawdown_floor`. This is intentional.
+Phases 4a and 4b are both reduce-only risk overlays. Phase 4a runs before Phase 1 and shrinks the budget that Phase 1 has to allocate; Phase 4b runs after Phase 3 and shrinks the resulting weight vector. Together they cap risk from both ends of the pipeline. While Phase 4b is non-binding, the two stack multiplicatively (e.g. a 20% drawdown with `drawdown_penalty: 1.5` shrinks gross to 70% and Phase 4b leaves it alone). When Phase 4b binds it normalizes predicted vol to target, mathematically erasing prior gross-scaling. With aggressive settings during deep drawdowns the resulting gross can drop well below `drawdown_floor`. This is intentional.
 
 #### Inverse-Vol Weighting
 

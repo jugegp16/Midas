@@ -52,7 +52,10 @@ def _empty_result() -> BacktestResult:
 
 
 def _populated_result(*, vol_target: float | None = None, with_history: bool = True) -> BacktestResult:
-    n = 60
+    # 100 bars: above the rolling-Sharpe skip threshold (SHARPE_LOOKBACK_BARS//4
+    # ≈ 63), short enough to keep tests fast. The CPPI-active range starting
+    # at i=30 stays valid (still 70 active bars in the second half).
+    n = 100
     start = date(2024, 1, 1)
     dates = [start + timedelta(days=i) for i in range(n)]
     equity = [100.0 + i for i in range(n)]
@@ -109,14 +112,34 @@ def test_render_charts_with_vol_target_panel(capsys: pytest.CaptureFixture[str])
 def test_render_charts_excess_return(capsys: pytest.CaptureFixture[str]) -> None:
     """When bh_equity_curve is populated, the excess-return chart renders."""
     result = _populated_result()
-    n = len(result.equity_curve)
     # B&H slightly underperforms strategy so excess is positive and growing.
     result.bh_equity_curve = [(dt, 100.0 + 0.5 * i) for i, (dt, _) in enumerate(result.equity_curve)]
     result.starting_value = 100.0
     render_charts(result)
     out = capsys.readouterr().out
     assert "Excess Return" in out
-    assert n  # silence unused-var warning
+    # B&H now lives only in the dedicated Excess Return chart, not as an
+    # overlay on the equity chart. "Buy & Hold" should appear exactly once
+    # (in the excess chart's title); a regression that re-overlays B&H on
+    # the equity chart would push the count to 2+.
+    assert out.count("Buy & Hold") == 1, (
+        f"Buy & Hold should appear once (in Excess Return title); got {out.count('Buy & Hold')}"
+    )
+
+
+def test_render_charts_excess_return_skipped_on_length_mismatch(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Curve-length mismatch must not crash; chart simply skips."""
+    result = _populated_result()
+    # Half-length B&H curve simulates a future shape regression.
+    result.bh_equity_curve = [(dt, 100.0) for dt, _ in result.equity_curve[: len(result.equity_curve) // 2]]
+    result.starting_value = 100.0
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Excess Return" not in out
+    # Equity chart still renders even though excess was skipped.
+    assert "Equity Curve" in out
 
 
 def test_render_charts_excess_return_skipped_without_bh_curve(capsys: pytest.CaptureFixture[str]) -> None:
