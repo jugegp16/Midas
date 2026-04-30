@@ -61,7 +61,7 @@ risk:
   weighting: inverse_vol      # equal | inverse_vol; default equal
   vol_lookback_days: 60       # rolling window for vol and covariance estimates
 
-  vol_target: 0.20            # annualized; null/omit disables Phase 4
+  vol_target: 0.20            # annualized; null/omit disables Phase 4b
 
   drawdown_penalty: 1.5       # exposure = max(1 - penalty * dd, floor)
   drawdown_floor: 0.5         # both required, both must be set or both omitted
@@ -71,7 +71,7 @@ The optimizer **does not** search risk knobs — risk is policy, easy to overfit
 
 CPPI (`drawdown_penalty` / `drawdown_floor`) is currently inert in `live` mode — peak persistence requires a state file that is tracked for v2. Live runs log a warning at startup if CPPI is configured.
 
-See [Architecture: Risk-aware allocator phases](architecture.md#phase-0-cppi-drawdown-overlay-optional) for the phase-by-phase behavior.
+See [Architecture: Risk-aware allocator phases](architecture.md#phase-4a-cppi-drawdown-overlay-optional) for the phase-by-phase behavior.
 
 ## Entry Signals
 

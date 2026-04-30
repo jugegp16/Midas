@@ -699,7 +699,7 @@ class BacktestEngine:
         )
 
         # Phase 1: allocator scores entry signals and blends to target weights.
-        # current_drawdown feeds the optional CPPI overlay (Phase 0); when the
+        # current_drawdown feeds the optional CPPI overlay (Phase 4a); when the
         # overlay is disabled the allocator ignores this argument.
         current_drawdown = (
             (state.peak_value - total_value) / state.peak_value
@@ -749,6 +749,7 @@ class BacktestEngine:
             targets=clamped_targets,
             contributions=allocation.contributions,
             blended_scores=allocation.blended_scores,
+            risk_telemetry=allocation.risk_telemetry,
         )
         return _Decision(
             allocation=clamped_allocation,
@@ -798,6 +799,7 @@ class BacktestEngine:
             targets=rebalanced_targets,
             contributions=contribs_map,
             blended_scores=decision.allocation.blended_scores,
+            risk_telemetry=decision.allocation.risk_telemetry,
         )
 
         # Phase 3: size sells and filter restriction-blocked ones *before*
@@ -1182,7 +1184,7 @@ class BacktestEngine:
     ) -> dict[str, float]:
         """Per-ticker share of portfolio vol from end-of-run positions.
 
-        Uses the same lookback window as the configured Phase 4 (default 60
+        Uses the same lookback window as the configured Phase 4b (default 60
         bars when no ``risk_config`` is set). Returns ``{}`` when no risk
         config is configured, or when any held ticker has insufficient
         history / non-positive prices / zero stdev in the window — same

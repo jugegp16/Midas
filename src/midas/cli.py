@@ -382,7 +382,7 @@ def optimize(
             risk_config=risk_config,
         )
 
-        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct)
+        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
 
         console.print()
 
@@ -467,7 +467,7 @@ def optimize(
             risk_config=risk_config,
         )
 
-        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct)
+        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
 
         console.print()
 

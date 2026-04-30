@@ -68,15 +68,15 @@ def _run(engine: BacktestEngine, end: date) -> object:
 
 def test_truncated_and_full_match_at_boundary() -> None:
     """A backtest ending at T and one ending later must produce identical
-    state at every common bar. This pins lookahead-freedom on Phase 0
-    (current_drawdown), Phase 2 (inverse-vol offset), Phase 4 (vol target),
+    state at every common bar. This pins lookahead-freedom on Phase 4a
+    (current_drawdown), Phase 2 (inverse-vol offset), Phase 4b (vol target),
     and the per-bar peak/equity tracking they consume.
 
     Strong form (spec line 135): equity-curve equality is necessary but not
     sufficient — two runs could produce identical equity while differing in
     target weights that didn't trade that bar (e.g. blocked by min_buy_delta).
     Also compare the trade list and the cumulative attribution dict, both of
-    which depend directly on every Phase 0/2/4 decision.
+    which depend directly on every Phase 4a / Phase 2 / Phase 4b decision.
     """
     risk = RiskConfig(
         weighting="inverse_vol",

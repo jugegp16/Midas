@@ -76,15 +76,15 @@ The cap is **soft**: it can refuse to allocate *more* budget to an over-target t
 
 If `max_position_pct` is not configured, it's auto-computed as 2.5x the equal-weight baseline (capped at 25%), which allows meaningful overweighting without extreme concentration.
 
-#### Phase 0: CPPI Drawdown Overlay (optional)
+#### Phase 4a: CPPI Drawdown Overlay (optional)
 
 When `risk.drawdown_penalty` and `risk.drawdown_floor` are both configured, the allocator multiplies the gross investable budget by `max(1 - penalty * current_drawdown, floor)` *before* the softmax runs. The freed budget becomes deliberate cash reserve and recovers automatically as the portfolio heals. The driver (`backtest.py`) tracks the running peak portfolio value; live mode warns at startup and treats the overlay as inert pending peak persistence (v2).
 
-#### Phase 4: Portfolio Vol Target (optional)
+#### Phase 4b: Portfolio Vol Target (optional)
 
 After the cap converges, if `risk.vol_target` is configured, the allocator computes predicted annualized portfolio vol from a Ledoit-Wolf-shrunk covariance matrix and scales the entire weight vector down by `vol_target / predicted` if the predicted exceeds the target. Slack flows to cash. The cap is *not* re-applied after scaling — scaling only shrinks weights, so an upper cap remains satisfied.
 
-Phase 0 and Phase 4 are both reduce-only and compose without conflict. While Phase 4 is non-binding, the two stack multiplicatively (e.g. a 20% drawdown with `drawdown_penalty: 1.5` shrinks gross to 70% and Phase 4 leaves it alone). When Phase 4 binds it normalizes predicted vol to target, mathematically erasing prior gross-scaling. With aggressive settings during deep drawdowns the resulting gross can drop well below `drawdown_floor`. This is intentional.
+Phases 4a and 4b are both reduce-only risk overlays that bracket the core 1-3 pipeline (4a wraps the input budget, 4b wraps the output weights). While Phase 4b is non-binding, the two stack multiplicatively (e.g. a 20% drawdown with `drawdown_penalty: 1.5` shrinks gross to 70% and Phase 4b leaves it alone). When Phase 4b binds it normalizes predicted vol to target, mathematically erasing prior gross-scaling. With aggressive settings during deep drawdowns the resulting gross can drop well below `drawdown_floor`. This is intentional.
 
 #### Inverse-Vol Weighting
 

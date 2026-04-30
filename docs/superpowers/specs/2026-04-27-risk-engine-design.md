@@ -190,7 +190,7 @@ On mark-to-market, unrealized P&L is split into per-strategy buckets by the curr
 4. Partial sell of 50% of shares → `basis=75`; attribution unchanged; realized P&L from the sell splits 0.667/0.333 into A/B.
 5. Full close → remaining P&L splits 0.667/0.333; `basis=0`, `attribution={}`.
 
-**Live-mode telemetry caveats.** Without peak persistence (deferred to v2 alongside CPPI), live-mode `drawdown_from_peak` is computed against a session-start peak. Restarting the live engine resets the peak tracker — drawdown reads as 0 immediately after restart regardless of the portfolio's actual drawdown state. `realized_vol_60d`, `rolling_sharpe_252d`, per-strategy attribution, and per-ticker vol contribution are unaffected, since they're computed from rolling windows of in-session data. See [Live Mode v1 Limitations](#live-mode-v1-limitations).
+**Live-mode telemetry caveats.** Live mode does not populate `RiskMetrics` in v1 — the field is `None` on `LiveEngine` output regardless of `risk:` configuration. Implementing it requires the same peak persistence work that's blocking CPPI in live, plus per-tick rolling-window state that doesn't exist yet. Tracked for v2. See [Live Mode v1 Limitations](#live-mode-v1-limitations).
 
 ## Files to Create or Modify
 
@@ -254,12 +254,13 @@ Regression:
 
 ## Live Mode v1 Limitations
 
-Two backtest/live divergences in v1, both rooted in the absence of peak persistence:
+Three backtest/live divergences in v1:
 
-1. **CPPI overlay (Phase 0)** is inert in live; backtests with `drawdown_penalty` set will overstate live exposure-scaling behavior during drawdowns. `LiveEngine` warns at startup when configured.
-2. **Telemetry `drawdown_from_peak`** in live is computed against a session-start peak; engine restarts reset the peak tracker.
+1. **CPPI overlay** is inert in live; backtests with `drawdown_penalty` set will overstate live exposure-scaling behavior during drawdowns. `LiveEngine` warns at startup when configured. Rooted in the absence of peak persistence (no state file across restarts).
+2. **`RiskMetrics` is not populated in live.** All telemetry (realized vol, drawdown, rolling Sharpe, per-strategy attribution, per-ticker vol contribution) is backtest-only in v1. Live output reports `None` for the metrics field regardless of `risk:` configuration. Implementing it requires the same peak persistence as #1 plus per-tick rolling-window state.
+3. **Inverse-vol weighting and portfolio vol target** *do* run in live (they're stateless functions of in-session price history), but their effects are not visible through telemetry until #2 is resolved.
 
-Both are tracked for v2 (state-file-based peak persistence). Until then, treat backtest CPPI behavior as a planning aid rather than a live performance prediction, and recognize that live `drawdown_from_peak` reflects only the current session.
+All three are tracked for v2 alongside state-file-based peak persistence. Until then, treat backtest behavior as a planning aid rather than a live performance prediction.
 
 ## Migration
 

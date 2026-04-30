@@ -152,7 +152,7 @@ class RiskConfig:
 
     weighting:         "equal" (current softmax) or "inverse_vol" (score offset of -log(vol)).
     vol_lookback_days: rolling window for vol and covariance estimates.
-    vol_target:        annualized portfolio vol cap; None disables Phase 4 vol scaling.
+    vol_target:        annualized portfolio vol cap; None disables Phase 4b vol scaling.
     drawdown_penalty/floor: CPPI overlay; both required, both must be set or both None.
     """
 

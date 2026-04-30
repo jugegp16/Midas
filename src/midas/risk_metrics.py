@@ -27,9 +27,9 @@ class RiskMetrics:
     rolling_sharpe_252d: float
     per_strategy_pnl: dict[str, float] = field(default_factory=dict)
     per_ticker_vol_contribution: dict[str, float] = field(default_factory=dict)
-    # Phase telemetry — aggregates over the run. All default to inert values
-    # when the corresponding phase is disabled, so downstream consumers can
-    # render unconditionally.
+    # Risk-engine activity aggregates over the run. All default to inert
+    # values when the corresponding mechanic is disabled, so downstream
+    # consumers can render unconditionally.
     cppi_active_pct: float = 0.0
     cppi_avg_scale: float = 1.0
     cppi_min_scale: float = 1.0
@@ -76,7 +76,7 @@ def compute_risk_metrics(
         risk_history: per-bar telemetry; when present, drives the phase-activity
             aggregates (CPPI active fraction, vol-target bind fraction, gross
             exposure summary stats).
-        vol_target_skip_count: number of bars on which Phase 4 was configured
+        vol_target_skip_count: number of bars on which Phase 4b was configured
             but skipped silently (insufficient history / non-positive close /
             zero stdev). Surfaced raw on ``RiskMetrics`` so users can tell
             whether vol-target was *configured but inert*.

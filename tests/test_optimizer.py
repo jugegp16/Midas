@@ -8,7 +8,7 @@ import pytest
 from conftest import make_price_series
 
 from midas.metrics import compute_annualized_return
-from midas.models import Holding, PortfolioConfig
+from midas.models import Holding, PortfolioConfig, RiskConfig
 from midas.optimizer import (
     PARAM_RANGES,
     OptimizeResult,
@@ -123,6 +123,78 @@ def test_write_strategies_yaml(tmp_path) -> None:
     ts = next(s for s in data["strategies"] if s["name"] == "TrailingStop")
     assert ts["params"]["trail_pct"] == 0.1
     assert "weight" not in ts
+
+
+def test_write_strategies_yaml_omits_risk_block_when_default(tmp_path) -> None:
+    """An all-default RiskConfig produces no ``risk:`` key — same as no input block."""
+    import yaml
+
+    params = {"MeanReversion": {"window": 20.0, "threshold": 0.1}}
+    out = str(tmp_path / "strats.yaml")
+    write_strategies_yaml(params, out, risk_config=RiskConfig())
+
+    with open(out) as f:
+        data = yaml.safe_load(f)
+    assert "risk" not in data
+
+
+def test_write_strategies_yaml_omits_risk_block_when_none(tmp_path) -> None:
+    """``risk_config=None`` (no input config) → no ``risk:`` block, current behavior."""
+    import yaml
+
+    params = {"MeanReversion": {"window": 20.0, "threshold": 0.1}}
+    out = str(tmp_path / "strats.yaml")
+    write_strategies_yaml(params, out, risk_config=None)
+
+    with open(out) as f:
+        data = yaml.safe_load(f)
+    assert "risk" not in data
+
+
+def test_write_strategies_yaml_preserves_user_risk_block(tmp_path) -> None:
+    """A user-supplied risk policy round-trips through the optimized YAML output.
+
+    Regression: the optimizer historically dropped any ``risk:`` block from the
+    input, so users who configured CPPI / vol target / inverse-vol weighting
+    silently lost it on optimize. The block must round-trip — only non-default
+    fields are emitted, mirroring the spec's "omit to disable" YAML conventions.
+    """
+    import yaml
+
+    params = {"MeanReversion": {"window": 20.0, "threshold": 0.1}}
+    risk = RiskConfig(
+        weighting="inverse_vol",
+        vol_lookback_days=90,
+        vol_target=0.20,
+        drawdown_penalty=1.5,
+        drawdown_floor=0.5,
+    )
+    out = str(tmp_path / "strats.yaml")
+    write_strategies_yaml(params, out, risk_config=risk)
+
+    with open(out) as f:
+        data = yaml.safe_load(f)
+    assert data["risk"] == {
+        "weighting": "inverse_vol",
+        "vol_lookback_days": 90,
+        "vol_target": 0.20,
+        "drawdown_penalty": 1.5,
+        "drawdown_floor": 0.5,
+    }
+
+
+def test_write_strategies_yaml_emits_only_nondefault_risk_fields(tmp_path) -> None:
+    """Defaults are omitted so the output mirrors what the user typed."""
+    import yaml
+
+    params = {"MeanReversion": {"window": 20.0, "threshold": 0.1}}
+    risk = RiskConfig(vol_target=0.18)  # everything else default
+    out = str(tmp_path / "strats.yaml")
+    write_strategies_yaml(params, out, risk_config=risk)
+
+    with open(out) as f:
+        data = yaml.safe_load(f)
+    assert data["risk"] == {"vol_target": 0.18}
 
 
 # ---------------------------------------------------------------------------

@@ -210,18 +210,23 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
         risk_table.add_row("Min Gross Exposure", f"{result.risk_metrics.min_gross_exposure:.2%}")
     print_centered(risk_table)
 
-    # --- Phase Activity ---
+    # --- Risk Engine Activity ---
+    # Show this section whenever any risk feature is configured. We gate on
+    # *configuration* (vol_target set, drawdown_penalty fired at least once)
+    # rather than on activity, so users with a configured-but-non-binding
+    # vol target see "Avg Scale: 100.00%" as confirmation it ran instead of
+    # an empty section that's indistinguishable from "feature was disabled".
     if result.risk_metrics is not None and (
         result.risk_metrics.cppi_active_pct > 0
-        or result.risk_metrics.vol_target_bind_pct > 0
-        or result.risk_metrics.vol_target_skip_count > 0
+        or result.risk_metrics.cppi_min_scale < 1.0
+        or result.risk_metrics.vol_target is not None
     ):
         phase_table = make_metric_table("Risk Engine Activity")
         if result.risk_metrics.cppi_active_pct > 0 or result.risk_metrics.cppi_min_scale < 1.0:
             phase_table.add_row("CPPI Active (% of bars)", f"{result.risk_metrics.cppi_active_pct:.1%}")
             phase_table.add_row("CPPI Avg Scale", f"{result.risk_metrics.cppi_avg_scale:.2%}")
             phase_table.add_row("CPPI Min Scale", f"[red]{result.risk_metrics.cppi_min_scale:.2%}[/red]")
-        if result.risk_metrics.vol_target_bind_pct > 0:
+        if result.risk_metrics.vol_target is not None:
             phase_table.add_row("Vol Target Bound (% of bars)", f"{result.risk_metrics.vol_target_bind_pct:.1%}")
             phase_table.add_row("Vol Target Avg Scale", f"{result.risk_metrics.vol_target_avg_scale:.2%}")
         if result.risk_metrics.vol_target_skip_count > 0:

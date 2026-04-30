@@ -178,7 +178,7 @@ class Allocator:
 
         telemetry = AllocatorRiskTelemetry()
 
-        # Phase 0: CPPI drawdown overlay (no-op if not configured).
+        # Phase 4a: CPPI drawdown overlay (no-op if not configured).
         exposure_scale = 1.0
         if (
             self._risk_config is not None
@@ -285,7 +285,7 @@ class Allocator:
         # allocate more budget. Sells are exclusively ExitRule territory.
         self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
 
-        # Phase 4: portfolio vol target. Scale all weights down when predicted
+        # Phase 4b: portfolio vol target. Scale all weights down when predicted
         # annualized vol exceeds the target. Skipped if any active ticker has
         # insufficient or degenerate history (constant-price → singular Σ row).
         if self._risk_config is not None and self._risk_config.vol_target is not None and active:

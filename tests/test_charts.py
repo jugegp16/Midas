@@ -104,3 +104,68 @@ def test_render_charts_with_vol_target_panel(capsys: pytest.CaptureFixture[str])
     render_charts(result)
     out = capsys.readouterr().out
     assert "Predicted vs Target" in out
+
+
+def test_render_charts_excess_return(capsys: pytest.CaptureFixture[str]) -> None:
+    """When bh_equity_curve is populated, the excess-return chart renders."""
+    result = _populated_result()
+    n = len(result.equity_curve)
+    # B&H slightly underperforms strategy so excess is positive and growing.
+    result.bh_equity_curve = [(dt, 100.0 + 0.5 * i) for i, (dt, _) in enumerate(result.equity_curve)]
+    result.starting_value = 100.0
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Excess Return" in out
+    assert n  # silence unused-var warning
+
+
+def test_render_charts_excess_return_skipped_without_bh_curve(capsys: pytest.CaptureFixture[str]) -> None:
+    """No B&H curve → no excess chart, but other panels still render."""
+    result = _populated_result()
+    result.bh_equity_curve = []
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Excess Return" not in out
+    assert "Equity Curve" in out
+
+
+def test_render_charts_excess_return_skipped_when_starting_value_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """starting_value <= 0 short-circuits the excess chart's rendering."""
+    result = _populated_result()
+    result.bh_equity_curve = list(result.equity_curve)
+    result.starting_value = 0.0
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Excess Return" not in out
+
+
+def test_render_charts_rolling_sharpe(capsys: pytest.CaptureFixture[str]) -> None:
+    """Rolling Sharpe chart renders unconditionally when there's an equity curve."""
+    result = _populated_result()
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Rolling Sharpe" in out
+
+
+def test_render_charts_vol_contribution(capsys: pytest.CaptureFixture[str]) -> None:
+    """Per-ticker vol contribution chart renders when the dict is populated."""
+    result = _populated_result()
+    assert result.risk_metrics is not None
+    object.__setattr__(
+        result.risk_metrics,
+        "per_ticker_vol_contribution",
+        {"AAA": 0.6, "BBB": 0.3, "CCC": 0.1},
+    )
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Per-Ticker Vol Contribution" in out
+
+
+def test_render_charts_vol_contribution_skipped_when_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    """Empty contribution dict → chart is omitted (default behavior)."""
+    result = _populated_result()
+    render_charts(result)
+    out = capsys.readouterr().out
+    assert "Per-Ticker Vol Contribution" not in out

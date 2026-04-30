@@ -235,7 +235,7 @@ class TestAllocatorRiskConfigPlumbing:
         assert allocator.risk_config is risk
 
     def test_current_drawdown_kwarg_accepted(self) -> None:
-        # Phase 0 implementation lands later; for now this just guards the API.
+        # Phase 4a implementation lands later; for now this just guards the API.
         mr = MeanReversion(window=5, threshold=0.01)
         allocator = Allocator([(mr, 1.0)], AllocationConstraints(), n_tickers=2)
         prices = {"A": _prices([100.0] * 10), "B": _prices([100.0] * 10)}

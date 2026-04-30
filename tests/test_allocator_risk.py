@@ -57,7 +57,7 @@ def _build_allocator(
     n_tickers: int = 2,
 ) -> Allocator:
     # max_position_pct=0.5 keeps the 2-ticker softmax from binding the cap and
-    # masking the Phase 0 / Phase 4 effects we're isolating in these tests.
+    # masking the Phase 4a / Phase 4b effects we're isolating in these tests.
     cons = constraints if constraints is not None else AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.5)
     return Allocator(
         [(_ConstantScore(1.0), 1.0)],
@@ -68,11 +68,11 @@ def _build_allocator(
 
 
 # ---------------------------------------------------------------------------
-# Phase 0: CPPI drawdown overlay
+# Phase 4a: CPPI drawdown overlay
 # ---------------------------------------------------------------------------
 
 
-def test_phase_0_no_drawdown_matches_baseline() -> None:
+def test_phase_4a_no_drawdown_matches_baseline() -> None:
     """current_drawdown=0 → CPPI is a no-op; sum(targets) == investable."""
     risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
     alloc = _build_allocator(risk_config=risk)
@@ -82,7 +82,7 @@ def test_phase_0_no_drawdown_matches_baseline() -> None:
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-9)
 
 
-def test_phase_0_drawdown_shrinks_investable() -> None:
+def test_phase_4a_drawdown_shrinks_investable() -> None:
     """20% drawdown * penalty 1.5 → exposure 0.70; sum(targets) = 0.95 * 0.70."""
     risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
     alloc = _build_allocator(risk_config=risk)
@@ -92,7 +92,7 @@ def test_phase_0_drawdown_shrinks_investable() -> None:
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
 
 
-def test_phase_0_floor_binds_at_deep_drawdown() -> None:
+def test_phase_4a_floor_binds_at_deep_drawdown() -> None:
     """50% drawdown * penalty 1.5 = 0.25 raw, but floor=0.5 binds."""
     risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
     alloc = _build_allocator(risk_config=risk)
@@ -102,7 +102,7 @@ def test_phase_0_floor_binds_at_deep_drawdown() -> None:
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
 
 
-def test_phase_0_ignored_when_overlay_disabled() -> None:
+def test_phase_4a_ignored_when_overlay_disabled() -> None:
     """No drawdown_penalty configured → current_drawdown is ignored entirely."""
     alloc = _build_allocator(risk_config=RiskConfig())
     prices = {"A": _flat_history(60), "B": _flat_history(60)}
@@ -208,11 +208,11 @@ def test_inverse_vol_insufficient_history_falls_back() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: portfolio vol target
+# Phase 4b: portfolio vol target
 # ---------------------------------------------------------------------------
 
 
-def test_phase_4_vol_target_scales_when_predicted_exceeds() -> None:
+def test_phase_4b_vol_target_scales_when_predicted_exceeds() -> None:
     """High-vol portfolio with tight target → all weights scale way down."""
     risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
@@ -228,7 +228,7 @@ def test_phase_4_vol_target_scales_when_predicted_exceeds() -> None:
     assert sum(result.targets.values()) < investable * 0.5
 
 
-def test_phase_4_no_scale_when_below_target() -> None:
+def test_phase_4b_no_scale_when_below_target() -> None:
     """Low-vol portfolio under target → no scaling."""
     risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.50)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
@@ -242,8 +242,8 @@ def test_phase_4_no_scale_when_below_target() -> None:
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
 
 
-def test_phase_4_skips_on_insufficient_history() -> None:
-    """If any active ticker lacks enough history, the entire Phase 4 step is skipped."""
+def test_phase_4b_skips_on_insufficient_history() -> None:
+    """If any active ticker lacks enough history, the entire Phase 4b step is skipped."""
     risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
     alloc = _build_allocator(risk_config=risk, constraints=constraints)
@@ -257,18 +257,18 @@ def test_phase_4_skips_on_insufficient_history() -> None:
     assert math.isclose(sum(result.targets.values()), investable, abs_tol=1e-6)
 
 
-def test_phase_0_phase_4_compose_when_only_phase_0_binds() -> None:
-    """With a loose vol_target that Phase 4 doesn't activate, the CPPI overlay
+def test_phase_4a_phase_4b_compose_when_only_phase_4a_binds() -> None:
+    """With a loose vol_target that Phase 4b doesn't activate, the CPPI overlay
     drives the final gross alone — its 0.7x multiplier reaches the output.
 
-    (When Phase 4 binds it normalizes predicted vol to target, mathematically
+    (When Phase 4b binds it normalizes predicted vol to target, mathematically
     erasing any prior gross-scaling. The two phases compose multiplicatively
-    only while Phase 4 is non-binding.)
+    only while Phase 4b is non-binding.)
     """
     risk = RiskConfig(
         weighting="equal",
         vol_lookback_days=60,
-        vol_target=2.0,  # 200% — Phase 4 cannot bind on a long-only equity book
+        vol_target=2.0,  # 200% — Phase 4b cannot bind on a long-only equity book
         drawdown_penalty=1.5,
         drawdown_floor=0.5,
     )
@@ -285,7 +285,7 @@ def test_phase_0_phase_4_compose_when_only_phase_0_binds() -> None:
     assert math.isclose(sum_dd, sum_no_dd * 0.70, rel_tol=1e-6)
 
 
-def test_phase_0_phase_4_both_reduce_only() -> None:
+def test_phase_4a_phase_4b_both_reduce_only() -> None:
     """Sum with both phases enabled <= sum with neither. Both are reduce-only."""
     base_risk = RiskConfig(weighting="equal")
     full_risk = RiskConfig(
@@ -307,8 +307,8 @@ def test_phase_0_phase_4_both_reduce_only() -> None:
     assert full_sum <= base_sum + 1e-9
 
 
-def test_phase_4_single_active_ticker_n_eq_1() -> None:
-    """Spec line 124: Phase 4 fires for any N >= 1; a 1x1 covariance is well-defined."""
+def test_phase_4b_single_active_ticker_n_eq_1() -> None:
+    """Spec line 124: Phase 4b fires for any N >= 1; a 1x1 covariance is well-defined."""
     risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
     alloc = _build_allocator(risk_config=risk, constraints=constraints, n_tickers=1)
@@ -319,8 +319,8 @@ def test_phase_4_single_active_ticker_n_eq_1() -> None:
     assert result.targets["SOLO"] < investable * 0.5
 
 
-def test_phase_4_held_positions_pass_through_unchanged() -> None:
-    """Spec line 122: held tickers' weights are not scaled when Phase 4 binds."""
+def test_phase_4b_held_positions_pass_through_unchanged() -> None:
+    """Spec line 122: held tickers' weights are not scaled when Phase 4b binds."""
     risk = RiskConfig(weighting="equal", vol_lookback_days=60, vol_target=0.10)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
     alloc = Allocator(
@@ -335,13 +335,13 @@ def test_phase_4_held_positions_pass_through_unchanged() -> None:
     }
     current = {"H1": 0.30, "H2": 0.20}
     result = alloc.allocate(["H1", "H2"], prices, current_weights=current)
-    # Held weights pass through unchanged; Phase 4 sees no active and is a no-op.
+    # Held weights pass through unchanged; Phase 4b sees no active and is a no-op.
     assert math.isclose(result.targets["H1"], 0.30, abs_tol=1e-9)
     assert math.isclose(result.targets["H2"], 0.20, abs_tol=1e-9)
 
 
 def test_all_active_tickers_hit_inverse_vol_fallback_holds_all() -> None:
-    """Spec line 108: every active hits Phase 2 fallback → all held; Phase 4 skipped; no crash."""
+    """Spec line 108: every active hits Phase 2 fallback → all held; Phase 4b skipped; no crash."""
     risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60, vol_target=0.10)
     constraints = AllocationConstraints(min_cash_pct=0.05, max_position_pct=0.95)
     alloc = _build_allocator(risk_config=risk, constraints=constraints)
@@ -356,7 +356,7 @@ def test_all_active_tickers_hit_inverse_vol_fallback_holds_all() -> None:
     assert math.isclose(result.targets["S2"], 0.10, abs_tol=1e-9)
 
 
-def test_phase_0_min_cash_pct_compose_multiplicatively() -> None:
+def test_phase_4a_min_cash_pct_compose_multiplicatively() -> None:
     """Spec line 90: investable = (1 - min_cash_pct) * exposure_scale, never the
     other way. With min_cash_pct=0.05 + drawdown_floor=0.5 + 50% DD, investable
     is 0.95 * 0.5 = 0.475, not 0.5 - 0.05 = 0.45.
@@ -398,7 +398,7 @@ def test_telemetry_records_cppi_scale() -> None:
 
 
 def test_telemetry_records_vol_target_bind() -> None:
-    """When Phase 4 binds, telemetry captures predicted_vol and the scale."""
+    """When Phase 4b binds, telemetry captures predicted_vol and the scale."""
     risk = RiskConfig(vol_target=0.05, vol_lookback_days=60)
     alloc = _build_allocator(risk_config=risk)
     prices = {
@@ -414,7 +414,7 @@ def test_telemetry_records_vol_target_bind() -> None:
 
 
 def test_telemetry_flags_vol_target_skip() -> None:
-    """Constant-price ticker (zero stdev) → Phase 4 skips silently."""
+    """Constant-price ticker (zero stdev) → Phase 4b skips silently."""
     risk = RiskConfig(vol_target=0.10, vol_lookback_days=60)
     alloc = _build_allocator(risk_config=risk)
     prices = {"A": _flat_history(80), "B": _flat_history(80)}
