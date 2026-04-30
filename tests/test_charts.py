@@ -147,25 +147,3 @@ def test_render_charts_rolling_sharpe(capsys: pytest.CaptureFixture[str]) -> Non
     render_charts(result)
     out = capsys.readouterr().out
     assert "Rolling Sharpe" in out
-
-
-def test_render_charts_vol_contribution(capsys: pytest.CaptureFixture[str]) -> None:
-    """Per-ticker vol contribution chart renders when the dict is populated."""
-    result = _populated_result()
-    assert result.risk_metrics is not None
-    object.__setattr__(
-        result.risk_metrics,
-        "per_ticker_vol_contribution",
-        {"AAA": 0.6, "BBB": 0.3, "CCC": 0.1},
-    )
-    render_charts(result)
-    out = capsys.readouterr().out
-    assert "Per-Ticker Vol Contribution" in out
-
-
-def test_render_charts_vol_contribution_skipped_when_empty(capsys: pytest.CaptureFixture[str]) -> None:
-    """Empty contribution dict → chart is omitted (default behavior)."""
-    result = _populated_result()
-    render_charts(result)
-    out = capsys.readouterr().out
-    assert "Per-Ticker Vol Contribution" not in out

@@ -58,8 +58,6 @@ def render_charts(result: BacktestResult) -> None:
         value > 0 for value in result.risk_history.predicted_vol
     ):
         _render_predicted_vs_target_vol(result)
-    if result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution:
-        _render_vol_contribution(result)
 
 
 def _flush_centered(title: str) -> None:
@@ -82,6 +80,26 @@ def _flush_centered(title: str) -> None:
     max_width = max(visible_widths) if visible_widths else 0
     padded = [line + " " * (max_width - width) for line, width in zip(lines, visible_widths, strict=True)]
     console.print(Text.from_ansi("\n".join(padded)), justify="center")
+
+
+def _trailing_mean(values: list[float], window: int) -> list[float]:
+    """Trailing simple mean over a fixed-bar window, parallel to ``values``.
+
+    Bars before the window has filled use whatever bars are available —
+    so the curve starts at ``values[0]`` and converges to a true ``window``-bar
+    mean once enough bars have accumulated. This avoids leaving leading bars
+    blank on the chart.
+    """
+    out: list[float] = []
+    running_sum = 0.0
+    for i, value in enumerate(values):
+        running_sum += value
+        if i >= window:
+            running_sum -= values[i - window]
+            out.append(running_sum / window)
+        else:
+            out.append(running_sum / (i + 1))
+    return out
 
 
 def _drawdown_pct_series(result: BacktestResult, dates: list[str]) -> list[float]:
@@ -186,26 +204,6 @@ def _render_rolling_sharpe(result: BacktestResult) -> None:
     _flush_centered("Rolling Sharpe (252d, annualized)")
 
 
-def _render_vol_contribution(result: BacktestResult) -> None:
-    """Horizontal bar chart of end-state per-ticker vol contribution.
-
-    Same data as the "Per-Ticker Vol Contribution" table in the summary —
-    visualizing it as a sorted bar chart makes concentration patterns easier
-    to spot than a numeric column.
-    """
-    metrics = result.risk_metrics
-    assert metrics is not None and metrics.per_ticker_vol_contribution
-    items = sorted(metrics.per_ticker_vol_contribution.items(), key=lambda kv: kv[1])
-    tickers = [ticker for ticker, _ in items]
-    contrib_pct = [share * 100.0 for _, share in items]
-    plt.clear_figure()
-    plt.plot_size(CHART_WIDTH, max(8, min(CHART_HEIGHT, len(tickers) * 2 + 4)))
-    plt.theme("clear")
-    plt.bar(tickers, contrib_pct, color="cyan", orientation="horizontal")
-    plt.xlabel("% of portfolio vol")
-    _flush_centered("Per-Ticker Vol Contribution (end of run)")
-
-
 def _render_drawdown(result: BacktestResult) -> None:
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     drawdown_pct = _drawdown_pct_series(result, dates)
@@ -224,10 +222,28 @@ def _render_gross_exposure(result: BacktestResult) -> None:
     _setup_single_figure()
     plt.plot(dates, gross_pct, color="green", label="Gross Exposure", marker="braille")
 
-    if any(scale < 1.0 for scale in history.cppi_scale):
+    # 252-day trailing mean so the eye can track how typical deployment
+    # shifts across regimes (e.g. higher during bull years, lower during
+    # corrections). A static average would flatten this into one number.
+    rolling_avg = _trailing_mean(gross_pct, window=252)
+    plt.plot(dates, rolling_avg, color="white", label="Rolling Avg (252d)", marker="braille")
+
+    cppi_active = any(scale < 1.0 for scale in history.cppi_scale)
+    if cppi_active:
         cppi_pct = [scale * 100.0 for scale in history.cppi_scale]
         plt.plot(dates, cppi_pct, color="orange", label="CPPI Scale", marker="braille")
 
+    # Set the Y-window to ``[min - 5pp, max + 5pp]`` clipped to ``[0, 105]``
+    # so the line shows real variation without autoscaling into a noisy 0.5pp
+    # window for a near-flat run. With a 5pp buffer, a strategy at 95% renders
+    # in ``[90, 100]`` — clearly reading as "near full investment" rather than
+    # noise hugging the chart floor.
+    all_pct = list(gross_pct)
+    if cppi_active:
+        all_pct.extend(cppi_pct)
+    lo = max(0.0, min(all_pct) - 5.0)
+    hi = min(105.0, max(all_pct) + 5.0)
+    plt.ylim(lo, hi)
     plt.ylabel("%")
     _flush_centered("Gross Exposure (%)")
 

@@ -532,8 +532,19 @@ class BacktestEngine:
 
             telemetry = state.last_risk_telemetry
             drawdown = (state.peak_value - value) / state.peak_value if state.peak_value > 0 else 0.0
+            # Record *actual* gross exposure (market value of positions / total
+            # value), not the allocator's target output. The allocator
+            # constructs-to-budget so its targets are always near
+            # ``(1 - min_cash_pct)`` by design — a flat line that hides what
+            # the strategy actually deployed. ``positions_value / total_value``
+            # captures real cash drag from min_buy_delta, exit clamps, and
+            # waiting-for-fills lag.
+            positions_value = sum(
+                shares * close_prices.get(ticker, 0.0) for ticker, shares in state.positions.items() if shares > 0
+            )
+            actual_gross = positions_value / value if value > 0 else 0.0
             state.risk_history.dates.append(day)
-            state.risk_history.gross_exposure.append(telemetry.gross_exposure)
+            state.risk_history.gross_exposure.append(actual_gross)
             state.risk_history.cppi_scale.append(telemetry.cppi_scale)
             state.risk_history.vol_target_scale.append(telemetry.vol_target_scale)
             state.risk_history.predicted_vol.append(telemetry.predicted_vol)

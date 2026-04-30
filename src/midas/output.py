@@ -239,11 +239,21 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
     # --- Per-Ticker Vol Contribution ---
     if result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution:
         contrib_table = make_metric_table("Per-Ticker Vol Contribution")
-        for ticker, share in sorted(
+        items = sorted(
             result.risk_metrics.per_ticker_vol_contribution.items(),
             key=lambda kv: -abs(kv[1]),
-        ):
-            contrib_table.add_row(ticker, f"{share:.1%}")
+        )
+        max_share = max((abs(share) for _, share in items), default=0.0)
+        bar_width = 24
+        for ticker, share in items:
+            # Inline bar glyphs scale the largest contribution to ``bar_width``
+            # full blocks so concentration patterns are readable at a glance,
+            # in addition to the precise percentage. Using a single color keeps
+            # the visual quiet — adjacent rows are differentiable by length
+            # alone.
+            blocks = round((abs(share) / max_share) * bar_width) if max_share > 0 else 0
+            bar = "█" * blocks
+            contrib_table.add_row(ticker, f"[cyan]{bar}[/cyan] {share:.1%}")
         print_centered(contrib_table)
 
     # --- Per-Strategy P&L Attribution ---
