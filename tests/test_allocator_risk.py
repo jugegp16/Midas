@@ -368,3 +368,66 @@ def test_phase_0_min_cash_pct_compose_multiplicatively() -> None:
     result = alloc.allocate(["A", "B"], prices, current_drawdown=0.50)
     expected_investable = (1.0 - 0.05) * 0.50  # = 0.475
     assert math.isclose(sum(result.targets.values()), expected_investable, abs_tol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Per-bar risk telemetry on AllocationResult
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_inert_when_no_risk_config() -> None:
+    """Without risk_config, telemetry defaults are all inert (1.0/0.0/False)."""
+    alloc = _build_allocator(risk_config=None)
+    prices = {"A": _flat_history(60), "B": _flat_history(60)}
+    result = alloc.allocate(["A", "B"], prices)
+    tel = result.risk_telemetry
+    assert tel.cppi_scale == 1.0
+    assert tel.vol_target_scale == 1.0
+    assert tel.vol_target_skipped is False
+    assert tel.predicted_vol == 0.0
+    assert math.isclose(tel.gross_exposure, sum(result.targets.values()), abs_tol=1e-9)
+
+
+def test_telemetry_records_cppi_scale() -> None:
+    risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
+    alloc = _build_allocator(risk_config=risk)
+    prices = {"A": _flat_history(60), "B": _flat_history(60)}
+    result = alloc.allocate(["A", "B"], prices, current_drawdown=0.20)
+    # 1 - 1.5 * 0.20 = 0.70.
+    assert math.isclose(result.risk_telemetry.cppi_scale, 0.70, abs_tol=1e-9)
+
+
+def test_telemetry_records_vol_target_bind() -> None:
+    """When Phase 4 binds, telemetry captures predicted_vol and the scale."""
+    risk = RiskConfig(vol_target=0.05, vol_lookback_days=60)
+    alloc = _build_allocator(risk_config=risk)
+    prices = {
+        "A": _diverging_history(80, daily_vol=0.03, seed=1),
+        "B": _diverging_history(80, daily_vol=0.03, seed=2),
+    }
+    result = alloc.allocate(["A", "B"], prices)
+    tel = result.risk_telemetry
+    # Daily vol 0.03 → annualized ≈ 0.476 — well above the 0.05 target.
+    assert tel.predicted_vol > 0.05
+    assert tel.vol_target_scale < 1.0
+    assert tel.vol_target_skipped is False
+
+
+def test_telemetry_flags_vol_target_skip() -> None:
+    """Constant-price ticker (zero stdev) → Phase 4 skips silently."""
+    risk = RiskConfig(vol_target=0.10, vol_lookback_days=60)
+    alloc = _build_allocator(risk_config=risk)
+    prices = {"A": _flat_history(80), "B": _flat_history(80)}
+    result = alloc.allocate(["A", "B"], prices)
+    tel = result.risk_telemetry
+    assert tel.vol_target_skipped is True
+    assert tel.vol_target_scale == 1.0
+
+
+def test_telemetry_gross_exposure_matches_target_sum() -> None:
+    """gross_exposure on telemetry equals sum of final targets — invariant."""
+    risk = RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)
+    alloc = _build_allocator(risk_config=risk)
+    prices = {"A": _flat_history(60), "B": _flat_history(60)}
+    result = alloc.allocate(["A", "B"], prices, current_drawdown=0.30)
+    assert math.isclose(result.risk_telemetry.gross_exposure, sum(result.targets.values()), abs_tol=1e-12)

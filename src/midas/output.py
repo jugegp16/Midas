@@ -154,7 +154,7 @@ def _return_row(cum: float, days: int) -> str:
     return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
 
 
-def print_backtest_summary(result: BacktestResult) -> None:
+def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False) -> None:
     starting_val = result.starting_value
     final_val = result.final_value
     bh_val = result.buy_and_hold_value
@@ -206,7 +206,40 @@ def print_backtest_summary(result: BacktestResult) -> None:
             risk_table.add_row("Vol Target", f"{result.risk_metrics.vol_target:.2%}")
         risk_table.add_row("Drawdown From Peak", f"[red]{result.risk_metrics.drawdown_from_peak:.2%}[/red]")
         risk_table.add_row("Rolling Sharpe (252d)", color_signed(result.risk_metrics.rolling_sharpe_252d, fmt=".2f"))
+        risk_table.add_row("Avg Gross Exposure", f"{result.risk_metrics.avg_gross_exposure:.2%}")
+        risk_table.add_row("Min Gross Exposure", f"{result.risk_metrics.min_gross_exposure:.2%}")
     print_centered(risk_table)
+
+    # --- Phase Activity ---
+    if result.risk_metrics is not None and (
+        result.risk_metrics.cppi_active_pct > 0
+        or result.risk_metrics.vol_target_bind_pct > 0
+        or result.risk_metrics.vol_target_skip_count > 0
+    ):
+        phase_table = make_metric_table("Risk Engine Activity")
+        if result.risk_metrics.cppi_active_pct > 0 or result.risk_metrics.cppi_min_scale < 1.0:
+            phase_table.add_row("CPPI Active (% of bars)", f"{result.risk_metrics.cppi_active_pct:.1%}")
+            phase_table.add_row("CPPI Avg Scale", f"{result.risk_metrics.cppi_avg_scale:.2%}")
+            phase_table.add_row("CPPI Min Scale", f"[red]{result.risk_metrics.cppi_min_scale:.2%}[/red]")
+        if result.risk_metrics.vol_target_bind_pct > 0:
+            phase_table.add_row("Vol Target Bound (% of bars)", f"{result.risk_metrics.vol_target_bind_pct:.1%}")
+            phase_table.add_row("Vol Target Avg Scale", f"{result.risk_metrics.vol_target_avg_scale:.2%}")
+        if result.risk_metrics.vol_target_skip_count > 0:
+            phase_table.add_row(
+                "Vol Target Skipped (bars)",
+                f"[yellow]{result.risk_metrics.vol_target_skip_count}[/yellow]",
+            )
+        print_centered(phase_table)
+
+    # --- Per-Ticker Vol Contribution ---
+    if result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution:
+        contrib_table = make_metric_table("Per-Ticker Vol Contribution")
+        for ticker, share in sorted(
+            result.risk_metrics.per_ticker_vol_contribution.items(),
+            key=lambda kv: -abs(kv[1]),
+        ):
+            contrib_table.add_row(ticker, f"{share:.1%}")
+        print_centered(contrib_table)
 
     # --- Per-Strategy P&L Attribution ---
     if result.risk_metrics is not None and result.risk_metrics.per_strategy_pnl:
@@ -304,3 +337,8 @@ def print_backtest_summary(result: BacktestResult) -> None:
             "held at backtest end.[/dim italic]",
             justify="center",
         )
+
+    if show_charts:
+        from midas.charts import render_charts
+
+        render_charts(result)

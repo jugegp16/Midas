@@ -11,6 +11,7 @@ from midas.risk import (
     apply_drawdown_overlay,
     covariance_matrix,
     inverse_vol_offset,
+    per_ticker_vol_contribution,
     predict_portfolio_vol,
     realized_vol,
 )
@@ -157,3 +158,36 @@ class TestInverseVolOffset:
     def test_zero_vol_returns_nan(self) -> None:
         # Caller must check; zero indicates insufficient signal.
         assert math.isnan(inverse_vol_offset(0.0, vol_floor=DEFAULT_VOL_FLOOR))
+
+
+class TestPerTickerVolContribution:
+    def test_contributions_sum_to_one(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(252, 3))
+        weights = np.array([0.5, 0.3, 0.2])
+        contributions = per_ticker_vol_contribution(weights, log_returns)
+        assert math.isclose(float(np.sum(contributions)), 1.0, abs_tol=1e-9)
+
+    def test_higher_weight_higher_contribution_iid(self) -> None:
+        # With three independent equal-vol series, contribution share tracks
+        # weight share monotonically.
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(2_000, 3))
+        weights = np.array([0.6, 0.3, 0.1])
+        contributions = per_ticker_vol_contribution(weights, log_returns)
+        assert contributions[0] > contributions[1] > contributions[2]
+
+    def test_zero_weights_return_zero_array(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(100, 3))
+        weights = np.zeros(3)
+        contributions = per_ticker_vol_contribution(weights, log_returns)
+        np.testing.assert_array_equal(contributions, np.zeros(3))
+
+    def test_single_ticker(self) -> None:
+        rng = np.random.default_rng(0)
+        log_returns = rng.normal(0, 0.01, size=(100, 1))
+        weights = np.array([0.5])
+        contributions = per_ticker_vol_contribution(weights, log_returns)
+        # Sole asset accounts for the entire portfolio vol.
+        assert math.isclose(float(contributions[0]), 1.0, abs_tol=1e-9)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -21,7 +21,7 @@ from midas.metrics import (
     compute_annualized_return,
 )
 from midas.models import Direction, TradeRecord
-from midas.risk_metrics import RiskMetrics
+from midas.risk_metrics import RiskHistory, RiskMetrics
 
 
 @dataclass
@@ -58,6 +58,9 @@ class BacktestResult:
     unrealized_pnl_by_ticker: dict[str, float]  # per-ticker unrealized P&L
     basis_per_sell: list[float]  # cost basis for each SELL trade (parallel list)
     risk_metrics: RiskMetrics | None = None  # populated when the engine wires it in
+    risk_history: RiskHistory | None = None  # per-bar risk telemetry across the run
+    bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    """Per-bar buy-and-hold equity, parallel to ``equity_curve``."""
 
 
 # ---------------------------------------------------------------------------

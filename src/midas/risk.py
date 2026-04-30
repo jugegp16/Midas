@@ -94,6 +94,30 @@ def apply_drawdown_overlay(current_drawdown: float, penalty: float, floor: float
     return min(max(1.0 - penalty * current_drawdown, floor), 1.0)
 
 
+def per_ticker_vol_contribution(weights: np.ndarray, log_returns: np.ndarray) -> np.ndarray:
+    """Per-ticker share of portfolio volatility, summing to 1.0.
+
+    Args:
+        weights: shape ``(n_tickers,)``. Same column order as ``log_returns``.
+        log_returns: shape ``(n_bars, n_tickers)``. Daily log returns over a
+            common window.
+
+    Returns:
+        ``(n_tickers,)`` array of fractional contributions summing to 1.0 when
+        portfolio variance is positive — each entry is ``w_i * (cov @ w)_i``
+        divided by total portfolio variance. Preserves sign (this engine is
+        long-only, so contributions are non-negative in practice). Returns an
+        array of zeros when daily portfolio variance is non-positive,
+        signaling "no meaningful vol to attribute".
+    """
+    cov = covariance_matrix(log_returns)
+    cov_w = cov @ weights
+    variance = float(weights @ cov_w)
+    if variance <= 0:
+        return np.zeros_like(weights)
+    return np.asarray(weights * cov_w / variance)
+
+
 def inverse_vol_offset(vol: float, vol_floor: float) -> float:
     """Score offset for inverse-vol weighting: ``-log(max(vol, vol_floor))``.
 

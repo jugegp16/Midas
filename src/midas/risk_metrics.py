@@ -27,6 +27,35 @@ class RiskMetrics:
     rolling_sharpe_252d: float
     per_strategy_pnl: dict[str, float] = field(default_factory=dict)
     per_ticker_vol_contribution: dict[str, float] = field(default_factory=dict)
+    # Phase telemetry — aggregates over the run. All default to inert values
+    # when the corresponding phase is disabled, so downstream consumers can
+    # render unconditionally.
+    cppi_active_pct: float = 0.0
+    cppi_avg_scale: float = 1.0
+    cppi_min_scale: float = 1.0
+    vol_target_bind_pct: float = 0.0
+    vol_target_avg_scale: float = 1.0
+    vol_target_skip_count: int = 0
+    avg_gross_exposure: float = 0.0
+    min_gross_exposure: float = 0.0
+
+
+@dataclass(frozen=True)
+class RiskHistory:
+    """Per-bar risk telemetry across the backtest, parallel arrays.
+
+    Empty when the backtest produced no equity-curve points. Otherwise every
+    list has length ``len(dates)``. Populated unconditionally — when a phase
+    is disabled its array is a flat line of inert values (``cppi_scale=1.0``,
+    ``vol_target_scale=1.0``, ``predicted_vol=0.0``).
+    """
+
+    dates: list[date] = field(default_factory=list)
+    gross_exposure: list[float] = field(default_factory=list)
+    cppi_scale: list[float] = field(default_factory=list)
+    vol_target_scale: list[float] = field(default_factory=list)
+    predicted_vol: list[float] = field(default_factory=list)
+    drawdown: list[float] = field(default_factory=list)
 
 
 def compute_risk_metrics(
@@ -34,6 +63,8 @@ def compute_risk_metrics(
     vol_target: float | None,
     per_strategy_pnl: dict[str, float],
     per_ticker_vol_contribution: dict[str, float] | None = None,
+    risk_history: RiskHistory | None = None,
+    vol_target_skip_count: int = 0,
 ) -> RiskMetrics:
     """Compute current risk metrics from equity curve and pre-aggregated attribution.
 
@@ -42,11 +73,20 @@ def compute_risk_metrics(
         vol_target: configured target for context (None when disabled).
         per_strategy_pnl: cumulative attributed P&L per strategy name.
         per_ticker_vol_contribution: per-ticker share of portfolio vol (optional).
+        risk_history: per-bar telemetry; when present, drives the phase-activity
+            aggregates (CPPI active fraction, vol-target bind fraction, gross
+            exposure summary stats).
+        vol_target_skip_count: number of bars on which Phase 4 was configured
+            but skipped silently (insufficient history / non-positive close /
+            zero stdev). Surfaced raw on ``RiskMetrics`` so users can tell
+            whether vol-target was *configured but inert*.
 
     Returns:
         ``RiskMetrics`` snapshot at the latest equity-curve point. An empty
         curve yields a zero-everything snapshot.
     """
+    aggregates = _aggregate_history(risk_history)
+
     if not equity_curve:
         return RiskMetrics(
             realized_vol_60d=0.0,
@@ -55,6 +95,8 @@ def compute_risk_metrics(
             rolling_sharpe_252d=0.0,
             per_strategy_pnl=dict(per_strategy_pnl),
             per_ticker_vol_contribution=per_ticker_vol_contribution or {},
+            vol_target_skip_count=vol_target_skip_count,
+            **aggregates,
         )
 
     values = np.array([v for _, v in equity_curve], dtype=float)
@@ -73,7 +115,41 @@ def compute_risk_metrics(
         rolling_sharpe_252d=sharpe,
         per_strategy_pnl=dict(per_strategy_pnl),
         per_ticker_vol_contribution=per_ticker_vol_contribution or {},
+        vol_target_skip_count=vol_target_skip_count,
+        **aggregates,
     )
+
+
+def _aggregate_history(history: RiskHistory | None) -> dict[str, float]:
+    """Reduce per-bar telemetry into the scalar aggregates on ``RiskMetrics``.
+
+    Returns inert defaults (``cppi_avg_scale=1.0``, etc.) when ``history`` is
+    ``None`` or empty so callers can splat the result regardless of whether
+    the engine populated history.
+    """
+    if history is None or not history.dates:
+        return {
+            "cppi_active_pct": 0.0,
+            "cppi_avg_scale": 1.0,
+            "cppi_min_scale": 1.0,
+            "vol_target_bind_pct": 0.0,
+            "vol_target_avg_scale": 1.0,
+            "avg_gross_exposure": 0.0,
+            "min_gross_exposure": 0.0,
+        }
+    cppi = np.asarray(history.cppi_scale, dtype=float)
+    vol_scale = np.asarray(history.vol_target_scale, dtype=float)
+    gross = np.asarray(history.gross_exposure, dtype=float)
+    n = float(len(history.dates))
+    return {
+        "cppi_active_pct": float(np.sum(cppi < 1.0) / n),
+        "cppi_avg_scale": float(np.mean(cppi)),
+        "cppi_min_scale": float(np.min(cppi)),
+        "vol_target_bind_pct": float(np.sum(vol_scale < 1.0) / n),
+        "vol_target_avg_scale": float(np.mean(vol_scale)),
+        "avg_gross_exposure": float(np.mean(gross)),
+        "min_gross_exposure": float(np.min(gross)),
+    }
 
 
 def _log_returns_window(values: np.ndarray, lookback: int) -> np.ndarray:

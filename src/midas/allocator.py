@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -53,10 +53,28 @@ class _ScoredEntry:
 
 
 @dataclass
+class AllocatorRiskTelemetry:
+    """Per-allocation snapshot of risk-engine activity.
+
+    Recorded for every ``Allocator.allocate`` call so the engine can build a
+    bar-by-bar history. Defaults are inert (``cppi_scale=1.0``,
+    ``vol_target_scale=1.0``, etc.) when the corresponding phase is disabled
+    or didn't bind, so a disabled risk config produces a flat-line history.
+    """
+
+    cppi_scale: float = 1.0
+    vol_target_scale: float = 1.0
+    vol_target_skipped: bool = False
+    predicted_vol: float = 0.0
+    gross_exposure: float = 0.0
+
+
+@dataclass
 class AllocationResult:
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
+    risk_telemetry: AllocatorRiskTelemetry = field(default_factory=AllocatorRiskTelemetry)
 
 
 class Allocator:
@@ -158,6 +176,8 @@ class Allocator:
         if num_tickers == 0:
             return AllocationResult({}, {}, {})
 
+        telemetry = AllocatorRiskTelemetry()
+
         # Phase 0: CPPI drawdown overlay (no-op if not configured).
         exposure_scale = 1.0
         if (
@@ -170,6 +190,7 @@ class Allocator:
                 penalty=self._risk_config.drawdown_penalty,
                 floor=self._risk_config.drawdown_floor,
             )
+        telemetry.cppi_scale = exposure_scale
 
         investable = (1.0 - self._constraints.min_cash_pct) * exposure_scale
         base_weight = investable / num_tickers  # fallback when current_weights unknown
@@ -268,9 +289,10 @@ class Allocator:
         # annualized vol exceeds the target. Skipped if any active ticker has
         # insufficient or degenerate history (constant-price → singular Σ row).
         if self._risk_config is not None and self._risk_config.vol_target is not None and active:
-            self._apply_vol_target(active, price_data, targets)
+            self._apply_vol_target(active, price_data, targets, telemetry)
 
-        return AllocationResult(targets, contributions, blended_scores)
+        telemetry.gross_exposure = float(sum(targets.values()))
+        return AllocationResult(targets, contributions, blended_scores, risk_telemetry=telemetry)
 
     def _softmax_allocate(
         self,
@@ -351,6 +373,7 @@ class Allocator:
         active: list[str],
         price_data: dict[str, PriceHistory],
         targets: dict[str, float],
+        telemetry: AllocatorRiskTelemetry,
     ) -> None:
         """Scale all active weights so predicted annualized vol ≤ vol_target.
 
@@ -359,6 +382,9 @@ class Allocator:
         (constant-price ticker → singular row in the covariance estimate).
         Reduce-only: when scaling fires, the slack flows to cash; the soft
         cap remains satisfied because scaling can only shrink weights.
+
+        Records ``predicted_vol`` and ``vol_target_scale`` on ``telemetry``,
+        and flips ``vol_target_skipped=True`` on any silent early return.
         """
         assert self._risk_config is not None and self._risk_config.vol_target is not None
         lookback = self._risk_config.vol_lookback_days
@@ -366,21 +392,27 @@ class Allocator:
         for ticker in active:
             history = price_data.get(ticker)
             if history is None or len(history) < lookback + 1:
+                telemetry.vol_target_skipped = True
                 return
             window = np.asarray(history.close[-(lookback + 1) :])
             if np.any(window <= 0):
+                telemetry.vol_target_skipped = True
                 return
             series = np.diff(np.log(window))
             if np.std(series, ddof=1) == 0.0:
+                telemetry.vol_target_skipped = True
                 return
             log_returns_per_ticker.append(series)
         if not log_returns_per_ticker:
+            telemetry.vol_target_skipped = True
             return
         log_returns = np.column_stack(log_returns_per_ticker)
         weights = np.array([targets[ticker] for ticker in active])
         predicted = predict_portfolio_vol(weights, log_returns)
+        telemetry.predicted_vol = predicted
         target = self._risk_config.vol_target
         if predicted > target > 0.0:
             scale = target / predicted
+            telemetry.vol_target_scale = scale
             for ticker in active:
                 targets[ticker] *= scale

@@ -53,9 +53,15 @@ def _run(engine: BacktestEngine, end: date) -> object:
         ],
         available_cash=1_000.0,
     )
+    # A drop window in the first half of the run triggers MeanReversion
+    # (window=20, threshold=0.05) so trades actually fire before the truncated
+    # boundary (≈weekday 63). Without this, prices stay flat, zero trades fire,
+    # and the trade-list / attribution assertions below pass vacuously on
+    # empty inputs.
+    drops: list[float] = [0.0] * 30 + [-0.02] * 10 + [0.0] * 160
     price_data: dict[str, pd.DataFrame] = {
-        "A": make_price_frame(start=date(2024, 1, 1), days=200, base_price=100.0, name="A"),
-        "B": make_price_frame(start=date(2024, 1, 1), days=200, base_price=100.0, name="B"),
+        "A": make_price_frame(start=date(2024, 1, 1), days=200, base_price=100.0, daily_returns=drops, name="A"),
+        "B": make_price_frame(start=date(2024, 1, 1), days=200, base_price=100.0, daily_returns=drops, name="B"),
     }
     return engine.run(portfolio, price_data, start=date(2024, 1, 1), end=end)
 
@@ -111,6 +117,13 @@ def test_truncated_and_full_match_at_boundary() -> None:
     for tt, ft in zip(truncated_trades, full_trades_to_boundary, strict=True):
         assert tt == ft, f"trade differs at boundary: truncated={tt} full={ft}"
 
+    # The fixture's drop window triggers trades before the boundary; without
+    # this guard, the trade-list comparison above would pass vacuously on
+    # `[] == []` for any implementation that silently drops trades.
+    assert truncated_trades, (
+        "fixture should generate trades before boundary; MeanReversion not firing — check daily_returns"
+    )
+
     # 4. Cumulative per-strategy attributed P&L matches at boundary (the
     # attribution mechanic touches every buy and every sell — divergence here
     # implies divergent allocation decisions that survived even when net
@@ -119,6 +132,4 @@ def test_truncated_and_full_match_at_boundary() -> None:
     # The full run's *final* attribution would include all bars; we can't
     # directly compare it. The boundary-equality guarantee already follows
     # from (3): identical trades → identical attribution evolution up to T.
-    # Sanity-check that it's at least non-empty when trades fired.
-    if truncated_trades:
-        assert truncated_attr, "expected attribution buckets but got none"
+    assert truncated_attr, "expected attribution buckets but got none"

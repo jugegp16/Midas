@@ -140,6 +140,12 @@ def cli() -> None:
         "'next_close' = next session's close."
     ),
 )
+@click.option(
+    "--charts/--no-charts",
+    default=True,
+    show_default=True,
+    help="Render terminal ASCII charts (equity, drawdown, exposure) after the summary.",
+)
 def backtest(
     portfolio: str,
     strategies: str | None,
@@ -149,6 +155,7 @@ def backtest(
     train_pct: float,
     no_split: bool,
     execution_mode: ExecutionMode,
+    charts: bool,
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
@@ -186,7 +193,7 @@ def backtest(
     out_path = Path(output)
     write_backtest_results(result, out_path)
     print_status(f"Results written to {out_path}/")
-    print_backtest_summary(result)
+    print_backtest_summary(result, show_charts=charts)
 
 
 @cli.command()
