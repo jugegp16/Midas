@@ -4,11 +4,13 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "click>=8.1",
+    "optuna>=4.0",
     "pandas>=2.2",
+    "plotext>=5.3",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "scikit-learn>=1.5",
     "yfinance>=0.2",
-    "optuna>=4.0",
 ]
 
 [project.scripts]

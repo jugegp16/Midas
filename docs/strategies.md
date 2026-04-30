@@ -52,6 +52,27 @@ A strategy file needs at least one entry signal and at least one exit rule. With
 - **[Dip-Buying](../example-strategies/dip-buying.yaml)** — `BollingerBand` and `RSIOversold` for independent confirmation that an asset is oversold, protected by a `StopLoss` floor.
 - **[Balanced Growth](../example-strategies/balanced-growth.yaml)** — `Momentum` and `MeanReversion` give entries in both trending and recovering markets; `ProfitTaking` harvests gains at a fixed target and `ChandelierStop` provides a volatility-adjusted trailing stop that works whether the position is in profit or underwater.
 
+## Risk Discipline
+
+Optional risk policy lives under a top-level `risk:` block in the strategies YAML. Omit it for current behavior bit-for-bit. All vol quantities are **annualized**.
+
+```yaml
+risk:
+  weighting: inverse_vol      # equal | inverse_vol; default equal
+  vol_lookback_days: 60       # rolling window for vol and covariance estimates
+
+  vol_target: 0.20            # annualized; null/omit disables Phase 4b
+
+  drawdown_penalty: 1.5       # exposure = max(1 - penalty * dd, floor)
+  drawdown_floor: 0.5         # both required, both must be set or both omitted
+```
+
+The optimizer **does not** search risk knobs — risk is policy, easy to overfit, and changing it is a deliberate user act. To experiment, edit the YAML and rerun. For A/B comparisons keep two strategies files in version control.
+
+CPPI (`drawdown_penalty` / `drawdown_floor`) is currently inert in `live` mode — peak persistence requires a state file that is tracked for v2. Live runs log a warning at startup if CPPI is configured.
+
+See [Architecture: Risk-aware allocator phases](architecture.md#phase-4a-cppi-drawdown-overlay-optional) for the phase-by-phase behavior.
+
 ## Entry Signals
 
 Entry signals score a ticker's bullishness in `[0, 1]`. They contribute to the allocator's per-ticker blend via a configurable `weight` (default 1.0). A signal returning `None` is excluded from the blend entirely — it doesn't pull the average toward zero, it simply doesn't participate. A signal returning 0 means "no opinion" — the ticker is treated as held at its current weight rather than as an active buy candidate.

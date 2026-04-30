@@ -14,6 +14,7 @@ from midas.models import (
     OrderContext,
     PortfolioConfig,
     PositionLot,
+    RiskConfig,
     StrategyConfig,
     TradeRecord,
 )
@@ -116,3 +117,31 @@ class TestCashInfusion:
         infusion = CashInfusion(amount=1500.0, next_date=date(2025, 1, 3), frequency="quarterly")
         with pytest.raises(ValueError, match="Unknown cash_infusion frequency"):
             infusion.advance()
+
+
+class TestRiskConfig:
+    def test_defaults_disable_everything(self) -> None:
+        cfg = RiskConfig()
+        assert cfg.weighting == "equal"
+        assert cfg.vol_lookback_days == 60
+        assert cfg.vol_target is None
+        assert cfg.drawdown_penalty is None
+        assert cfg.drawdown_floor is None
+
+    def test_drawdown_both_or_neither_neither(self) -> None:
+        RiskConfig(drawdown_penalty=None, drawdown_floor=None)  # ok
+
+    def test_drawdown_both_or_neither_both(self) -> None:
+        RiskConfig(drawdown_penalty=1.5, drawdown_floor=0.5)  # ok
+
+    def test_drawdown_penalty_without_floor_raises(self) -> None:
+        with pytest.raises(ValueError, match="drawdown_floor"):
+            RiskConfig(drawdown_penalty=1.5)
+
+    def test_drawdown_floor_without_penalty_raises(self) -> None:
+        with pytest.raises(ValueError, match="drawdown_penalty"):
+            RiskConfig(drawdown_floor=0.5)
+
+    def test_weighting_validation(self) -> None:
+        with pytest.raises(ValueError, match="weighting"):
+            RiskConfig(weighting="bogus")

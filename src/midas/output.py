@@ -154,7 +154,7 @@ def _return_row(cum: float, days: int) -> str:
     return f"{color_signed(cum)} ({color_signed(annualized)} annualized)"
 
 
-def print_backtest_summary(result: BacktestResult) -> None:
+def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False) -> None:
     starting_val = result.starting_value
     final_val = result.final_value
     bh_val = result.buy_and_hold_value
@@ -200,7 +200,73 @@ def print_backtest_summary(result: BacktestResult) -> None:
     risk_table.add_row("Max Drawdown", f"[red]{result.max_drawdown:.2%}[/red]")
     risk_table.add_row("Sharpe Ratio", color_signed(result.sharpe_ratio, fmt=".2f"))
     risk_table.add_row("Sortino Ratio", color_signed(result.sortino_ratio, fmt=".2f"))
+    if result.risk_metrics is not None:
+        risk_table.add_row("Realized Vol (60d)", f"{result.risk_metrics.realized_vol_60d:.2%}")
+        if result.risk_metrics.vol_target is not None:
+            risk_table.add_row("Vol Target", f"{result.risk_metrics.vol_target:.2%}")
+        risk_table.add_row("Drawdown From Peak", f"[red]{result.risk_metrics.drawdown_from_peak:.2%}[/red]")
+        risk_table.add_row("Rolling Sharpe (252d)", color_signed(result.risk_metrics.rolling_sharpe_252d, fmt=".2f"))
+        risk_table.add_row("Avg Gross Exposure", f"{result.risk_metrics.avg_gross_exposure:.2%}")
+        risk_table.add_row("Min Gross Exposure", f"{result.risk_metrics.min_gross_exposure:.2%}")
     print_centered(risk_table)
+
+    # --- Risk Engine Activity ---
+    # Show this section when CPPI fired on any bar OR when vol target is
+    # configured (regardless of whether it bound). The vol-target clause is
+    # configuration-gated so a configured-but-non-binding target shows
+    # "Avg Scale: 100.00%" as confirmation it ran, rather than an empty
+    # section indistinguishable from "feature was disabled". CPPI does not
+    # have an analogous configuration field on RiskMetrics, so its rows
+    # surface only when activity registers.
+    if result.risk_metrics is not None and (
+        result.risk_metrics.cppi_active_pct > 0
+        or result.risk_metrics.cppi_min_scale < 1.0
+        or result.risk_metrics.vol_target is not None
+    ):
+        phase_table = make_metric_table("Risk Engine Activity")
+        if result.risk_metrics.cppi_active_pct > 0 or result.risk_metrics.cppi_min_scale < 1.0:
+            phase_table.add_row("CPPI Active (% of bars)", f"{result.risk_metrics.cppi_active_pct:.1%}")
+            phase_table.add_row("CPPI Avg Scale", f"{result.risk_metrics.cppi_avg_scale:.2%}")
+            phase_table.add_row("CPPI Min Scale", f"[red]{result.risk_metrics.cppi_min_scale:.2%}[/red]")
+        if result.risk_metrics.vol_target is not None:
+            phase_table.add_row("Vol Target Bound (% of bars)", f"{result.risk_metrics.vol_target_bind_pct:.1%}")
+            phase_table.add_row("Vol Target Avg Scale", f"{result.risk_metrics.vol_target_avg_scale:.2%}")
+        if result.risk_metrics.vol_target_skip_count > 0:
+            phase_table.add_row(
+                "Vol Target Skipped (bars)",
+                f"[yellow]{result.risk_metrics.vol_target_skip_count}[/yellow]",
+            )
+        print_centered(phase_table)
+
+    # --- Per-Ticker Vol Contribution ---
+    if result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution:
+        contrib_table = make_metric_table("Per-Ticker Vol Contribution")
+        items = sorted(
+            result.risk_metrics.per_ticker_vol_contribution.items(),
+            key=lambda kv: -abs(kv[1]),
+        )
+        max_share = max((abs(share) for _, share in items), default=0.0)
+        bar_width = 24
+        for ticker, share in items:
+            # Inline bar glyphs scale the largest contribution to ``bar_width``
+            # full blocks so concentration patterns are readable at a glance,
+            # in addition to the precise percentage. Using a single color keeps
+            # the visual quiet — adjacent rows are differentiable by length
+            # alone.
+            blocks = round((abs(share) / max_share) * bar_width) if max_share > 0 else 0
+            bar = "█" * blocks
+            contrib_table.add_row(ticker, f"[cyan]{bar}[/cyan] {share:.1%}")
+        print_centered(contrib_table)
+
+    # --- Per-Strategy P&L Attribution ---
+    if result.risk_metrics is not None and result.risk_metrics.per_strategy_pnl:
+        attr_table = make_metric_table("Per-Strategy P&L Attribution")
+        for strat, pnl in sorted(
+            result.risk_metrics.per_strategy_pnl.items(),
+            key=lambda kv: -kv[1],
+        ):
+            attr_table.add_row(strat, f"${pnl:+,.2f}")
+        print_centered(attr_table)
 
     # --- Trade Quality ---
     if any(trade.direction == Direction.SELL for trade in result.trades):
@@ -288,3 +354,8 @@ def print_backtest_summary(result: BacktestResult) -> None:
             "held at backtest end.[/dim italic]",
             justify="center",
         )
+
+    if show_charts:
+        from midas.charts import render_charts
+
+        render_charts(result)

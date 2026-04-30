@@ -23,6 +23,7 @@ from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
     PortfolioConfig,
+    RiskConfig,
 )
 from midas.order_sizer import OrderSizer
 from midas.results import BacktestResult
@@ -236,6 +237,7 @@ def _run_trial(
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
+    risk_config: RiskConfig | None = None,
 ) -> tuple[float, float, float, float, float, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
@@ -273,7 +275,7 @@ def _run_trial(
         min_buy_delta=global_params.get("min_buy_delta", 0.02),
     )
 
-    allocator = Allocator(entries, constraints, n_tickers)
+    allocator = Allocator(entries, constraints, n_tickers, risk_config=risk_config)
     order_sizer = OrderSizer()
 
     engine = BacktestEngine(
@@ -305,6 +307,7 @@ def _init_worker(
     min_cash_pct: float,
     train_pct: float,
     enable_split: bool = True,
+    risk_config: RiskConfig | None = None,
 ) -> None:
     # Suppress allocator warnings during trial evaluation — the optimizer
     # explores boundary values that trigger heuristic warnings but are fine
@@ -321,6 +324,7 @@ def _init_worker(
         min_cash_pct=min_cash_pct,
         train_pct=train_pct,
         enable_split=enable_split,
+        risk_config=risk_config,
     )
 
 
@@ -333,6 +337,7 @@ def _wf_init_worker(
     portfolio: PortfolioConfig,
     price_data: dict[str, pd.DataFrame],
     min_cash_pct: float,
+    risk_config: RiskConfig | None = None,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -340,6 +345,7 @@ def _wf_init_worker(
         portfolio=portfolio,
         price_data=price_data,
         min_cash_pct=min_cash_pct,
+        risk_config=risk_config,
     )
 
 
@@ -356,6 +362,7 @@ def _wf_trial_worker(
         end,
         worker_state["min_cash_pct"],
         enable_split=False,
+        risk_config=worker_state.get("risk_config"),
     )
     return total_ret, bh_ret, train_ret, test_ret, twr
 
@@ -433,6 +440,7 @@ def optimize(
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     train_pct: float = DEFAULT_TRAIN_PCT,
     log_fn: Callable[[str], None] | None = None,
+    risk_config: RiskConfig | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -464,7 +472,7 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct),
+        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct, True, risk_config),
     )
 
     trials_done = 0
@@ -520,6 +528,7 @@ def optimize(
         end,
         min_cash_pct=min_cash_pct,
         train_pct=train_pct,
+        risk_config=risk_config,
     )
 
     log(
@@ -550,6 +559,7 @@ def walk_forward_optimize(
     min_train_pct: float = WF_MIN_TRAIN_PCT,
     min_test_days: int = WF_MIN_TEST_DAYS,
     log_fn: Callable[[str], None] | None = None,
+    risk_config: RiskConfig | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -601,7 +611,7 @@ def walk_forward_optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_wf_init_worker,
-        initargs=(portfolio, price_data, min_cash_pct),
+        initargs=(portfolio, price_data, min_cash_pct, risk_config),
     )
 
     try:
@@ -678,6 +688,7 @@ def walk_forward_optimize(
                 fold_test_end,
                 min_cash_pct,
                 enable_split=False,
+                risk_config=risk_config,
             )
 
             train_days = (fold_train_end - fold_train_start).days
@@ -775,8 +786,24 @@ def write_strategies_yaml(
     params: dict[str, dict[str, float]],
     path: str,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    risk_config: RiskConfig | None = None,
 ) -> None:
-    """Write optimized parameters to a strategies YAML file."""
+    """Write optimized parameters to a strategies YAML file.
+
+    The optimizer does not search risk knobs (risk is policy, not a tunable).
+    When the user supplied a ``risk:`` block in the input, it must round-trip
+    to the optimized output unchanged so the next run honors the same policy;
+    otherwise the optimized YAML silently drops the user's risk config.
+
+    Args:
+        params: Per-strategy parameter dict from the optimizer (also includes
+            ``ALLOCATION_KEY`` for portfolio-wide knobs).
+        path: Output path.
+        min_cash_pct: Preserved from the user's input config.
+        risk_config: Preserved from the user's input config. When present and
+            differing from defaults, emitted as a ``risk:`` block. ``None`` or
+            an all-default ``RiskConfig`` is omitted.
+    """
     output: dict[str, object] = {}
 
     # Emit global allocation knobs as top-level keys
@@ -786,6 +813,10 @@ def write_strategies_yaml(
 
     # min_cash_pct is not optimized — preserve the user's configured value
     output["min_cash_pct"] = round(min_cash_pct, 4)
+
+    risk_block = _risk_block_for_yaml(risk_config)
+    if risk_block:
+        output["risk"] = risk_block
 
     strategies = []
     for name, param_dict in params.items():
@@ -807,4 +838,29 @@ def write_strategies_yaml(
     output["strategies"] = strategies
 
     with open(path, "w") as f:
-        yaml.dump(output, f, default_flow_style=False)
+        yaml.dump(output, f, default_flow_style=False, sort_keys=False)
+
+
+def _risk_block_for_yaml(risk_config: RiskConfig | None) -> dict[str, object]:
+    """Render a ``risk:`` block dict, omitting fields that match the dataclass default.
+
+    Returns ``{}`` when ``risk_config`` is ``None`` or every field is at its
+    default — there is no behavioral signal to preserve. Otherwise emits only
+    the fields the user (implicitly or explicitly) set to a non-default value,
+    matching the spec's "omit to disable" YAML conventions.
+    """
+    if risk_config is None:
+        return {}
+    default = RiskConfig()
+    block: dict[str, object] = {}
+    if risk_config.weighting != default.weighting:
+        block["weighting"] = risk_config.weighting
+    if risk_config.vol_lookback_days != default.vol_lookback_days:
+        block["vol_lookback_days"] = int(risk_config.vol_lookback_days)
+    if risk_config.vol_target is not None:
+        block["vol_target"] = round(float(risk_config.vol_target), 4)
+    if risk_config.drawdown_penalty is not None:
+        block["drawdown_penalty"] = round(float(risk_config.drawdown_penalty), 4)
+    if risk_config.drawdown_floor is not None:
+        block["drawdown_floor"] = round(float(risk_config.drawdown_floor), 4)
+    return block
