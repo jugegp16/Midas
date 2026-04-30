@@ -161,10 +161,12 @@ def _log_returns_window(values: np.ndarray, lookback: int) -> np.ndarray:
     if values.size < 2:
         return np.empty(0)
     window = values[-(lookback + 1) :] if values.size > lookback else values
-    positive = window[window > 0]
-    if positive.size < 2:
+    # Any non-positive bar makes the log-return series ill-defined; treat the
+    # whole window as insufficient signal rather than splicing across the gap
+    # (which would fabricate a return between non-adjacent points).
+    if window.size < 2 or np.any(window <= 0):
         return np.empty(0)
-    return np.diff(np.log(positive))
+    return np.diff(np.log(window))
 
 
 def _annualized_vol(values: np.ndarray, lookback: int) -> float:
