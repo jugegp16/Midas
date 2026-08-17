@@ -84,10 +84,29 @@ midas tax-report --strategies strategies.yaml \
 ```
 
 Prints a per-row table (ticker, shares, purchase/sale dates, basis,
-proceeds, P&L, days held, classification) and writes the same data plus a
-per-year aggregate footer to `--output`.
+proceeds, P&L, days held, classification) and writes the same data to
+`--output`. `cost_basis`, `proceeds`, and `realized_pnl` are all row totals
+(matching Schedule D columns (d)/(e)), so `proceeds - cost_basis =
+realized_pnl` holds on every row.
+
+Per-year aggregates (`year`, `st_realized`, `lt_realized`,
+`net_after_cross`, `deductible_loss`, `carry_forward`, `tax_owed`,
+`payment_date`) go to a companion file, `<output>.summary.csv`, so both
+files parse cleanly as flat CSV. If the window contains no sales, both
+files are written header-only (and only when `--output` is given).
 
 `--start` / `--end` accept arbitrary date ranges instead of `--year`.
+
+Netting and loss carryforward are computed over the **entire** trade log,
+not just the report window — a loss realized in a prior year carries into
+the reported year exactly as it does in backtest after-tax accounting. The
+window only selects which rows and per-year summaries are displayed.
+
+Two log conditions produce warnings on stderr: a SELL with no `cost_basis`
+is assumed to have basis equal to its sale price (realized P&L $0), and a
+SELL with no `holding_period` cannot be classified ST/LT and is excluded
+from both the row listing and the totals. Fix the log row (hand-edits are
+supported) to include such sales.
 
 ## Caveats
 
