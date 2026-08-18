@@ -23,6 +23,86 @@ from datetime import date, timedelta
 from midas.metrics import pair_sells_with_basis
 from midas.models import Direction, HoldingPeriod, TaxConfig, TradeRecord
 
+TAX_BRACKET_YEAR = 2026
+
+# (upper_bound, marginal_rate) pairs, ascending; the last upper bound is
+# infinity. Figures from Rev. Proc. 2025-32 (tax year 2026, federal only).
+# Update yearly together with TAX_BRACKET_YEAR.
+ORDINARY_BRACKETS: dict[str, tuple[tuple[float, float], ...]] = {
+    "single": (
+        (12_400.0, 0.10),
+        (50_400.0, 0.12),
+        (105_700.0, 0.22),
+        (201_775.0, 0.24),
+        (256_225.0, 0.32),
+        (640_600.0, 0.35),
+        (float("inf"), 0.37),
+    ),
+    "married": (
+        (24_800.0, 0.10),
+        (100_800.0, 0.12),
+        (211_400.0, 0.22),
+        (403_550.0, 0.24),
+        (512_450.0, 0.32),
+        (768_700.0, 0.35),
+        (float("inf"), 0.37),
+    ),
+}
+
+LTCG_BRACKETS: dict[str, tuple[tuple[float, float], ...]] = {
+    "single": ((49_450.0, 0.0), (545_500.0, 0.15), (float("inf"), 0.20)),
+    "married": ((98_900.0, 0.0), (613_700.0, 0.15), (float("inf"), 0.20)),
+}
+
+NIIT_RATE = 0.038
+NIIT_THRESHOLD: dict[str, float] = {"single": 200_000.0, "married": 250_000.0}
+
+
+def _marginal_rate(brackets: tuple[tuple[float, float], ...], income: float) -> float:
+    for upper, rate in brackets:
+        if income <= upper:
+            return rate
+    return brackets[-1][1]
+
+
+def derive_tax_rates(filing_status: str, taxable_income: float) -> tuple[float, float]:
+    """Derive flat (short_term_rate, long_term_rate) from federal brackets.
+
+    Uses the ``TAX_BRACKET_YEAR`` ordinary-income and LTCG bracket tables
+    plus NIIT. The short-term rate is the marginal ordinary bracket at
+    *taxable_income* (trading gains stack on top of ordinary income); the
+    long-term rate is the LTCG 0/15/20 bracket. Both gain ``NIIT_RATE``
+    above the NIIT threshold. Federal only — state taxes are on the user.
+
+    The long-term rate is clamped to the short-term rate: in the narrow
+    band where the LTCG 15% floor sits below the top of the 12% ordinary
+    bracket, true LT > ST, which ``TaxConfig`` rejects as a transposition.
+
+    Args:
+        filing_status: ``"single"`` or ``"married"`` (filing jointly).
+        taxable_income: Approximate annual taxable income in USD.
+
+    Returns:
+        ``(short_term_rate, long_term_rate)`` as decimal fractions,
+        rounded to 4 places.
+
+    Raises:
+        ValueError: On unknown filing status or negative income.
+    """
+    if filing_status not in ORDINARY_BRACKETS:
+        msg = f"filing_status must be one of {sorted(ORDINARY_BRACKETS)}, got {filing_status!r}"
+        raise ValueError(msg)
+    if taxable_income < 0:
+        msg = f"taxable_income must be >= 0, got {taxable_income}"
+        raise ValueError(msg)
+    short_term = _marginal_rate(ORDINARY_BRACKETS[filing_status], taxable_income)
+    long_term = _marginal_rate(LTCG_BRACKETS[filing_status], taxable_income)
+    if taxable_income > NIIT_THRESHOLD[filing_status]:
+        short_term += NIIT_RATE
+        long_term += NIIT_RATE
+    long_term = min(long_term, short_term)
+    return round(short_term, 4), round(long_term, 4)
+
 
 @dataclass(frozen=True)
 class AnnualTaxSummary:
