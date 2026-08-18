@@ -212,6 +212,23 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
                     f"${s.tax_owed:+,.2f}",
                     f"${s.carry_forward:,.2f}",
                 )
+            # Net total is ST + LT raw sums, not the column sum: per-year
+            # nets re-apply carried-in losses, so summing them would count
+            # a carried loss once per year it appears in. Carry Forward
+            # shows the balance still outstanding at the end of the run.
+            total_st = sum(s.st_realized for s in result.tax_summary)
+            total_lt = sum(s.lt_realized for s in result.tax_summary)
+            total_tax = sum(s.tax_owed for s in result.tax_summary)
+            tax_table.add_section()
+            tax_table.add_row(
+                "Total",
+                f"${total_st:+,.2f}",
+                f"${total_lt:+,.2f}",
+                f"${total_st + total_lt:+,.2f}",
+                f"${total_tax:+,.2f}",
+                f"${result.tax_summary[-1].carry_forward:,.2f}",
+                style="bold",
+            )
             print_centered(tax_table)
 
     # --- Train / Test Split ---

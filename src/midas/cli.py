@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import csv
+import sys
+from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
 from pathlib import Path
 
 import click
 import pandas as pd
+from rich.console import Console
 
 from midas.allocator import Allocator
 from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, ExecutionMode
@@ -22,12 +25,35 @@ from midas.models import (
     TradeRecord,
 )
 from midas.order_sizer import OrderSizer
-from midas.output import print_backtest_summary, print_status, print_strategy_table
+from midas.output import make_wide_table, print_backtest_summary, print_status, print_strategy_table
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
-from midas.tax import AnnualTaxSummary
-from midas.trade_log import LoggedTrade
+from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
+from midas.trade_log import LoggedTrade, TradeLogError, read_trades
+
+TAX_REPORT_COLUMNS: tuple[str, ...] = (
+    "ticker",
+    "shares",
+    "purchase_date",
+    "sale_date",
+    "cost_basis",
+    "proceeds",
+    "realized_pnl",
+    "holding_period_days",
+    "classification",
+)
+
+TAX_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "year",
+    "st_realized",
+    "lt_realized",
+    "net_after_cross",
+    "deductible_loss",
+    "carry_forward",
+    "tax_owed",
+    "payment_date",
+)
 
 
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
@@ -70,6 +96,90 @@ def _build_components(
 def _to_date(dt: date | datetime) -> date:
     """Coerce click.DateTime output to a plain date."""
     return dt.date() if isinstance(dt, datetime) else dt
+
+
+def _resolve_state_path(port: PortfolioConfig, portfolio_path: Path) -> Path:
+    """State file from the portfolio config, defaulting to `<portfolio>.state.yaml` beside it."""
+    return port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether both stdin and stdout are TTYs, i.e. it is safe to prompt."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_tax_rates() -> tuple[float, float, str]:
+    """Ask for capital-gains rates, directly or derived from income.
+
+    Returns:
+        ``(short_term_rate, long_term_rate, provenance)`` where provenance
+        is the YAML comment describing where the numbers came from.
+    """
+    if click.confirm("Do you know your short/long-term capital-gains rates?", default=False):
+        short_term = click.prompt("Short-term capital-gains rate (decimal fraction)", type=float, default=0.37)
+        long_term = click.prompt("Long-term capital-gains rate (decimal fraction)", type=float, default=0.20)
+        return short_term, long_term, "configured interactively"
+    click.echo("No problem — they can be derived from your federal bracket.")
+    status = click.prompt(
+        "Filing status (married = filing jointly)",
+        type=click.Choice(["single", "married"]),
+        default="single",
+    )
+    income = click.prompt("Approximate annual taxable income (USD)", type=float)
+    short_term, long_term = derive_tax_rates(status, income)
+    click.echo(
+        f"Derived rates: short-term {short_term:.1%}, long-term {long_term:.1%} "
+        f"({TAX_BRACKET_YEAR} federal brackets; add state taxes to both if applicable)"
+    )
+    return short_term, long_term, f"derived from ~${income:,.0f} {status}, {TAX_BRACKET_YEAR} federal brackets"
+
+
+def _ensure_tax_config(port: PortfolioConfig, portfolio_path: Path) -> TaxConfig | None:
+    """Return the portfolio's tax config, offering one-time interactive setup.
+
+    When the portfolio file has no ``tax:`` key at all and the session is
+    interactive, ask whether to set up after-tax accounting and append the
+    outcome to the file: a ``tax:`` block on yes, ``tax: off`` on no. A
+    file that declares ``tax:`` either way is never prompted about. The
+    income figure used for derivation is never written to the file.
+    """
+    if port.tax_declared:
+        return port.tax_config
+    if not _stdin_is_interactive():
+        return None
+    if not click.confirm(
+        f"No tax config in {portfolio_path} — set up after-tax accounting now?",
+        default=False,
+    ):
+        with open(portfolio_path, "a", encoding="utf-8") as handle:
+            handle.write("\ntax: off  # after-tax accounting disabled; delete this line to be asked again\n")
+        click.echo(f"Wrote `tax: off` to {portfolio_path}.")
+        return None
+    while True:
+        try:
+            short_term, long_term, provenance = _prompt_tax_rates()
+            cap = click.prompt("Deductible loss cap (USD/year)", type=float, default=3000.0)
+            lag = click.prompt("Payment lag (days from year-end to payment)", type=int, default=105)
+            tax_config = TaxConfig(
+                short_term_rate=short_term,
+                long_term_rate=long_term,
+                deductible_loss_cap=cap,
+                payment_lag_days=lag,
+            )
+            break
+        except ValueError as exc:
+            click.echo(f"Invalid tax config: {exc}. Let's try again.", err=True)
+    block = (
+        f"\ntax:  # {provenance}\n"
+        f"  short_term_rate: {tax_config.short_term_rate}\n"
+        f"  long_term_rate: {tax_config.long_term_rate}\n"
+        f"  deductible_loss_cap: {tax_config.deductible_loss_cap}\n"
+        f"  payment_lag_days: {tax_config.payment_lag_days}\n"
+    )
+    with open(portfolio_path, "a", encoding="utf-8") as handle:
+        handle.write(block)
+    click.echo(f"Wrote tax config to {portfolio_path}.")
+    return tax_config
 
 
 def _fetch_prices(
@@ -164,8 +274,11 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, risk_config, tax_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
+    # Ask before the (slow) price download so the prompt isn't buried
+    # behind fetch output or left waiting for a user who walked away.
+    tax_config = _ensure_tax_config(port, Path(portfolio))
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
 
     start_d, end_d = _to_date(start), _to_date(end)
@@ -230,9 +343,11 @@ def live(
 
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
-    state_path = port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
-    strat_configs, constraints, risk_config, _ = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
+    state_path = _resolve_state_path(port, portfolio_path)
+    # Setup opportunity: live's trade log is what tax-report consumes later.
+    _ensure_tax_config(port, portfolio_path)
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
     provider = CachedYFinanceProvider()
 
@@ -262,16 +377,12 @@ def live(
 @click.option(
     "--portfolio",
     "-p",
-    default=None,
-    type=click.Path(exists=True),
-    help="Portfolio YAML; resolves the trade log next to its state file unless --from-trades is given.",
-)
-@click.option(
-    "--strategies",
-    "-s",
     required=True,
     type=click.Path(exists=True),
-    help="Strategies YAML containing the tax: block. Required — rates have no defaults at the CLI.",
+    help=(
+        "Portfolio YAML containing the tax: block; also resolves the trade log "
+        "next to its state file unless --from-trades is given."
+    ),
 )
 @click.option(
     "--from-trades",
@@ -287,11 +398,14 @@ def live(
     "--output",
     "-o",
     default=None,
-    help="Output CSV path. Defaults to schedule_d_<year>.csv (or schedule_d_<start>_<end>.csv).",
+    help=(
+        "Output CSV path. Defaults to schedule_d_<year>.csv (or schedule_d_<start>_<end>.csv). "
+        "Per-year aggregates land in a companion summary CSV named by swapping the extension "
+        "(schedule_d_2026.csv -> schedule_d_2026.summary.csv)."
+    ),
 )
 def tax_report(
-    portfolio: str | None,
-    strategies: str,
+    portfolio: str,
     from_trades: str | None,
     year: int | None,
     start: datetime | None,
@@ -299,59 +413,88 @@ def tax_report(
     output: str | None,
 ) -> None:
     """Year-end realized-P&L report (Schedule D-shaped) from a trade log."""
-    from midas.tax import compute_tax_summary
-    from midas.trade_log import read_trades
+    if year is not None:
+        if start is not None or end is not None:
+            raise click.UsageError("--year cannot be combined with --start/--end")
+        if not MINYEAR <= year <= MAXYEAR:
+            raise click.UsageError(f"--year must be a calendar year ({MINYEAR}-{MAXYEAR}), got {year}")
+        start_d = date(year, 1, 1)
+        end_d = date(year, 12, 31)
+        period_label = str(year)
+    elif start is not None and end is not None:
+        start_d = _to_date(start)
+        end_d = _to_date(end)
+        if start_d > end_d:
+            raise click.UsageError(f"--start ({start_d}) must be on or before --end ({end_d})")
+        period_label = f"{start_d.isoformat()}_{end_d.isoformat()}"
+    else:
+        raise click.UsageError("either --year or both --start and --end must be provided")
 
-    if year is None and (start is None or end is None):
-        msg = "either --year or both --start and --end must be provided"
-        raise click.UsageError(msg)
-
-    _strats, _constraints, _risk, tax_config = load_strategies(Path(strategies))
+    portfolio_path = Path(portfolio)
+    port = load_portfolio(portfolio_path)
+    tax_config = _ensure_tax_config(port, portfolio_path)
     if tax_config is None:
         msg = (
-            "strategies file has no `tax:` block; tax-report requires configured rates "
-            "(short_term_rate, long_term_rate). See docs/tax-reporting.md."
+            "portfolio file has no `tax:` block; tax-report requires configured rates "
+            "(short_term_rate, long_term_rate). Run interactively to be walked through "
+            "setup (delete any `tax: off` line first), or see docs/tax-reporting.md."
         )
         raise click.UsageError(msg)
 
     if from_trades is not None:
         trades_path = Path(from_trades)
     else:
-        if portfolio is None:
-            raise click.UsageError("either --portfolio or --from-trades is required")
-        port = load_portfolio(Path(portfolio))
-        portfolio_path = Path(portfolio)
-        state_path = port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
+        state_path = _resolve_state_path(port, portfolio_path)
         trades_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
         if not trades_path.exists():
             msg = f"trade log not found at {trades_path}"
             raise click.UsageError(msg)
 
-    if year is not None:
-        start_d = date(year, 1, 1)
-        end_d = date(year, 12, 31)
-        period_label = str(year)
-    else:
-        assert start is not None and end is not None
-        start_d = _to_date(start)
-        end_d = _to_date(end)
-        period_label = f"{start_d.isoformat()}_{end_d.isoformat()}"
+    # Netting and carryforward are annual and cumulative, so the tax engine
+    # must see every SELL in the log — a loss realized before the report
+    # window carries into it. The window only filters what gets displayed.
+    try:
+        logged_rows = read_trades(trades_path)
+    except TradeLogError as exc:
+        raise click.ClickException(str(exc)) from exc
 
-    rows: list[LoggedTrade] = [
-        row for row in read_trades(trades_path) if row.direction == Direction.SELL and start_d <= row.date <= end_d
-    ]
+    usable_sells: list[LoggedTrade] = []
+    for row in logged_rows:
+        if row.direction != Direction.SELL:
+            continue
+        if row.holding_period is None:
+            click.echo(
+                f"warning: {row.date.isoformat()} {row.ticker} SELL has no holding_period; "
+                "excluded from report rows and totals",
+                err=True,
+            )
+            continue
+        if row.cost_basis is None:
+            click.echo(
+                f"warning: {row.date.isoformat()} {row.ticker} SELL has no cost_basis; "
+                "assuming basis equals sale price (realized P&L $0)",
+                err=True,
+            )
+        usable_sells.append(row)
+
+    rows: list[LoggedTrade] = [row for row in usable_sells if start_d <= row.date <= end_d]
 
     if not rows:
         click.echo(f"No realized sales in {period_label}.")
         if output is not None:
-            Path(output).write_text(",".join(TAX_REPORT_COLUMNS) + "\n")
+            out_path = Path(output)
+            out_path.write_text(",".join(TAX_REPORT_COLUMNS) + "\n")
+            summary_path = out_path.with_suffix(".summary.csv")
+            summary_path.write_text(",".join(TAX_SUMMARY_COLUMNS) + "\n")
+            click.echo(f"Wrote {out_path}")
+            click.echo(f"Wrote {summary_path}")
         return
 
     out_path = Path(output) if output is not None else Path(f"schedule_d_{period_label}.csv")
 
     trade_records: list[TradeRecord] = []
     basis_per_sell: list[float] = []
-    for row in rows:
+    for row in usable_sells:
         trade_records.append(
             TradeRecord(
                 date=row.date,
@@ -366,10 +509,17 @@ def tax_report(
         )
         basis_per_sell.append(row.cost_basis if row.cost_basis is not None else row.price)
 
-    summary = compute_tax_summary(trade_records, basis_per_sell, tax_config, end_date=end_d)
-    _print_tax_report(rows, basis_per_sell, summary, period_label)
-    _write_tax_report_csv(rows, basis_per_sell, summary, out_path)
+    # end_date only clamps payment dates to a backtest's final bar; a report
+    # has no curve to clamp against, so surface the natural payment dates.
+    full_summary = compute_tax_summary(trade_records, basis_per_sell, tax_config, end_date=date.max)
+    summary = [entry for entry in full_summary if start_d.year <= entry.year <= end_d.year]
+    period_basis = [row.cost_basis if row.cost_basis is not None else row.price for row in rows]
+    _print_tax_report(rows, period_basis, summary, period_label)
+    _write_tax_report_csv(rows, period_basis, out_path)
+    summary_path = out_path.with_suffix(".summary.csv")
+    _write_tax_summary_csv(summary, summary_path)
     click.echo(f"\nWrote {out_path}")
+    click.echo(f"Wrote {summary_path}")
 
 
 @cli.command()
@@ -468,9 +618,8 @@ def optimize(
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
     risk_config: RiskConfig = RiskConfig()
-    tax_config: TaxConfig | None = None
     if strategies:
-        strat_configs, strat_constraints, risk_config, tax_config = load_strategies(Path(strategies))
+        strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 
@@ -511,7 +660,6 @@ def optimize(
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
-            tax_config=tax_config,
         )
 
         console.print()
@@ -602,7 +750,6 @@ def optimize(
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
-            tax_config=tax_config,
         )
 
         console.print()
@@ -627,29 +774,12 @@ def list_strategies() -> None:
     print_strategy_table([cls() for cls in STRATEGY_REGISTRY.values()])
 
 
-TAX_REPORT_COLUMNS = (
-    "ticker",
-    "shares",
-    "purchase_date",
-    "sale_date",
-    "cost_basis",
-    "proceeds",
-    "realized_pnl",
-    "holding_period_days",
-    "classification",
-)
-
-
 def _print_tax_report(
     rows: list[LoggedTrade],
     basis_per_sell: list[float],
     summary: list[AnnualTaxSummary],
     period_label: str,
 ) -> None:
-    from rich.console import Console
-
-    from midas.output import make_wide_table
-
     table_width = 140
     table = make_wide_table(f"Schedule D — {period_label}", width=table_width)
     table.add_column("Ticker", style="bold")
@@ -663,8 +793,12 @@ def _print_tax_report(
     table.add_column("Classification")
 
     for row, basis in zip(rows, basis_per_sell, strict=True):
+        # basis is per-share; the report columns are totals (Schedule D
+        # column (e) is total cost basis), so proceeds - basis_total = pnl
+        # holds row by row.
         proceeds = row.shares * row.price
-        pnl = proceeds - basis * row.shares
+        basis_total = basis * row.shares
+        pnl = proceeds - basis_total
         if isinstance(row.purchase_date, date):
             days_held = (row.date - row.purchase_date).days
             purchase_disp = row.purchase_date.isoformat()
@@ -678,7 +812,7 @@ def _print_tax_report(
             f"{row.shares:.4f}",
             purchase_disp,
             row.date.isoformat(),
-            f"${basis:,.2f}",
+            f"${basis_total:,.2f}",
             f"${proceeds:,.2f}",
             f"${pnl:+,.2f}",
             days_disp,
@@ -692,26 +826,25 @@ def _print_tax_report(
         click.echo(
             f"\nYear {s.year}: ST {s.st_realized:+,.2f}  LT {s.lt_realized:+,.2f}  "
             f"Net {s.net_after_cross:+,.2f}  Deductible {s.deductible_loss:,.2f}  "
-            f"Tax {s.tax_owed:+,.2f}  Carry-Forward {s.carry_forward:,.2f}"
+            f"Tax {s.tax_owed:+,.2f}  Carry-Forward {s.carry_forward:,.2f}  "
+            f"Payment {s.payment_date.isoformat()}"
         )
 
 
 def _write_tax_report_csv(
     rows: list[LoggedTrade],
     basis_per_sell: list[float],
-    summary: list[AnnualTaxSummary],
     path: Path,
 ) -> None:
-    import csv
-
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(TAX_REPORT_COLUMNS)
         for row, basis in zip(rows, basis_per_sell, strict=True):
             proceeds = row.shares * row.price
-            pnl = proceeds - basis * row.shares
+            basis_total = basis * row.shares
+            pnl = proceeds - basis_total
             if isinstance(row.purchase_date, date):
-                days_held: object = (row.date - row.purchase_date).days
+                days_held: int | str = (row.date - row.purchase_date).days
                 purchase_cell: str = row.purchase_date.isoformat()
             else:
                 days_held = ""
@@ -722,19 +855,29 @@ def _write_tax_report_csv(
                     row.shares,
                     purchase_cell,
                     row.date.isoformat(),
-                    round(basis, 4),
+                    round(basis_total, 4),
                     round(proceeds, 4),
                     round(pnl, 4),
                     days_held,
                     row.holding_period.value if row.holding_period else "",
                 ]
             )
+
+
+def _write_tax_summary_csv(summary: list[AnnualTaxSummary], path: Path) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(TAX_SUMMARY_COLUMNS)
         for s in summary:
-            writer.writerow([])
-            writer.writerow([f"Year {s.year}", "", "", "", "", "", "", "", ""])
-            writer.writerow(["ST realized", "", "", "", "", "", round(s.st_realized, 4), "", ""])
-            writer.writerow(["LT realized", "", "", "", "", "", round(s.lt_realized, 4), "", ""])
-            writer.writerow(["Net (after netting)", "", "", "", "", "", round(s.net_after_cross, 4), "", ""])
-            writer.writerow(["Deductible loss", "", "", "", "", "", round(s.deductible_loss, 4), "", ""])
-            writer.writerow(["Tax owed", "", "", "", "", "", round(s.tax_owed, 4), "", ""])
-            writer.writerow(["Carry forward", "", "", "", "", "", round(s.carry_forward, 4), "", ""])
+            writer.writerow(
+                [
+                    s.year,
+                    round(s.st_realized, 4),
+                    round(s.lt_realized, 4),
+                    round(s.net_after_cross, 4),
+                    round(s.deductible_loss, 4),
+                    round(s.carry_forward, 4),
+                    round(s.tax_owed, 4),
+                    s.payment_date.isoformat(),
+                ]
+            )

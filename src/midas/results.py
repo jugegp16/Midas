@@ -23,7 +23,7 @@ from midas.metrics import (
 from midas.models import Direction, TradeRecord
 from midas.risk_metrics import RiskHistory, RiskMetrics
 from midas.tax import AnnualTaxSummary
-from midas.trade_log import format_holding_period, format_purchase_date
+from midas.trade_log import TRADE_LOG_COLUMNS, format_holding_period, format_purchase_date
 
 
 @dataclass
@@ -94,21 +94,7 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
     sell_basis = {id(trade): basis for trade, basis in pair_sells_with_basis(result.trades, result.basis_per_sell)}
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "date",
-                "ticker",
-                "direction",
-                "shares",
-                "price",
-                "strategy",
-                "holding_period",
-                "purchase_date",
-                "cost_basis",
-                "realized_pnl",
-                "return_pct",
-            ]
-        )
+        writer.writerow(TRADE_LOG_COLUMNS)
         for trade in result.trades:
             common = [
                 trade.date.isoformat(),

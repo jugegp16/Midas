@@ -225,6 +225,6 @@ A future extension could add configurable lot-consumption methods (LIFO, highest
 ## Tax reporting
 
 Both live and backtest emit a unified `trades.csv` shape. Backtest gains
-opt-in after-tax metrics via a `tax:` block in the strategies YAML; the
+opt-in after-tax metrics via a `tax:` block in the portfolio YAML; the
 `midas tax-report` subcommand consumes either log to produce a Schedule D
 table + CSV. See [`docs/tax-reporting.md`](tax-reporting.md).

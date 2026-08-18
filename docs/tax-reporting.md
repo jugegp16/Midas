@@ -2,13 +2,14 @@
 
 Midas can report realized capital gains in a Schedule D-shaped format and (in
 backtest mode only) compute after-tax return metrics. Tax accounting is opt-in:
-without a `tax:` block in the strategies YAML, all output is unchanged from
+without a `tax:` block in the portfolio YAML, all output is unchanged from
 pre-#66 behavior.
 
 ## Configuring rates
 
-Add a `tax:` block to the strategies YAML alongside the existing top-level
-keys (`min_cash_pct`, `softmax_temperature`, optional `risk:`):
+Tax rates are a property of the investor, not the trading policy, so they
+live in the portfolio YAML — add a `tax:` block alongside the existing
+top-level keys (`portfolio`, `available_cash`, optional `state_file`):
 
 ```yaml
 tax:
@@ -18,12 +19,26 @@ tax:
   payment_lag_days: 105   # Dec 31 → ~Apr 15 of following year
 ```
 
-All four fields have defaults; the block is parsed leniently. The validator
-also enforces `long_term_rate <= short_term_rate` to catch transposed values.
+All four fields have defaults, so any subset may be given — but unknown
+keys are rejected (a typo'd rate would otherwise silently become the
+default). The validator also enforces `long_term_rate <= short_term_rate`
+to catch transposed values.
+
+### Interactive setup
+
+If the portfolio file has no `tax:` key at all, `midas backtest`,
+`midas live`, and `midas tax-report` offer a one-time setup when run in a
+terminal: answer a few questions and the block is appended to the file.
+You can enter the two rates directly, or give filing status
+(single / married filing jointly) and approximate taxable income to have
+flat rates derived from the current-year federal brackets (NIIT
+included). Declining writes `tax: off`, which silences the question;
+delete that line to be asked again. Non-interactive runs (pipes, CI)
+never prompt. Only the derived rates are written — income is not stored.
 
 ## Backtest: after-tax metrics
 
-Running `midas backtest` with a `tax:` block in the strategies YAML adds:
+Running `midas backtest` with a `tax:` block in the portfolio YAML adds:
 
 - `after_tax_final_value`, `after_tax_total_return`, `after_tax_cagr`,
   `after_tax_twr` to `summary.json`.
@@ -71,23 +86,45 @@ line number) and lenient on content.
 ## `midas tax-report`
 
 ```
-midas tax-report --strategies strategies.yaml \
-                 --portfolio portfolio.yaml --year 2026 \
+midas tax-report --portfolio portfolio.yaml --year 2026 \
                  [--output schedule_d_2026.csv]
 ```
 
 Or against an explicit log path (e.g. backtest output):
 
 ```
-midas tax-report --strategies strategies.yaml \
+midas tax-report --portfolio portfolio.yaml \
                  --from-trades output/trades.csv --year 2026
 ```
 
+The portfolio file supplies the tax rates and (without `--from-trades`)
+resolves the trade log next to its state file.
+
 Prints a per-row table (ticker, shares, purchase/sale dates, basis,
-proceeds, P&L, days held, classification) and writes the same data plus a
-per-year aggregate footer to `--output`.
+proceeds, P&L, days held, classification) and writes the same data to
+`--output`. `cost_basis`, `proceeds`, and `realized_pnl` are all row totals
+(matching Schedule D columns (d)/(e)), so `proceeds - cost_basis =
+realized_pnl` holds on every row.
+
+Per-year aggregates (`year`, `st_realized`, `lt_realized`,
+`net_after_cross`, `deductible_loss`, `carry_forward`, `tax_owed`,
+`payment_date`) go to a companion file named by swapping the extension
+(`schedule_d_2026.csv` → `schedule_d_2026.summary.csv`), so both files
+parse cleanly as flat CSV. If the window contains no sales, both
+files are written header-only (and only when `--output` is given).
 
 `--start` / `--end` accept arbitrary date ranges instead of `--year`.
+
+Netting and loss carryforward are computed over the **entire** trade log,
+not just the report window — a loss realized in a prior year carries into
+the reported year exactly as it does in backtest after-tax accounting. The
+window only selects which rows and per-year summaries are displayed.
+
+Two log conditions produce warnings on stderr: a SELL with no `cost_basis`
+is assumed to have basis equal to its sale price (realized P&L $0), and a
+SELL with no `holding_period` cannot be classified ST/LT and is excluded
+from both the row listing and the totals. Fix the log row (hand-edits are
+supported) to include such sales.
 
 ## Caveats
 
@@ -104,3 +141,12 @@ per-year aggregate footer to `--output`.
 - **Pre-existing live deployments upgrading mid-year:** the trade log
   starts fresh on the first post-upgrade tick. Year-end report for the
   upgrade year is partial; merge with broker statements.
+- **Derived rates are federal-only, for one tax year.** The bracket table
+  (`TAX_BRACKET_YEAR` in `tax.py`) is federal; add your state's rate to
+  both fields by hand if applicable, and expect the table to be updated
+  yearly.
+- **A failed live log append is not retried.** Live persists state before
+  appending to the trade log, and positions re-derive from state — so if a
+  tick fails after the state save, the affected rows are printed to the
+  error log but never re-attempted. Reconcile against broker fills and
+  hand-add any missing rows.

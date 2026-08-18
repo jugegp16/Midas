@@ -11,6 +11,7 @@ from midas.tax import (
     AnnualTaxSummary,
     compute_after_tax_curve,
     compute_tax_summary,
+    derive_tax_rates,
 )
 
 CONFIG = TaxConfig(
@@ -185,3 +186,49 @@ def test_carry_forward_threads_through_inactive_year() -> None:
     assert summary[1].net_after_cross == pytest.approx(-1000.0)  # $1K gain - $2K carry = -$1K
     assert summary[1].deductible_loss == pytest.approx(1000.0)
     assert summary[1].carry_forward == 0.0
+
+
+class TestDeriveTaxRates:
+    """derive_tax_rates maps filing status + income to flat federal rates."""
+
+    def test_low_income_single(self) -> None:
+        assert derive_tax_rates("single", 40_000.0) == (0.12, 0.0)
+
+    def test_mid_income_single(self) -> None:
+        assert derive_tax_rates("single", 60_000.0) == (0.22, 0.15)
+
+    def test_mid_income_married(self) -> None:
+        assert derive_tax_rates("married", 150_000.0) == (0.22, 0.15)
+
+    def test_niit_added_above_threshold(self) -> None:
+        # 250k single: 32% ordinary bracket + 3.8% NIIT; LT 15% + 3.8%.
+        assert derive_tax_rates("single", 250_000.0) == (0.358, 0.188)
+
+    def test_niit_threshold_is_exclusive(self) -> None:
+        assert derive_tax_rates("single", 200_000.0) == (0.24, 0.15)
+        assert derive_tax_rates("single", 200_001.0) == (0.278, 0.188)
+
+    def test_lt_clamped_to_st_in_crossover_band(self) -> None:
+        # $50K single: ordinary marginal is 12% but LTCG bracket is 15%;
+        # TaxConfig rejects lt > st, so lt clamps down to st.
+        assert derive_tax_rates("single", 50_000.0) == (0.12, 0.12)
+
+    def test_top_brackets(self) -> None:
+        assert derive_tax_rates("married", 1_000_000.0) == (0.408, 0.238)
+
+    def test_ordinary_bracket_edge_is_inclusive(self) -> None:
+        # Income exactly at a bracket's upper bound stays in that bracket.
+        assert derive_tax_rates("single", 50_400.0) == (0.12, 0.12)
+        assert derive_tax_rates("single", 50_401.0) == (0.22, 0.15)
+
+    def test_ltcg_bracket_edge_is_inclusive(self) -> None:
+        assert derive_tax_rates("single", 49_450.0) == (0.12, 0.0)
+        assert derive_tax_rates("single", 49_451.0) == (0.12, 0.12)  # LT clamped to ST
+
+    def test_unknown_filing_status_raises(self) -> None:
+        with pytest.raises(ValueError, match="filing_status"):
+            derive_tax_rates("head_of_household", 50_000.0)
+
+    def test_negative_income_raises(self) -> None:
+        with pytest.raises(ValueError, match="taxable_income"):
+            derive_tax_rates("single", -1.0)

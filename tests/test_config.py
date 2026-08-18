@@ -98,7 +98,7 @@ def test_load_portfolio_state_file_field_optional(tmp_path: Path) -> None:
 
 
 def test_load_strategies(strategy_yaml: Path) -> None:
-    configs, constraints, _risk, _tax = load_strategies(strategy_yaml)
+    configs, constraints, _risk = load_strategies(strategy_yaml)
     assert len(configs) == 3
 
     assert configs[0].name == "MeanReversion"
@@ -144,7 +144,7 @@ class TestLoadStrategiesRisk:
                 params: {window: 20}
             """,
         )
-        _configs, _constraints, risk, _tax = load_strategies(path)
+        _configs, _constraints, risk = load_strategies(path)
         assert risk == RiskConfig()
 
     def test_full_risk_block(self, tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ class TestLoadStrategiesRisk:
               drawdown_floor: 0.5
             """,
         )
-        _configs, _constraints, risk, _tax = load_strategies(path)
+        _configs, _constraints, risk = load_strategies(path)
         assert risk.weighting == "inverse_vol"
         assert risk.vol_lookback_days == 90
         assert risk.vol_target == 0.20
@@ -180,7 +180,7 @@ class TestLoadStrategiesRisk:
               vol_target: 0.18
             """,
         )
-        _configs, _constraints, risk, _tax = load_strategies(path)
+        _configs, _constraints, risk = load_strategies(path)
         assert risk.vol_target == 0.18
         assert risk.weighting == "equal"
         assert risk.drawdown_penalty is None
@@ -206,20 +206,22 @@ class TestLoadStrategiesRisk:
 # ---------------------------------------------------------------------------
 
 
-def test_load_strategies_with_tax_block(tmp_path: Path) -> None:
+def test_load_portfolio_with_tax_block(tmp_path: Path) -> None:
     """Optional tax: block parses to a TaxConfig."""
-    path = tmp_path / "strategies.yaml"
+    path = tmp_path / "portfolio.yaml"
     path.write_text(
-        "strategies:\n"
-        "  - name: Momentum\n"
-        "    params: {window: 20}\n"
+        "portfolio:\n"
+        "  - ticker: AAPL\n"
+        "    shares: 100\n"
+        "available_cash: 1000\n"
         "tax:\n"
         "  short_term_rate: 0.32\n"
         "  long_term_rate: 0.15\n"
         "  deductible_loss_cap: 3000.0\n"
         "  payment_lag_days: 105\n"
     )
-    _configs, _constraints, _risk, tax = load_strategies(path)
+    portfolio = load_portfolio(path)
+    tax = portfolio.tax_config
     assert tax is not None
     assert tax.short_term_rate == 0.32
     assert tax.long_term_rate == 0.15
@@ -227,9 +229,53 @@ def test_load_strategies_with_tax_block(tmp_path: Path) -> None:
     assert tax.payment_lag_days == 105
 
 
-def test_load_strategies_without_tax_block(tmp_path: Path) -> None:
-    """Omitting tax: yields tax_config=None — no behavior change for existing configs."""
-    path = tmp_path / "strategies.yaml"
-    path.write_text("strategies:\n  - name: Momentum\n    params: {window: 20}\n")
-    _configs, _constraints, _risk, tax = load_strategies(path)
-    assert tax is None
+def test_load_portfolio_without_tax_block(tmp_path: Path) -> None:
+    """Omitting tax: yields tax_config=None — after-tax accounting disabled."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n")
+    assert load_portfolio(path).tax_config is None
+
+
+def test_load_portfolio_tax_off_declares_without_config(tmp_path: Path) -> None:
+    """`tax: off` (YAML false) means: asked and declined — never prompt again."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax: off\n")
+    portfolio = load_portfolio(path)
+    assert portfolio.tax_config is None
+    assert portfolio.tax_declared is True
+
+
+def test_load_portfolio_absent_tax_is_undeclared(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n")
+    assert load_portfolio(path).tax_declared is False
+
+
+def test_load_portfolio_tax_mapping_is_declared(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "tax:\n  short_term_rate: 0.30\n  long_term_rate: 0.15\n"
+    )
+    portfolio = load_portfolio(path)
+    assert portfolio.tax_declared is True
+    assert portfolio.tax_config is not None
+
+
+def test_load_portfolio_tax_unknown_key_raises(tmp_path: Path) -> None:
+    """A typo'd rate key must not silently fall back to the default rate."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax:\n  short_termrate: 0.24\n"
+    )
+    with pytest.raises(ValueError, match="short_termrate"):
+        load_portfolio(path)
+
+
+def test_load_portfolio_tax_invalid_value_raises(tmp_path: Path) -> None:
+    base = "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+    for bad in ("tax: on\n", "tax: []\n", "tax: 0\n"):
+        path = tmp_path / "portfolio.yaml"
+        path.write_text(base + bad)
+        with pytest.raises(ValueError, match="tax:"):
+            load_portfolio(path)

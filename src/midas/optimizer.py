@@ -24,7 +24,6 @@ from midas.models import (
     AllocationConstraints,
     PortfolioConfig,
     RiskConfig,
-    TaxConfig,
 )
 from midas.order_sizer import OrderSizer
 from midas.results import BacktestResult
@@ -788,15 +787,13 @@ def write_strategies_yaml(
     path: str,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     risk_config: RiskConfig | None = None,
-    tax_config: TaxConfig | None = None,
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
-    The optimizer does not search risk or tax knobs (both are policy, not
-    tunables). When the user supplied a ``risk:`` or ``tax:`` block in the
-    input, it must round-trip to the optimized output unchanged so the next
-    run honors the same policy; otherwise the optimized YAML silently drops
-    the user's config.
+    The optimizer does not search risk knobs (policy, not tunables). When the
+    user supplied a ``risk:`` block in the input, it must round-trip to the
+    optimized output unchanged so the next run honors the same policy;
+    otherwise the optimized YAML silently drops the user's config.
 
     Args:
         params: Per-strategy parameter dict from the optimizer (also includes
@@ -806,8 +803,6 @@ def write_strategies_yaml(
         risk_config: Preserved from the user's input config. When present and
             differing from defaults, emitted as a ``risk:`` block. ``None`` or
             an all-default ``RiskConfig`` is omitted.
-        tax_config: Preserved from the user's input config. When present,
-            emitted as a ``tax:`` block. ``None`` is omitted.
     """
     output: dict[str, object] = {}
 
@@ -822,14 +817,6 @@ def write_strategies_yaml(
     risk_block = _risk_block_for_yaml(risk_config)
     if risk_block:
         output["risk"] = risk_block
-
-    if tax_config is not None:
-        output["tax"] = {
-            "short_term_rate": tax_config.short_term_rate,
-            "long_term_rate": tax_config.long_term_rate,
-            "deductible_loss_cap": tax_config.deductible_loss_cap,
-            "payment_lag_days": tax_config.payment_lag_days,
-        }
 
     strategies = []
     for name, param_dict in params.items():
