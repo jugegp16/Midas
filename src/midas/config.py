@@ -80,7 +80,7 @@ def load_portfolio(path: Path) -> PortfolioConfig:
             deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
             payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
         )
-    elif tax_raw:
+    elif tax_raw is not None and tax_raw is not False:
         msg = f"tax: must be a mapping of rates or `off`, got {tax_raw!r}"
         raise ValueError(msg)
 

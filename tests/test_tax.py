@@ -216,6 +216,15 @@ class TestDeriveTaxRates:
     def test_top_brackets(self) -> None:
         assert derive_tax_rates("married", 1_000_000.0) == (0.408, 0.238)
 
+    def test_ordinary_bracket_edge_is_inclusive(self) -> None:
+        # Income exactly at a bracket's upper bound stays in that bracket.
+        assert derive_tax_rates("single", 50_400.0) == (0.12, 0.12)
+        assert derive_tax_rates("single", 50_401.0) == (0.22, 0.15)
+
+    def test_ltcg_bracket_edge_is_inclusive(self) -> None:
+        assert derive_tax_rates("single", 49_450.0) == (0.12, 0.0)
+        assert derive_tax_rates("single", 49_451.0) == (0.12, 0.12)  # LT clamped to ST
+
     def test_unknown_filing_status_raises(self) -> None:
         with pytest.raises(ValueError, match="filing_status"):
             derive_tax_rates("head_of_household", 50_000.0)

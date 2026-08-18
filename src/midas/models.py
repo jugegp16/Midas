@@ -223,13 +223,16 @@ class TaxConfig:
     payment_lag_days: int = 105
 
     def __post_init__(self) -> None:
-        if self.short_term_rate < 0 or self.short_term_rate >= 1:
+        # `not (a <= x < b)` rather than `x < a or x >= b`: NaN fails every
+        # comparison, so the inverted form rejects it instead of letting it
+        # slip through and poison every after-tax figure downstream.
+        if not 0 <= self.short_term_rate < 1:
             msg = f"short_term_rate must be in [0, 1), got {self.short_term_rate}"
             raise ValueError(msg)
-        if self.long_term_rate < 0 or self.long_term_rate >= 1:
+        if not 0 <= self.long_term_rate < 1:
             msg = f"long_term_rate must be in [0, 1), got {self.long_term_rate}"
             raise ValueError(msg)
-        if self.deductible_loss_cap < 0:
+        if not self.deductible_loss_cap >= 0:
             msg = f"deductible_loss_cap must be >= 0, got {self.deductible_loss_cap}"
             raise ValueError(msg)
         if self.payment_lag_days < 0:

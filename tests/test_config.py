@@ -262,8 +262,10 @@ def test_load_portfolio_tax_mapping_is_declared(tmp_path: Path) -> None:
     assert portfolio.tax_config is not None
 
 
-def test_load_portfolio_tax_invalid_scalar_raises(tmp_path: Path) -> None:
-    path = tmp_path / "portfolio.yaml"
-    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax: on\n")
-    with pytest.raises(ValueError, match="tax:"):
-        load_portfolio(path)
+def test_load_portfolio_tax_invalid_value_raises(tmp_path: Path) -> None:
+    base = "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+    for bad in ("tax: on\n", "tax: []\n", "tax: 0\n"):
+        path = tmp_path / "portfolio.yaml"
+        path.write_text(base + bad)
+        with pytest.raises(ValueError, match="tax:"):
+            load_portfolio(path)

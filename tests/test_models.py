@@ -195,3 +195,11 @@ class TestTaxConfig:
     def test_long_term_exceeds_short_term_raises(self) -> None:
         with pytest.raises(ValueError, match="long_term_rate"):
             TaxConfig(short_term_rate=0.20, long_term_rate=0.37)
+
+    def test_nan_rate_invalid(self) -> None:
+        with pytest.raises(ValueError, match="short_term_rate"):
+            TaxConfig(short_term_rate=float("nan"))
+        with pytest.raises(ValueError, match="long_term_rate"):
+            TaxConfig(long_term_rate=float("nan"))
+        with pytest.raises(ValueError, match="deductible_loss_cap"):
+            TaxConfig(deductible_loss_cap=float("nan"))

@@ -81,7 +81,8 @@ def test_accept_with_direct_rates(tmp_path: Path, interactive: None) -> None:
     portfolio = tmp_path / "portfolio.yaml"
     portfolio.write_text(PORTFOLIO_NO_TAX)
 
-    result = _invoke_tax_report(tmp_path, portfolio, "y\nrates\n0.30\n0.15\n\n\n")
+    # confirm=y, knows rates=y, st, lt, cap/lag defaults
+    result = _invoke_tax_report(tmp_path, portfolio, "y\ny\n0.30\n0.15\n\n\n")
     assert result.exit_code == 0, result.output
 
     reloaded = load_portfolio(portfolio)
@@ -95,12 +96,27 @@ def test_invalid_rates_reprompted(tmp_path: Path, interactive: None) -> None:
     portfolio.write_text(PORTFOLIO_NO_TAX)
 
     # First attempt transposes the rates (lt > st) -> TaxConfig rejects -> re-asked.
-    result = _invoke_tax_report(tmp_path, portfolio, "y\nrates\n0.10\n0.20\n\n\nrates\n0.30\n0.15\n\n\n")
+    result = _invoke_tax_report(tmp_path, portfolio, "y\ny\n0.10\n0.20\n\n\ny\n0.30\n0.15\n\n\n")
     assert result.exit_code == 0, result.output
     assert "Invalid tax config" in result.stderr
     reloaded = load_portfolio(portfolio)
     assert reloaded.tax_config is not None
     assert reloaded.tax_config.short_term_rate == 0.30
+
+
+def test_negative_income_reprompted(tmp_path: Path, interactive: None) -> None:
+    portfolio = tmp_path / "portfolio.yaml"
+    portfolio.write_text(PORTFOLIO_NO_TAX)
+
+    # Negative income makes derive_tax_rates raise -> echoed and re-asked,
+    # not a traceback.
+    result = _invoke_tax_report(tmp_path, portfolio, "y\n\nsingle\n-5000\n\nsingle\n60000\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "Invalid tax config" in result.stderr
+    assert "taxable_income" in result.stderr
+    reloaded = load_portfolio(portfolio)
+    assert reloaded.tax_config is not None
+    assert reloaded.tax_config.short_term_rate == 0.22
 
 
 def test_decline_writes_tax_off_and_never_asks_again(tmp_path: Path, interactive: None) -> None:

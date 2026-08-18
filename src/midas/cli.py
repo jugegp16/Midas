@@ -115,16 +115,16 @@ def _prompt_tax_rates() -> tuple[float, float, str]:
         ``(short_term_rate, long_term_rate, provenance)`` where provenance
         is the YAML comment describing where the numbers came from.
     """
-    mode = click.prompt(
-        "Enter rates directly, or derive them from your income",
-        type=click.Choice(["rates", "income"]),
-        default="income",
-    )
-    if mode == "rates":
+    if click.confirm("Do you know your short/long-term capital-gains rates?", default=False):
         short_term = click.prompt("Short-term capital-gains rate (decimal fraction)", type=float, default=0.37)
         long_term = click.prompt("Long-term capital-gains rate (decimal fraction)", type=float, default=0.20)
         return short_term, long_term, "configured interactively"
-    status = click.prompt("Filing status", type=click.Choice(["single", "married"]), default="single")
+    click.echo("No problem — they can be derived from your federal bracket.")
+    status = click.prompt(
+        "Filing status (married = filing jointly)",
+        type=click.Choice(["single", "married"]),
+        default="single",
+    )
     income = click.prompt("Approximate annual taxable income (USD)", type=float)
     short_term, long_term = derive_tax_rates(status, income)
     click.echo(
@@ -156,10 +156,10 @@ def _ensure_tax_config(port: PortfolioConfig, portfolio_path: Path) -> TaxConfig
         click.echo(f"Wrote `tax: off` to {portfolio_path}.")
         return None
     while True:
-        short_term, long_term, provenance = _prompt_tax_rates()
-        cap = click.prompt("Deductible loss cap (USD/year)", type=float, default=3000.0)
-        lag = click.prompt("Payment lag (days from year-end to payment)", type=int, default=105)
         try:
+            short_term, long_term, provenance = _prompt_tax_rates()
+            cap = click.prompt("Deductible loss cap (USD/year)", type=float, default=3000.0)
+            lag = click.prompt("Payment lag (days from year-end to payment)", type=int, default=105)
             tax_config = TaxConfig(
                 short_term_rate=short_term,
                 long_term_rate=long_term,
@@ -274,6 +274,9 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
+    # Ask before the (slow) price download so the prompt isn't buried
+    # behind fetch output or left waiting for a user who walked away.
+    tax_config = _ensure_tax_config(port, Path(portfolio))
     strat_configs, constraints, risk_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
@@ -300,7 +303,7 @@ def backtest(
         enable_split=not no_split,
         log_fn=print_status,
         execution_mode=execution_mode,
-        tax_config=_ensure_tax_config(port, Path(portfolio)),
+        tax_config=tax_config,
     )
 
     print_status("Running backtest...")
@@ -429,7 +432,7 @@ def tax_report(
         msg = (
             "portfolio file has no `tax:` block; tax-report requires configured rates "
             "(short_term_rate, long_term_rate). Run interactively to be walked through "
-            "setup, or see docs/tax-reporting.md."
+            "setup (delete any `tax: off` line first), or see docs/tax-reporting.md."
         )
         raise click.UsageError(msg)
 
