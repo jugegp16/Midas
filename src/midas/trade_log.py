@@ -13,7 +13,6 @@ future dates) but strict on shape — hand-edits are an explicit escape valve.
 from __future__ import annotations
 
 import csv
-import datetime
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -44,7 +43,7 @@ class TradeLogError(ValueError):
 class LoggedTrade:
     """In-memory representation of one trade-log row."""
 
-    date: datetime.date
+    date: date
     ticker: str
     direction: Direction
     shares: float
@@ -105,11 +104,9 @@ def append_trade(
             pnl_cell: str | float = ""
             ret_cell: str | float = ""
         else:
-            pnl = round((record.price - cost_basis) * record.shares, 4)
-            ret = round((record.price - cost_basis) / cost_basis, 6) if cost_basis != 0 else 0.0
             cost_basis_cell = round(cost_basis, 4)
-            pnl_cell = pnl
-            ret_cell = ret
+            pnl_cell = round((record.price - cost_basis) * record.shares, 4)
+            ret_cell = round((record.price - cost_basis) / cost_basis, 6) if cost_basis != 0 else 0.0
         writer.writerow(
             [
                 record.date.isoformat(),

@@ -8,6 +8,8 @@ from midas.strategies.base import ExitRule
 
 
 class TrailingStop(ExitRule):
+    """Exit rule: liquidate a profitable position that falls from its high-water mark."""
+
     def __init__(self, trail_pct: float = 0.10) -> None:
         self._trail_pct = trail_pct
 

@@ -23,7 +23,20 @@ def ema(values: np.ndarray, period: int) -> np.ndarray:
     return result
 
 
+def macd_lines(
+    prices: np.ndarray,
+    fast_period: int,
+    slow_period: int,
+    signal_period: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(macd_line, signal_line)`` for *prices*."""
+    macd_line = ema(prices, fast_period) - ema(prices, slow_period)
+    return macd_line, ema(macd_line, signal_period)
+
+
 class MACDCrossover(EntrySignal):
+    """Entry signal: bullish when the MACD line is above its signal line."""
+
     def __init__(
         self,
         fast_period: int = 12,
@@ -48,10 +61,7 @@ class MACDCrossover(EntrySignal):
         scores = np.full(num_bars, np.nan)
         if num_bars < min_len:
             return scores
-        fast_ema = ema(prices, self._fast_period)
-        slow_ema = ema(prices, self._slow_period)
-        macd_line = fast_ema - slow_ema
-        signal_line = ema(macd_line, self._signal_period)
+        macd_line, signal_line = macd_lines(prices, self._fast_period, self._slow_period, self._signal_period)
         diff = macd_line - signal_line
         raw = np.where(prices != 0, diff / prices * 100, 0.0)
         scores[min_len - 1 :] = np.clip(raw[min_len - 1 :], 0.0, 1.0)
@@ -67,10 +77,7 @@ class MACDCrossover(EntrySignal):
         if len(prices) < min_len:
             return None
 
-        fast_ema = ema(prices, self._fast_period)
-        slow_ema = ema(prices, self._slow_period)
-        macd_line = fast_ema - slow_ema
-        signal_line = ema(macd_line, self._signal_period)
+        macd_line, signal_line = macd_lines(prices, self._fast_period, self._slow_period, self._signal_period)
 
         current = float(prices[-1])
         diff = float(macd_line[-1] - signal_line[-1])

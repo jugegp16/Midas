@@ -13,10 +13,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import EntrySignal
+from midas.strategies.base import EntrySignal, rolling_sum
 
 
 class VWAPReversion(EntrySignal):
+    """Entry signal: bullish as price falls below the rolling VWAP."""
+
     def __init__(self, window: int = 20, threshold: float = 0.02) -> None:
         self._window = window
         self._threshold = threshold
@@ -39,21 +41,12 @@ class VWAPReversion(EntrySignal):
         if num_bars < window:
             return None
         typical = (price_history.high + price_history.low + close) / 3.0
-        cs_t = np.empty(num_bars + 1)
-        cs_t[0] = 0.0
-        np.cumsum(typical, out=cs_t[1:])
-        typical_sum = cs_t[window:] - cs_t[:-window]
+        typical_sum = rolling_sum(typical, window)
         if price_history.volume is None:
             return typical_sum / window
         volume = price_history.volume
-        cs_pv = np.empty(num_bars + 1)
-        cs_pv[0] = 0.0
-        np.cumsum(typical * volume, out=cs_pv[1:])
-        cs_v = np.empty(num_bars + 1)
-        cs_v[0] = 0.0
-        np.cumsum(volume, out=cs_v[1:])
-        pv_sum = cs_pv[window:] - cs_pv[:-window]
-        v_sum = cs_v[window:] - cs_v[:-window]
+        pv_sum = rolling_sum(typical * volume, window)
+        v_sum = rolling_sum(volume, window)
         sma = typical_sum / window
         return np.where(v_sum > 0, pv_sum / np.where(v_sum > 0, v_sum, 1.0), sma)
 

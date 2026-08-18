@@ -10,6 +10,8 @@ from midas.strategies.base import ExitRule
 
 
 class ParabolicSARExit(ExitRule):
+    """Exit rule: liquidate when Wilder's Parabolic SAR flips to a downtrend."""
+
     def __init__(
         self,
         af_start: float = 0.02,

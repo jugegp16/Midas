@@ -8,6 +8,8 @@ from midas.strategies.base import ExitRule
 
 
 class ProfitTaking(ExitRule):
+    """Exit rule: liquidate when unrealized gain exceeds the threshold."""
+
     def __init__(self, gain_threshold: float = 0.20) -> None:
         self._gain_threshold = gain_threshold
 

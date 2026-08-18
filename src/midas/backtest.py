@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
@@ -193,9 +193,31 @@ class _SimState:
         self.twr_base_value = current_value
 
 
+@dataclass
+class _AfterTaxFields:
+    """After-tax accounting outputs (opt-in via TaxConfig).
+
+    When no tax config is set every field keeps its default — no behavior
+    change for users who don't configure tax rates.
+    """
+
+    final_value: float | None = None
+    total_return: float | None = None
+    cagr: float | None = None
+    twr: float | None = None
+    curve: list[tuple[date, float]] = field(default_factory=list)
+    cost_ratio: float | None = None
+    summary: list[AnnualTaxSummary] = field(default_factory=list)
+
+
 def _close_prices(current_data: dict[str, PriceHistory]) -> dict[str, float]:
     """Latest close price for every ticker in *current_data*."""
     return {ticker: float(current_data[ticker].close[-1]) for ticker in current_data}
+
+
+def _bh_value(cash: float, bh_positions: Mapping[str, float], prices: Mapping[str, float]) -> float:
+    """Buy-and-hold portfolio value: *cash* plus mark-to-market of *bh_positions*."""
+    return cash + sum(shares * prices.get(ticker, 0.0) for ticker, shares in bh_positions.items())
 
 
 def _ticker_basis(state: _SimState, ticker: str) -> float:
@@ -298,7 +320,7 @@ class BacktestEngine:
             equity curve.
         """
         trading_days = self._collect_trading_days(price_data, start, end)
-        _, split_date = self._compute_split(trading_days)
+        split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
         state = self._init_positions(portfolio, price_data, trading_days, start, end)
 
@@ -306,7 +328,7 @@ class BacktestEngine:
         full_history = {ticker: idx.history for ticker, idx in ticker_idx.items()}
         self._allocator.precompute_signals(full_history)
 
-        deferred = self._find_deferred(portfolio, price_data, trading_days, start, end)
+        deferred = self._find_deferred(portfolio, price_data, trading_days, start)
 
         self._simulate(
             state,
@@ -333,6 +355,11 @@ class BacktestEngine:
         start: date,
         end: date,
     ) -> list[date]:
+        """Sorted union of all tickers' trading dates within ``[start, end]``.
+
+        Raises:
+            ValueError: If no ticker has any trading day in the range.
+        """
         all_dates: set[date] = set()
         for df in price_data.values():
             all_dates.update(dt for dt in df.index if start <= dt <= end)
@@ -342,15 +369,13 @@ class BacktestEngine:
             raise ValueError(msg)
         return days
 
-    def _compute_split(
-        self,
-        trading_days: list[date],
-    ) -> tuple[int, date | None]:
+    def _compute_split(self, trading_days: list[date]) -> date | None:
+        """Date at the train/test boundary, or None when the split is disabled."""
         if self._enable_split:
             split_idx = int(len(trading_days) * self._train_pct)
             if split_idx < len(trading_days):
-                return split_idx, trading_days[split_idx]
-        return len(trading_days), None
+                return trading_days[split_idx]
+        return None
 
     def _build_ticker_index(
         self,
@@ -402,6 +427,7 @@ class BacktestEngine:
         price_data: dict[str, pd.DataFrame],
         start: date,
     ) -> dict[str, date]:
+        """First trading date at or after *start* for each ticker with data."""
         result: dict[str, date] = {}
         for ticker, df in price_data.items():
             in_range = df[df.index >= start]
@@ -417,6 +443,7 @@ class BacktestEngine:
         start: date,
         end: date,
     ) -> _SimState:
+        """Seed simulation state from portfolio holdings with start-day data."""
         state = _SimState(cash=portfolio.available_cash)
         if portfolio.trading_restrictions:
             state.restriction_tracker = RestrictionTracker(
@@ -464,8 +491,8 @@ class BacktestEngine:
         price_data: dict[str, pd.DataFrame],
         trading_days: list[date],
         start: date,
-        end: date,
     ) -> dict[str, float]:
+        """Holdings whose price data starts after the backtest start, by ticker."""
         first_dates = self._first_data_dates(price_data, start)
         deferred: dict[str, float] = {}
 
@@ -490,6 +517,7 @@ class BacktestEngine:
         deferred: dict[str, float],
         split_date: date | None,
     ) -> None:
+        """Run the day-by-day simulation loop over *trading_days*."""
         for ticker, shares in deferred.items():
             state.bh_positions[ticker] = shares
             state.positions[ticker] = 0.0
@@ -498,16 +526,7 @@ class BacktestEngine:
 
         for day in trading_days:
             state.last_day = day
-
-            # Advance pointers and build current slices
-            current_data: dict[str, PriceHistory] = {}
-            for ticker, idx in ticker_idx.items():
-                while idx.ptr < len(idx.dates) and idx.dates[idx.ptr] <= day:
-                    idx.ptr += 1
-                if idx.ptr > 0:
-                    current_data[ticker] = idx.history[: idx.ptr]
-
-            # Activate deferred holdings
+            current_data = self._advance_slices(ticker_idx, day)
             self._activate_deferred(
                 state,
                 deferred,
@@ -515,49 +534,70 @@ class BacktestEngine:
                 current_data,
                 day,
             )
-
-            # Capture split snapshot
             if split_date and day == split_date and state.split_value is None:
-                closes = _close_prices(current_data)
-                state.split_value = state.portfolio_value(closes)
-                state.split_bh_value = portfolio.available_cash + sum(
-                    state.bh_positions.get(ticker, 0) * closes.get(ticker, 0) for ticker in state.bh_positions
-                )
-                state.close_twr_period(state.split_value)
-                state.twr_split_idx = len(state.twr_periods)
-
+                self._capture_split_snapshot(state, portfolio, current_data)
             self._run_day(state, portfolio, current_data, day)
+            self._record_bar(state, portfolio, current_data, day)
 
-            close_prices = _close_prices(current_data)
-            value = state.portfolio_value(close_prices)
-            state.equity_curve.append((day, value))
-            if value > state.peak_value:
-                state.peak_value = value
+    @staticmethod
+    def _advance_slices(ticker_idx: dict[str, _TickerIndex], day: date) -> dict[str, PriceHistory]:
+        """Advance per-ticker cursors through *day* and slice each history up to it."""
+        current_data: dict[str, PriceHistory] = {}
+        for ticker, idx in ticker_idx.items():
+            while idx.ptr < len(idx.dates) and idx.dates[idx.ptr] <= day:
+                idx.ptr += 1
+            if idx.ptr > 0:
+                current_data[ticker] = idx.history[: idx.ptr]
+        return current_data
 
-            bh_value = portfolio.available_cash + sum(
-                shares * close_prices.get(ticker, 0.0) for ticker, shares in state.bh_positions.items()
-            )
-            state.bh_equity_curve.append((day, bh_value))
+    @staticmethod
+    def _capture_split_snapshot(
+        state: _SimState,
+        portfolio: PortfolioConfig,
+        current_data: dict[str, PriceHistory],
+    ) -> None:
+        """Snapshot strategy and B&H values at the train/test boundary."""
+        closes = _close_prices(current_data)
+        state.split_value = state.portfolio_value(closes)
+        state.split_bh_value = _bh_value(portfolio.available_cash, state.bh_positions, closes)
+        state.close_twr_period(state.split_value)
+        state.twr_split_idx = len(state.twr_periods)
 
-            telemetry = state.last_risk_telemetry
-            drawdown = (state.peak_value - value) / state.peak_value if state.peak_value > 0 else 0.0
-            # Record *actual* gross exposure (market value of positions / total
-            # value), not the allocator's target output. The allocator
-            # constructs-to-budget so its targets are always near
-            # ``(1 - min_cash_pct)`` by design — a flat line that hides what
-            # the strategy actually deployed. ``positions_value / total_value``
-            # captures real cash drag from min_buy_delta, exit clamps, and
-            # waiting-for-fills lag.
-            positions_value = sum(
-                shares * close_prices.get(ticker, 0.0) for ticker, shares in state.positions.items() if shares > 0
-            )
-            actual_gross = positions_value / value if value > 0 else 0.0
-            state.risk_history.dates.append(day)
-            state.risk_history.gross_exposure.append(actual_gross)
-            state.risk_history.cppi_scale.append(telemetry.cppi_scale)
-            state.risk_history.vol_target_scale.append(telemetry.vol_target_scale)
-            state.risk_history.vol_target_predicted_vol.append(telemetry.vol_target_predicted_vol)
-            state.risk_history.drawdown.append(drawdown)
+    @staticmethod
+    def _record_bar(
+        state: _SimState,
+        portfolio: PortfolioConfig,
+        current_data: dict[str, PriceHistory],
+        day: date,
+    ) -> None:
+        """Append the day's equity, B&H, and risk-telemetry samples."""
+        close_prices = _close_prices(current_data)
+        value = state.portfolio_value(close_prices)
+        state.equity_curve.append((day, value))
+        if value > state.peak_value:
+            state.peak_value = value
+
+        state.bh_equity_curve.append((day, _bh_value(portfolio.available_cash, state.bh_positions, close_prices)))
+
+        telemetry = state.last_risk_telemetry
+        drawdown = (state.peak_value - value) / state.peak_value if state.peak_value > 0 else 0.0
+        # Record *actual* gross exposure (market value of positions / total
+        # value), not the allocator's target output. The allocator
+        # constructs-to-budget so its targets are always near
+        # ``(1 - min_cash_pct)`` by design — a flat line that hides what
+        # the strategy actually deployed. ``positions_value / total_value``
+        # captures real cash drag from min_buy_delta, exit clamps, and
+        # waiting-for-fills lag.
+        positions_value = sum(
+            shares * close_prices.get(ticker, 0.0) for ticker, shares in state.positions.items() if shares > 0
+        )
+        actual_gross = positions_value / value if value > 0 else 0.0
+        state.risk_history.dates.append(day)
+        state.risk_history.gross_exposure.append(actual_gross)
+        state.risk_history.cppi_scale.append(telemetry.cppi_scale)
+        state.risk_history.vol_target_scale.append(telemetry.vol_target_scale)
+        state.risk_history.vol_target_predicted_vol.append(telemetry.vol_target_predicted_vol)
+        state.risk_history.drawdown.append(drawdown)
 
     def _activate_deferred(
         self,
@@ -691,11 +731,7 @@ class BacktestEngine:
         ``clamp_attribution`` identifies which exit rule drove each
         clamp for sell-side attribution.
         """
-        active_tickers = [
-            ticker for ticker in state.positions if state.positions.get(ticker, 0) > 0 or ticker in current_data
-        ]
-        active_tickers = [ticker for ticker in active_tickers if ticker in current_data]
-
+        active_tickers = [ticker for ticker in state.positions if ticker in current_data]
         if not active_tickers:
             return None
 
@@ -1023,22 +1059,10 @@ class BacktestEngine:
         trading_days: list[date],
         split_date: date | None,
     ) -> BacktestResult:
-        # Use prices at the last trading day within the backtest range, not the
-        # last row of the raw frame (which may extend beyond `end` when the
-        # caller reuses one price_data dict across multiple sub-windows — e.g.
-        # walk-forward fold evaluation).
         end_day = trading_days[-1]
-        final_prices: dict[str, float] = {}
-        for ticker, df in price_data.items():
-            if len(df) == 0:
-                continue
-            in_range = df[df.index <= end_day]
-            if len(in_range) > 0:
-                final_prices[ticker] = float(in_range["close"].iloc[-1])
+        final_prices = self._final_close_prices(price_data, end_day)
         final_value = state.portfolio_value(final_prices)
-        bh_value = portfolio.available_cash + sum(
-            state.bh_positions.get(ticker, 0) * final_prices.get(ticker, 0) for ticker in state.bh_positions
-        )
+        bh_value = _bh_value(portfolio.available_cash, state.bh_positions, final_prices)
 
         # Close the final TWR sub-period and compound all periods.
         state.close_twr_period(final_value)
@@ -1054,35 +1078,8 @@ class BacktestEngine:
             train_trades = list(state.trades)
             test_trades = []
 
-        # Compute train/test TWR from sub-period boundaries.
-        split_idx = state.twr_split_idx
-        if split_idx is not None:
-            train_twr = 1.0
-            for period in state.twr_periods[:split_idx]:
-                train_twr *= period
-            train_twr -= 1.0
-            test_twr = 1.0
-            for period in state.twr_periods[split_idx:]:
-                test_twr *= period
-            test_twr -= 1.0
-        else:
-            train_twr = twr
-            test_twr = twr
-
-        train_return = train_twr
-        test_return = test_twr
-        if split_bh_val is not None and starting_val > 0:
-            train_bh_return = (split_bh_val - starting_val) / starting_val
-        elif starting_val > 0:
-            train_bh_return = (bh_value - starting_val) / starting_val
-        else:
-            train_bh_return = 0.0
-        if split_bh_val is not None and split_bh_val > 0:
-            test_bh_return = (bh_value - split_bh_val) / split_bh_val
-        elif starting_val > 0:
-            test_bh_return = (bh_value - starting_val) / starting_val
-        else:
-            test_bh_return = 0.0
+        train_return, test_return = self._train_test_twr(state, twr)
+        train_bh_return, test_bh_return = self._bh_returns(starting_val, split_bh_val, bh_value)
 
         # New metrics
         equity_curve = state.equity_curve
@@ -1110,61 +1107,11 @@ class BacktestEngine:
             efficiency = 0.0
         strategy_stats = compute_strategy_stats(state.trades, state.basis_per_sell)
 
-        # Unrealized P&L: mark-to-market gain on positions still held at end.
-        unrealized_pnl_by_ticker: dict[str, float] = {}
-        for ticker, lots in state.lots.items():
-            ticker_pnl = sum(lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis) for lot in lots)
-            if lots:
-                unrealized_pnl_by_ticker[ticker] = round(ticker_pnl, 2)
+        unrealized_pnl_by_ticker = self._unrealized_pnl_by_ticker(state, final_prices)
         unrealized_pnl = sum(unrealized_pnl_by_ticker.values())
+        attributed_strategy_pnl = self._attributed_strategy_pnl(state, unrealized_pnl_by_ticker)
 
-        # Per-strategy attribution covers realised P&L from sells. At end-of-run,
-        # split each ticker's unrealised P&L into the same per-strategy buckets
-        # by current attribution shares so the final RiskMetrics.per_strategy_pnl
-        # reflects total attributed P&L (realised + unrealised), per spec line 183.
-        attributed_strategy_pnl = dict(state.cumulative_strategy_pnl)
-        for ticker, ticker_unrealized in unrealized_pnl_by_ticker.items():
-            attr = state.attribution.get(ticker)
-            if not attr:
-                continue
-            for strat, share in attr.items():
-                attributed_strategy_pnl[strat] = attributed_strategy_pnl.get(strat, 0.0) + ticker_unrealized * share
-
-        # After-tax accounting (opt-in via TaxConfig). When tax_config is None all
-        # fields stay at their dataclass defaults — no behavior change for users
-        # who don't configure tax rates.
-        after_tax_final_value: float | None = None
-        after_tax_total_return: float | None = None
-        after_tax_cagr_value: float | None = None
-        after_tax_twr_value: float | None = None
-        after_tax_curve: list[tuple[date, float]] = []
-        tax_cost_ratio: float | None = None
-        tax_summary: list[AnnualTaxSummary] = []
-
-        if self._tax_config is not None:
-            end_d = trading_days[-1]
-            tax_summary = compute_tax_summary(
-                state.trades,
-                state.basis_per_sell,
-                self._tax_config,
-                end_date=end_d,
-            )
-            after_tax_curve = compute_after_tax_curve(state.equity_curve, tax_summary)
-            if after_tax_curve:
-                after_tax_final_value = after_tax_curve[-1][1]
-                if starting_val > 0:
-                    after_tax_total_return = (after_tax_final_value - starting_val) / starting_val
-                    after_tax_cagr_value = compute_cagr(starting_val, after_tax_final_value, total_days)
-                    # Approximation: scale gross TWR by the after-tax/gross final-value
-                    # ratio. This is exact only when there are no mid-period cash infusions;
-                    # with infusions the terminal-value ratio mixes capital contributions
-                    # with tax drag, so interpret this figure cautiously on portfolios with
-                    # CashInfusion configured. A bar-by-bar re-derivation would require
-                    # sub-period boundaries that the current state machine doesn't expose.
-                    after_tax_twr_value = (
-                        ((1.0 + twr) * (after_tax_final_value / final_value)) - 1.0 if final_value > 0 else twr
-                    )
-                    tax_cost_ratio = (cagr - after_tax_cagr_value) / cagr if cagr > 0 else None
+        after_tax = self._after_tax_fields(state, end_day, starting_val, final_value, twr, cagr, total_days)
 
         return BacktestResult(
             trades=state.trades,
@@ -1206,14 +1153,121 @@ class BacktestEngine:
             ),
             risk_history=state.risk_history,
             bh_equity_curve=state.bh_equity_curve,
-            after_tax_final_value=(round(after_tax_final_value, 2) if after_tax_final_value is not None else None),
-            after_tax_total_return=(round(after_tax_total_return, 4) if after_tax_total_return is not None else None),
-            after_tax_cagr=(round(after_tax_cagr_value, 4) if after_tax_cagr_value is not None else None),
-            after_tax_twr=(round(after_tax_twr_value, 4) if after_tax_twr_value is not None else None),
-            after_tax_equity_curve=after_tax_curve,
-            tax_cost_ratio=(round(tax_cost_ratio, 6) if tax_cost_ratio is not None else None),
-            tax_summary=tax_summary,
+            after_tax_final_value=(round(after_tax.final_value, 2) if after_tax.final_value is not None else None),
+            after_tax_total_return=(round(after_tax.total_return, 4) if after_tax.total_return is not None else None),
+            after_tax_cagr=(round(after_tax.cagr, 4) if after_tax.cagr is not None else None),
+            after_tax_twr=(round(after_tax.twr, 4) if after_tax.twr is not None else None),
+            after_tax_equity_curve=after_tax.curve,
+            tax_cost_ratio=(round(after_tax.cost_ratio, 6) if after_tax.cost_ratio is not None else None),
+            tax_summary=after_tax.summary,
         )
+
+    @staticmethod
+    def _final_close_prices(price_data: dict[str, pd.DataFrame], end_day: date) -> dict[str, float]:
+        """Last close at or before *end_day* for each ticker with data in range.
+
+        Uses prices at the last trading day within the backtest range, not the
+        last row of the raw frame (which may extend beyond `end` when the
+        caller reuses one price_data dict across multiple sub-windows — e.g.
+        walk-forward fold evaluation).
+        """
+        final_prices: dict[str, float] = {}
+        for ticker, df in price_data.items():
+            in_range = df[df.index <= end_day]
+            if len(in_range) > 0:
+                final_prices[ticker] = float(in_range["close"].iloc[-1])
+        return final_prices
+
+    @staticmethod
+    def _train_test_twr(state: _SimState, twr: float) -> tuple[float, float]:
+        """Compound TWR sub-periods on each side of the train/test boundary."""
+        split_idx = state.twr_split_idx
+        if split_idx is None:
+            return twr, twr
+        train_twr = math.prod(state.twr_periods[:split_idx]) - 1.0
+        test_twr = math.prod(state.twr_periods[split_idx:]) - 1.0
+        return train_twr, test_twr
+
+    @staticmethod
+    def _bh_returns(starting_val: float, split_bh_val: float | None, bh_value: float) -> tuple[float, float]:
+        """Train and test buy-and-hold returns from the split snapshot."""
+        if split_bh_val is not None and starting_val > 0:
+            train_bh_return = (split_bh_val - starting_val) / starting_val
+        elif starting_val > 0:
+            train_bh_return = (bh_value - starting_val) / starting_val
+        else:
+            train_bh_return = 0.0
+        if split_bh_val is not None and split_bh_val > 0:
+            test_bh_return = (bh_value - split_bh_val) / split_bh_val
+        elif starting_val > 0:
+            test_bh_return = (bh_value - starting_val) / starting_val
+        else:
+            test_bh_return = 0.0
+        return train_bh_return, test_bh_return
+
+    @staticmethod
+    def _unrealized_pnl_by_ticker(state: _SimState, final_prices: dict[str, float]) -> dict[str, float]:
+        """Mark-to-market gain per ticker on positions still held at end."""
+        return {
+            ticker: round(sum(lot.shares * (final_prices.get(ticker, 0.0) - lot.cost_basis) for lot in lots), 2)
+            for ticker, lots in state.lots.items()
+            if lots
+        }
+
+    @staticmethod
+    def _attributed_strategy_pnl(state: _SimState, unrealized_pnl_by_ticker: dict[str, float]) -> dict[str, float]:
+        """Total attributed P&L (realised + unrealised) per strategy.
+
+        Per-strategy attribution covers realised P&L from sells. At end-of-run,
+        split each ticker's unrealised P&L into the same per-strategy buckets
+        by current attribution shares so the final RiskMetrics.per_strategy_pnl
+        reflects total attributed P&L (realised + unrealised), per spec line 183.
+        """
+        attributed = dict(state.cumulative_strategy_pnl)
+        for ticker, ticker_unrealized in unrealized_pnl_by_ticker.items():
+            attr = state.attribution.get(ticker)
+            if not attr:
+                continue
+            for strat, share in attr.items():
+                attributed[strat] = attributed.get(strat, 0.0) + ticker_unrealized * share
+        return attributed
+
+    def _after_tax_fields(
+        self,
+        state: _SimState,
+        end_day: date,
+        starting_val: float,
+        final_value: float,
+        twr: float,
+        cagr: float,
+        total_days: int,
+    ) -> _AfterTaxFields:
+        """After-tax accounting (opt-in via TaxConfig); defaults when unconfigured."""
+        result = _AfterTaxFields()
+        if self._tax_config is None:
+            return result
+        result.summary = compute_tax_summary(
+            state.trades,
+            state.basis_per_sell,
+            self._tax_config,
+            end_date=end_day,
+        )
+        result.curve = compute_after_tax_curve(state.equity_curve, result.summary)
+        if not result.curve:
+            return result
+        result.final_value = result.curve[-1][1]
+        if starting_val > 0:
+            result.total_return = (result.final_value - starting_val) / starting_val
+            result.cagr = compute_cagr(starting_val, result.final_value, total_days)
+            # Approximation: scale gross TWR by the after-tax/gross final-value
+            # ratio. This is exact only when there are no mid-period cash infusions;
+            # with infusions the terminal-value ratio mixes capital contributions
+            # with tax drag, so interpret this figure cautiously on portfolios with
+            # CashInfusion configured. A bar-by-bar re-derivation would require
+            # sub-period boundaries that the current state machine doesn't expose.
+            result.twr = ((1.0 + twr) * (result.final_value / final_value)) - 1.0 if final_value > 0 else twr
+            result.cost_ratio = (cagr - result.cagr) / cagr if cagr > 0 else None
+        return result
 
     def _end_state_vol_contribution(
         self,

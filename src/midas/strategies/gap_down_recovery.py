@@ -10,6 +10,8 @@ from midas.strategies.base import EntrySignal
 
 
 class GapDownRecovery(EntrySignal):
+    """Entry signal: bullish when price gaps down at the open then recovers."""
+
     def __init__(self, gap_threshold: float = 0.03) -> None:
         self._gap_threshold = gap_threshold
 
@@ -38,7 +40,7 @@ class GapDownRecovery(EntrySignal):
                 (current - today_open) / gap_size,
                 0.0,
             )
-        scores[1:] = np.where(active, np.clip(np.minimum(recovery_pct, 1.0), 0.0, 1.0), 0.0)
+        scores[1:] = np.where(active, np.clip(recovery_pct, 0.0, 1.0), 0.0)
         return scores
 
     def score(
@@ -61,7 +63,7 @@ class GapDownRecovery(EntrySignal):
 
         if gap_pct >= self._gap_threshold and current > today_open:
             recovery_pct = (current - today_open) / (prev_close - today_open)
-            return self.clamp(min(recovery_pct, 1.0), 0.0, 1.0)
+            return self.clamp(recovery_pct, 0.0, 1.0)
         return 0.0
 
     @property

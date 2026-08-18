@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -37,7 +38,7 @@ class StrategyStats:
 # ---------------------------------------------------------------------------
 
 
-def _drawdown_series(equity_curve: list[tuple[date, float]]) -> list[float]:
+def _drawdown_series(equity_curve: Sequence[tuple[date, float]]) -> list[float]:
     """Per-point drawdown (fraction from running peak) for each equity curve entry."""
     if not equity_curve:
         return []
@@ -50,14 +51,20 @@ def _drawdown_series(equity_curve: list[tuple[date, float]]) -> list[float]:
     return result
 
 
+def _daily_returns(equity_curve: Sequence[tuple[date, float]]) -> list[float]:
+    """Simple daily returns between consecutive equity points with positive base."""
+    values = [val for _, val in equity_curve]
+    return [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+
+
 # ---------------------------------------------------------------------------
 # Public compute functions
 # ---------------------------------------------------------------------------
 
 
 def pair_sells_with_basis(
-    trades: list[TradeRecord],
-    basis_per_sell: list[float],
+    trades: Sequence[TradeRecord],
+    basis_per_sell: Sequence[float],
 ) -> list[tuple[TradeRecord, float]]:
     """Zip SELL trades with their recorded cost basis (parallel-list order).
 
@@ -65,11 +72,9 @@ def pair_sells_with_basis(
     basis list — defensive only; the lists should always be the same length.
     """
     sells = [trade for trade in trades if trade.direction == Direction.SELL]
-    paired: list[tuple[TradeRecord, float]] = []
-    for idx, trade in enumerate(sells):
-        basis = basis_per_sell[idx] if idx < len(basis_per_sell) else trade.price
-        paired.append((trade, basis))
-    return paired
+    return [
+        (trade, basis_per_sell[idx] if idx < len(basis_per_sell) else trade.price) for idx, trade in enumerate(sells)
+    ]
 
 
 def compute_cagr(starting: float, final: float, days: int) -> float:
@@ -104,18 +109,17 @@ def compute_annualized_return(cumulative_return: float, days: int) -> float:
     return float(growth ** (1.0 / years) - 1.0)
 
 
-def compute_max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
+def compute_max_drawdown(equity_curve: Sequence[tuple[date, float]]) -> float:
     """Maximum peak-to-trough percentage decline."""
     dd = _drawdown_series(equity_curve)
     return max(dd) if len(dd) >= 2 else 0.0
 
 
-def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
+def compute_sharpe(equity_curve: Sequence[tuple[date, float]]) -> float:
     """Annualized Sharpe ratio (risk-free = 0) from daily returns."""
     if len(equity_curve) < 3:
         return 0.0
-    values = [val for _, val in equity_curve]
-    daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+    daily_returns = _daily_returns(equity_curve)
     if len(daily_returns) < 2:
         return 0.0
     mean_ret = sum(daily_returns) / len(daily_returns)
@@ -126,7 +130,7 @@ def compute_sharpe(equity_curve: list[tuple[date, float]]) -> float:
     return (mean_ret / std_ret) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
-def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
+def compute_sortino(equity_curve: Sequence[tuple[date, float]]) -> float:
     """Annualized Sortino ratio (risk-free = 0, downside deviation only).
 
     When there is no downside (no negative daily returns) the metric is
@@ -136,8 +140,7 @@ def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
     """
     if len(equity_curve) < 3:
         return 0.0
-    values = [val for _, val in equity_curve]
-    daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+    daily_returns = _daily_returns(equity_curve)
     if len(daily_returns) < 2:
         return 0.0
     mean_ret = sum(daily_returns) / len(daily_returns)
@@ -152,8 +155,8 @@ def compute_sortino(equity_curve: list[tuple[date, float]]) -> float:
 
 
 def compute_trade_stats(
-    trades: list[TradeRecord],
-    basis_per_sell: list[float],
+    trades: Sequence[TradeRecord],
+    basis_per_sell: Sequence[float],
 ) -> tuple[float, float, float, float]:
     """Return (win_rate, profit_factor, avg_win, avg_loss) from sell trades.
 
@@ -188,8 +191,8 @@ def compute_trade_stats(
 
 
 def compute_strategy_stats(
-    trades: list[TradeRecord],
-    basis_per_sell: list[float],
+    trades: Sequence[TradeRecord],
+    basis_per_sell: Sequence[float],
 ) -> list[StrategyStats]:
     """Compute per-(strategy, ticker) trade breakdown."""
     sell_basis: dict[int, float] = {id(trade): basis for trade, basis in pair_sells_with_basis(trades, basis_per_sell)}
@@ -225,7 +228,7 @@ def compute_strategy_stats(
     return stats
 
 
-def aggregate_strategy_stats(stats: list[StrategyStats]) -> list[StrategyStats]:
+def aggregate_strategy_stats(stats: Sequence[StrategyStats]) -> list[StrategyStats]:
     """Aggregate per-(strategy, ticker) stats into per-strategy totals."""
     by_strategy: dict[str, list[StrategyStats]] = defaultdict(list)
     for stat in stats:

@@ -116,6 +116,7 @@ def _drawdown_pct_series(result: BacktestResult, dates: list[str]) -> list[float
 
 
 def _setup_single_figure() -> None:
+    """Reset plotext to a fresh figure at the standard chart size/theme."""
     plt.clear_figure()
     plt.plot_size(CHART_WIDTH, CHART_HEIGHT)
     plt.theme("clear")
@@ -123,6 +124,7 @@ def _setup_single_figure() -> None:
 
 
 def _render_equity(result: BacktestResult) -> None:
+    """Equity curve, with an after-tax overlay when its curve is parallel."""
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     equity = [value for _, value in result.equity_curve]
     _setup_single_figure()
@@ -193,7 +195,7 @@ def _rolling_sharpe_series(equity: list[float], lookback: int) -> list[float]:
             out.append(0.0)
             continue
         mean = sum(window) / len(window)
-        var = sum((x - mean) ** 2 for x in window) / (len(window) - 1)
+        var = sum((ret - mean) ** 2 for ret in window) / (len(window) - 1)
         if var <= 0:
             out.append(0.0)
             continue
@@ -227,6 +229,7 @@ def _render_rolling_sharpe(result: BacktestResult) -> None:
 
 
 def _render_drawdown(result: BacktestResult) -> None:
+    """Drawdown from running peak, plotted as a negative percentage."""
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     drawdown_pct = _drawdown_pct_series(result, dates)
     _setup_single_figure()
@@ -236,6 +239,7 @@ def _render_drawdown(result: BacktestResult) -> None:
 
 
 def _render_gross_exposure(result: BacktestResult) -> None:
+    """Gross exposure with a 252-day trailing mean and optional CPPI scale."""
     history = result.risk_history
     assert history is not None  # checked by caller
     dates = [dt.isoformat() for dt in history.dates]
@@ -271,6 +275,7 @@ def _render_gross_exposure(result: BacktestResult) -> None:
 
 
 def _render_predicted_vs_target_vol(result: BacktestResult) -> None:
+    """Predicted annualized vol against the flat configured target."""
     history = result.risk_history
     assert history is not None  # checked by caller
     metrics = result.risk_metrics

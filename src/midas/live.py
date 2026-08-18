@@ -34,6 +34,7 @@ from midas.models import (
     AllocationConstraints,
     Direction,
     HoldingPeriod,
+    Order,
     PortfolioConfig,
     TradeRecord,
 )
@@ -46,7 +47,49 @@ from midas.trade_log import append_trade
 logger = logging.getLogger(__name__)
 
 
+def _acquire_state_lock(lock_path: Path) -> int:
+    """Take an exclusive non-blocking advisory lock on *lock_path*.
+
+    Two ``midas live`` processes against the same state file would otherwise
+    both load, both compute, both write — ``os.replace`` picks a winner and
+    the loser's fills are lost silently. This converts that silent corruption
+    into a loud error. The lock is held for the lifetime of the process; flock
+    releases on fd close, which Python handles automatically at interpreter
+    exit.
+
+    Args:
+        lock_path: Sidecar lockfile path next to the state file.
+
+    Returns:
+        The open file descriptor holding the lock.
+
+    Raises:
+        RuntimeError: If another process already holds the lock.
+        OSError: On any other locking failure.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(lock_fd)
+        if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            msg = (
+                f"another midas live process appears to hold the state lock at {lock_path}; "
+                f"refusing to start. If you're sure no other process is running, remove the lock file."
+            )
+            raise RuntimeError(msg) from exc
+        raise
+    return lock_fd
+
+
 class LiveEngine:
+    """Polls prices, runs the allocation pipeline, and emits order alerts.
+
+    Holds an exclusive lock on a sidecar lockfile for its lifetime so only
+    one process mutates the persisted ``LiveState`` at a time.
+    """
+
     def __init__(
         self,
         portfolio: PortfolioConfig,
@@ -60,6 +103,25 @@ class LiveEngine:
         dry_run: bool = False,
         history_days: int | None = None,
     ) -> None:
+        """Acquire the state lock, then load or seed persistent state.
+
+        Args:
+            portfolio: Portfolio configuration (tickers, strategies, infusions).
+            allocator: Signal-blending allocator producing target weights.
+            order_sizer: Converts target weights into sized orders.
+            provider: Price-history data source.
+            state_path: Path of the persisted live-state YAML.
+            exit_rules: Optional exit rules that clamp targets downward.
+            constraints: Allocation constraints; defaults to no constraints.
+            poll_interval: Seconds between ticks.
+            dry_run: When True, alerts are labeled as dry-run.
+            history_days: Explicit history window override (tests); derived
+                from strategy warmups when None.
+
+        Raises:
+            RuntimeError: If file locking is unavailable on this platform or
+                another live process already holds the state lock.
+        """
         if fcntl is None:
             msg = (
                 "LiveEngine requires fcntl-based file locking, which is unavailable "
@@ -68,28 +130,9 @@ class LiveEngine:
             raise RuntimeError(msg)
         self._state_path = state_path
         self._trade_log_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
-        # Take an exclusive non-blocking advisory lock on a sidecar lockfile
-        # before touching the state. Two ``midas live`` processes against the
-        # same state file would otherwise both load, both compute, both write
-        # — ``os.replace`` picks a winner and the loser's fills are lost
-        # silently. This converts that silent corruption into a loud error.
-        # The lock is held for the lifetime of the process; flock releases on
-        # fd close, which Python handles automatically at interpreter exit.
+        # Take the lock on a sidecar lockfile before touching the state.
         self._lock_path = state_path.with_suffix(state_path.suffix + ".lock")
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock_fd: int | None = os.open(str(self._lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            os.close(self._lock_fd)
-            self._lock_fd = None
-            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                msg = (
-                    f"another midas live process appears to hold the state lock at {self._lock_path}; "
-                    f"refusing to start. If you're sure no other process is running, remove the lock file."
-                )
-                raise RuntimeError(msg) from exc
-            raise
+        self._lock_fd: int | None = _acquire_state_lock(self._lock_path)
 
         # Once the lock is held, any failure during the rest of __init__ must
         # release it; otherwise a supervisor (or REPL) that catches the
@@ -151,6 +194,7 @@ class LiveEngine:
         self.close()
 
     def run(self) -> None:
+        """Poll forever, ticking every ``poll_interval`` seconds until Ctrl-C."""
         tickers = [holding.ticker for holding in self._portfolio.holdings]
         print_status(
             f"Starting {'dry run' if self._dry_run else 'live'} analysis "
@@ -197,25 +241,195 @@ class LiveEngine:
                 cost_basis,
             )
 
-    def _tick(self, tickers: list[str]) -> None:
-        today = date.today()
+    def _fetch_histories(
+        self,
+        tickers: list[str],
+        today: date,
+    ) -> tuple[dict[str, pd.DataFrame], dict[str, PriceHistory]]:
+        """Fetch recent history for all tickers and convert to PriceHistory.
 
-        # Fetch recent history for all tickers and convert to PriceHistory at
-        # the boundary. Both calls share a try/except so a misshapen frame
-        # (missing OHLCV columns, bad index) skips that ticker for the tick
-        # instead of crashing the entire poll loop.
-        end = today
-        start = end - timedelta(days=self._history_days)
+        Both calls share a try/except so a misshapen frame (missing OHLCV
+        columns, bad index) skips that ticker for the tick instead of
+        crashing the entire poll loop.
+        """
+        start = today - timedelta(days=self._history_days)
         price_data: dict[str, pd.DataFrame] = {}
         price_history: dict[str, PriceHistory] = {}
         for ticker in tickers:
             try:
-                df = self._provider.get_history(ticker, start, end)
+                df = self._provider.get_history(ticker, start, today)
                 price_history[ticker] = PriceHistory.from_dataframe(df)
                 price_data[ticker] = df
             except Exception as exc:
                 print_status(f"Warning: failed to fetch {ticker}: {exc}")
+        return price_data, price_history
 
+    def _positions(self, tickers: list[str]) -> dict[str, float]:
+        """Per-ticker share counts derived from state lots, not the YAML."""
+        return {ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in tickers}
+
+    def _portfolio_value(self, positions: dict[str, float], current_prices: dict[str, float]) -> float:
+        """Available cash plus mark-to-market value of *positions*."""
+        return self._state.available_cash + sum(shares * current_prices[ticker] for ticker, shares in positions.items())
+
+    def _advance_high_water_marks(self, active_tickers: list[str], current_prices: dict[str, float]) -> None:
+        """Advance per-ticker HWM in state to the latest close (never regress).
+
+        Only held tickers count: HWM on a not-yet-bought ticker would seed
+        ``TrailingStop`` against a pre-purchase peak on the very first held
+        day, silently more conservative than backtest, which only tracks
+        HWM on positions with shares > 0.
+        """
+        held_tickers = {ticker for ticker, lots in self._state.lots.items() if sum(lot.shares for lot in lots) > 0}
+        for ticker in active_tickers:
+            if ticker not in held_tickers:
+                continue
+            close = current_prices[ticker]
+            self._state.high_water_marks[ticker] = max(self._state.high_water_marks.get(ticker, close), close)
+
+    def _advance_cash_infusion(self, today: date) -> None:
+        """Credit the cash infusion if due — BEFORE allocator/sizer decisions.
+
+        This makes the new cash available for today's allocations (matches
+        backtest's _run_day, which credits the infusion at the start of the
+        day).
+        """
+        infusion = self._portfolio.cash_infusion
+        if (
+            infusion is not None
+            and self._state.cash_infusion_next_date is not None
+            and today >= self._state.cash_infusion_next_date
+        ):
+            self._state.available_cash += infusion.amount
+            # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
+            infusion.next_date = self._state.cash_infusion_next_date
+            infusion.advance()
+            self._state.cash_infusion_next_date = infusion.next_date
+
+    def _clamp_targets(
+        self,
+        allocation: AllocationResult,
+        active_tickers: list[str],
+        positions: dict[str, float],
+        price_history: dict[str, PriceHistory],
+        current_prices: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, tuple[str, str]]]:
+        """Let exit rules clamp proposed targets downward (LEAN pattern)."""
+        clamped_targets = dict(allocation.targets)
+        clamp_attribution: dict[str, tuple[str, str]] = {}
+        for rule in self._exit_rules:
+            for ticker in active_tickers:
+                if positions.get(ticker, 0.0) <= 0:
+                    continue
+                proposed = clamped_targets.get(ticker, 0.0)
+                if proposed <= 0:
+                    continue
+                cost_basis = aggregate_cost_basis(self._state.lots.get(ticker, []))
+                hwm = self._state.high_water_marks.get(ticker, current_prices[ticker])
+                clamped = rule.clamp_target(ticker, proposed, price_history[ticker], cost_basis, hwm)
+                if clamped < proposed:
+                    clamped_targets[ticker] = clamped
+                    if ticker not in clamp_attribution:
+                        reason = rule.clamp_reason(ticker, price_history[ticker], cost_basis, hwm)
+                        clamp_attribution[ticker] = (rule.name, reason)
+        return clamped_targets, clamp_attribution
+
+    def _filter_restricted(self, orders: list[Order], today: date) -> list[Order]:
+        """Drop orders blocked by trading restrictions (no-op when untracked)."""
+        if self._restriction_tracker is None:
+            return orders
+        return [
+            order for order in orders if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
+        ]
+
+    def _apply_fills(self, orders: list[Order], today: date) -> dict[int, SellBreakdown]:
+        """Apply assumed fills to the in-memory state.
+
+        Captures per-SELL breakdowns so the trade-log append has shares/basis/
+        dates per ST/LT bucket. Order is a frozen dataclass but contains an
+        OrderContext with a dict field (contributions), making it unhashable.
+        Use id(order) — safe because *orders* is a stable list across both
+        passes within _tick.
+        """
+        sell_breakdowns: dict[int, SellBreakdown] = {}
+        for order in orders:
+            if order.shares <= 0:
+                continue
+            if order.direction == Direction.BUY:
+                apply_buy(self._state, order.ticker, order.shares, order.price, today)
+            else:
+                sell_breakdowns[id(order)] = apply_sell(self._state, order.ticker, order.shares, order.price, today)
+            if self._restriction_tracker is not None:
+                self._restriction_tracker.record_trade(order.ticker, order.direction, today)
+        return sell_breakdowns
+
+    def _log_fills(self, orders: list[Order], sell_breakdowns: dict[int, SellBreakdown], today: date) -> None:
+        """Append a row per BUY and per non-empty ST/LT SELL bucket to the trade log.
+
+        State is durable first, and a failed append is NOT retried on later
+        ticks: positions re-derive from state, so the deltas are gone. On
+        failure, _append_log_row prints the row so the operator can add it
+        by hand (the log is hand-editable by design).
+        """
+        for order in orders:
+            if order.shares <= 0:
+                continue
+            if order.direction == Direction.BUY:
+                buy_record = TradeRecord(
+                    date=today,
+                    ticker=order.ticker,
+                    direction=Direction.BUY,
+                    shares=order.shares,
+                    price=order.price,
+                    strategy_name=order.context.source,
+                    purchase_date=today,
+                )
+                self._append_log_row(buy_record, cost_basis=None, purchase_date=today)
+                continue
+            breakdown = sell_breakdowns[id(order)]
+            buckets = (
+                (HoldingPeriod.SHORT_TERM, breakdown.st_shares, breakdown.st_basis, breakdown.st_purchase_dates),
+                (HoldingPeriod.LONG_TERM, breakdown.lt_shares, breakdown.lt_basis, breakdown.lt_purchase_dates),
+            )
+            for period, shares, basis, dates in buckets:
+                if shares <= 0:
+                    continue
+                purchase = resolve_purchase_date(dates)
+                sell_record = TradeRecord(
+                    date=today,
+                    ticker=order.ticker,
+                    direction=Direction.SELL,
+                    shares=shares,
+                    price=order.price,
+                    strategy_name=order.context.source,
+                    holding_period=period,
+                    purchase_date=purchase,
+                )
+                self._append_log_row(sell_record, cost_basis=basis, purchase_date=purchase)
+
+    def _emit_alerts(self, orders: list[Order], pre_fill_cash: float) -> None:
+        """Emit alerts only when the order set changes since the last tick."""
+        current_keys = {(order.ticker, order.direction, order.shares) for order in orders if order.shares > 0}
+        if current_keys == self._last_order_keys:
+            return
+        self._last_order_keys = current_keys
+
+        now = datetime.now(tz=UTC)
+        remaining_cash = pre_fill_cash
+        for order in orders:
+            if order.shares <= 0:
+                continue
+            if order.direction == Direction.BUY:
+                remaining_cash -= order.estimated_value
+            else:
+                remaining_cash += order.estimated_value
+            print_alert(order, remaining_cash, now, dry_run=self._dry_run)
+
+    def _tick(self, tickers: list[str]) -> None:
+        """Run one poll cycle: fetch, allocate, size, fill, persist, alert."""
+        today = date.today()
+
+        price_data, price_history = self._fetch_histories(tickers, today)
         if not price_data:
             return
 
@@ -238,42 +452,15 @@ class LiveEngine:
 
         active_tickers = [ticker for ticker in tickers if ticker in price_data]
 
-        # Advance per-ticker HWM in state to the latest close (never regress).
-        # Only held tickers count: HWM on a not-yet-bought ticker would seed
-        # ``TrailingStop`` against a pre-purchase peak on the very first held
-        # day, silently more conservative than backtest, which only tracks
-        # HWM on positions with shares > 0.
-        held_tickers = {ticker for ticker, lots in self._state.lots.items() if sum(lot.shares for lot in lots) > 0}
-        for ticker in active_tickers:
-            if ticker not in held_tickers:
-                continue
-            close = current_prices[ticker]
-            self._state.high_water_marks[ticker] = max(self._state.high_water_marks.get(ticker, close), close)
-
-        # Advance cash infusion if due — credit BEFORE allocator/sizer decisions
-        # so the new cash is available for today's allocations (matches backtest's
-        # _run_day, which credits the infusion at the start of the day).
-        infusion = self._portfolio.cash_infusion
-        if (
-            infusion is not None
-            and self._state.cash_infusion_next_date is not None
-            and today >= self._state.cash_infusion_next_date
-        ):
-            self._state.available_cash += infusion.amount
-            # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
-            infusion.next_date = self._state.cash_infusion_next_date
-            infusion.advance()
-            self._state.cash_infusion_next_date = infusion.next_date
+        self._advance_high_water_marks(active_tickers, current_prices)
+        self._advance_cash_infusion(today)
 
         # Current positions + weights (weights feed Option A: neutral=hold).
-        # Positions are derived from state lots, not the YAML.
-        positions = {ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in active_tickers}
+        positions = self._positions(active_tickers)
 
         # Pass None (not {}) when the denominator is zero so the allocator
         # falls back to its equal-weight baseline.
-        total_value = self._state.available_cash + sum(
-            positions[ticker] * current_prices[ticker] for ticker in active_tickers
-        )
+        total_value = self._portfolio_value(positions, current_prices)
         current_weights: dict[str, float] | None = None
         if total_value > 0:
             current_weights = {
@@ -294,24 +481,10 @@ class LiveEngine:
             current_drawdown=current_drawdown,
         )
 
-        # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).
-        clamped_targets = dict(allocation.targets)
-        clamp_attribution: dict[str, tuple[str, str]] = {}
-        for rule in self._exit_rules:
-            for ticker in active_tickers:
-                if positions.get(ticker, 0.0) <= 0:
-                    continue
-                proposed = clamped_targets.get(ticker, 0.0)
-                if proposed <= 0:
-                    continue
-                cost_basis = aggregate_cost_basis(self._state.lots.get(ticker, []))
-                hwm = self._state.high_water_marks.get(ticker, current_prices[ticker])
-                clamped = rule.clamp_target(ticker, proposed, price_history[ticker], cost_basis, hwm)
-                if clamped < proposed:
-                    clamped_targets[ticker] = clamped
-                    if ticker not in clamp_attribution:
-                        reason = rule.clamp_reason(ticker, price_history[ticker], cost_basis, hwm)
-                        clamp_attribution[ticker] = (rule.name, reason)
+        # Phase 2: Exit rules clamp proposed targets downward.
+        clamped_targets, clamp_attribution = self._clamp_targets(
+            allocation, active_tickers, positions, price_history, current_prices
+        )
 
         # Size sells and filter restriction-blocked sells *before* computing
         # post-sell cash. Otherwise a blocked sell would leak phantom proceeds
@@ -323,12 +496,7 @@ class LiveEngine:
             total_value,
             clamp_attribution,
         )
-        if self._restriction_tracker:
-            exit_orders = [
-                order
-                for order in exit_orders
-                if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
-            ]
+        exit_orders = self._filter_restricted(exit_orders, today)
         sell_proceeds = sum(order.estimated_value for order in exit_orders)
         post_sell_cash = self._state.available_cash + sell_proceeds
 
@@ -346,12 +514,7 @@ class LiveEngine:
             self._constraints,
             total_value=total_value,
         )
-        if self._restriction_tracker:
-            buy_orders = [
-                order
-                for order in buy_orders
-                if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
-            ]
+        buy_orders = self._filter_restricted(buy_orders, today)
 
         filtered = exit_orders + buy_orders
 
@@ -360,96 +523,15 @@ class LiveEngine:
         # running subtotal from state after fills would double-count.
         pre_fill_cash = self._state.available_cash
 
-        # Apply assumed fills to the in-memory state. Capture per-SELL breakdowns
-        # so the trade-log append below has shares/basis/dates per ST/LT bucket.
-        # Order is a frozen dataclass but contains an OrderContext with a dict
-        # field (contributions), making it unhashable. Use id(order) — safe
-        # because filtered is a stable list across both passes within _tick.
-        sell_breakdowns: dict[int, SellBreakdown] = {}
-        for order in filtered:
-            if order.shares <= 0:
-                continue
-            if order.direction == Direction.BUY:
-                apply_buy(self._state, order.ticker, order.shares, order.price, today)
-            else:
-                sell_breakdowns[id(order)] = apply_sell(self._state, order.ticker, order.shares, order.price, today)
-            if self._restriction_tracker is not None:
-                self._restriction_tracker.record_trade(order.ticker, order.direction, today)
+        sell_breakdowns = self._apply_fills(filtered, today)
 
         # Update peak equity from the current portfolio value (post-fills).
-        positions_after = {
-            ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in active_tickers
-        }
-        current_equity = self._state.available_cash + sum(
-            positions_after[ticker] * current_prices[ticker] for ticker in active_tickers
-        )
+        current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
         self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,
         # even on no-change ticks where alert printing is suppressed below).
         save_atomic(self._state, self._state_path)
 
-        # Append a row per BUY and per non-empty ST/LT SELL bucket to the trade log.
-        # State is durable first, and a failed append is NOT retried on later
-        # ticks: positions re-derive from state, so the deltas are gone. On
-        # failure, _append_log_row prints the row so the operator can add it
-        # by hand (the log is hand-editable by design).
-        for order in filtered:
-            if order.shares <= 0:
-                continue
-            if order.direction == Direction.BUY:
-                buy_record = TradeRecord(
-                    date=today,
-                    ticker=order.ticker,
-                    direction=Direction.BUY,
-                    shares=order.shares,
-                    price=order.price,
-                    strategy_name=order.context.source,
-                    purchase_date=today,
-                )
-                self._append_log_row(buy_record, cost_basis=None, purchase_date=today)
-            else:
-                breakdown = sell_breakdowns[id(order)]
-                if breakdown.st_shares > 0:
-                    st_purchase = resolve_purchase_date(breakdown.st_purchase_dates)
-                    st_record = TradeRecord(
-                        date=today,
-                        ticker=order.ticker,
-                        direction=Direction.SELL,
-                        shares=breakdown.st_shares,
-                        price=order.price,
-                        strategy_name=order.context.source,
-                        holding_period=HoldingPeriod.SHORT_TERM,
-                        purchase_date=st_purchase,
-                    )
-                    self._append_log_row(st_record, cost_basis=breakdown.st_basis, purchase_date=st_purchase)
-                if breakdown.lt_shares > 0:
-                    lt_purchase = resolve_purchase_date(breakdown.lt_purchase_dates)
-                    lt_record = TradeRecord(
-                        date=today,
-                        ticker=order.ticker,
-                        direction=Direction.SELL,
-                        shares=breakdown.lt_shares,
-                        price=order.price,
-                        strategy_name=order.context.source,
-                        holding_period=HoldingPeriod.LONG_TERM,
-                        purchase_date=lt_purchase,
-                    )
-                    self._append_log_row(lt_record, cost_basis=breakdown.lt_basis, purchase_date=lt_purchase)
-
-        # Emit alerts only when the order set changes
-        current_keys = {(order.ticker, order.direction, order.shares) for order in filtered if order.shares > 0}
-        if current_keys == self._last_order_keys:
-            return
-        self._last_order_keys = current_keys
-
-        now = datetime.now(tz=UTC)
-        remaining_cash = pre_fill_cash
-        for order in filtered:
-            if order.shares <= 0:
-                continue
-            if order.direction == Direction.BUY:
-                remaining_cash -= order.estimated_value
-            else:
-                remaining_cash += order.estimated_value
-            print_alert(order, remaining_cash, now, dry_run=self._dry_run)
+        self._log_fills(filtered, sell_breakdowns, today)
+        self._emit_alerts(filtered, pre_fill_cash)

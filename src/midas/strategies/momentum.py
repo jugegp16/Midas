@@ -6,10 +6,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import EntrySignal
+from midas.strategies.base import EntrySignal, rolling_mean
 
 
 class Momentum(EntrySignal):
+    """Entry signal: bullish when price is above its moving average."""
+
     def __init__(self, window: int = 20, momentum_scale: float = 0.05) -> None:
         self._window = window
         self._momentum_scale = momentum_scale
@@ -25,10 +27,7 @@ class Momentum(EntrySignal):
         scores = np.full(num_bars, np.nan)
         if num_bars < window:
             return scores
-        cs = np.empty(num_bars + 1)
-        cs[0] = 0.0
-        np.cumsum(prices, out=cs[1:])
-        ma = (cs[window:] - cs[:-window]) / window
+        ma = rolling_mean(prices, window)
         current = prices[window - 1 :]
         pct_from_ma = np.where(ma != 0, (current - ma) / ma, 0.0)
         raw = np.where(pct_from_ma > 0, pct_from_ma / self._momentum_scale, 0.0)

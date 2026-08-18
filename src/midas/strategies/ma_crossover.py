@@ -10,10 +10,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import EntrySignal
+from midas.strategies.base import EntrySignal, rolling_mean
 
 
 class MovingAverageCrossover(EntrySignal):
+    """Entry signal: bullish when the short MA is above the long MA (golden cross)."""
+
     def __init__(self, short_window: int = 20, long_window: int = 50, spread_scale: float = 0.05) -> None:
         self._short_window = short_window
         self._long_window = long_window
@@ -31,13 +33,8 @@ class MovingAverageCrossover(EntrySignal):
         scores = np.full(num_bars, np.nan)
         if num_bars < long_win:
             return scores
-        cs = np.empty(num_bars + 1)
-        cs[0] = 0.0
-        np.cumsum(prices, out=cs[1:])
-        short_rolling = (cs[short_win:] - cs[:-short_win]) / short_win
-        long_rolling = (cs[long_win:] - cs[:-long_win]) / long_win
-        short_at_day = short_rolling[long_win - short_win : num_bars - short_win + 1]
-        long_at_day = long_rolling
+        short_at_day = rolling_mean(prices, short_win)[long_win - short_win :]
+        long_at_day = rolling_mean(prices, long_win)
         spread = np.where(long_at_day != 0, (short_at_day - long_at_day) / long_at_day, 0.0)
         scores[long_win - 1 :] = np.clip(spread / self._spread_scale, 0.0, 1.0)
         return scores

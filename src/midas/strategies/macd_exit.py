@@ -9,10 +9,12 @@ from __future__ import annotations
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
 from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, ExitRule
-from midas.strategies.macd_crossover import ema
+from midas.strategies.macd_crossover import macd_lines
 
 
 class MACDExit(ExitRule):
+    """Exit rule: liquidate when the MACD line crosses below its signal line."""
+
     def __init__(
         self,
         fast_period: int = 12,
@@ -45,10 +47,7 @@ class MACDExit(ExitRule):
         if current <= 0:
             return proposed_target
 
-        fast_ema = ema(prices, self._fast_period)
-        slow_ema = ema(prices, self._slow_period)
-        macd_line = fast_ema - slow_ema
-        signal_line = ema(macd_line, self._signal_period)
+        macd_line, signal_line = macd_lines(prices, self._fast_period, self._slow_period, self._signal_period)
         diff = float(macd_line[-1] - signal_line[-1])
 
         if diff < 0:
@@ -63,10 +62,7 @@ class MACDExit(ExitRule):
         high_water_mark: float,
     ) -> str:
         prices = price_history.close
-        fast_ema = ema(prices, self._fast_period)
-        slow_ema = ema(prices, self._slow_period)
-        macd_line = fast_ema - slow_ema
-        signal_line = ema(macd_line, self._signal_period)
+        macd_line, signal_line = macd_lines(prices, self._fast_period, self._slow_period, self._signal_period)
         diff = float(macd_line[-1] - signal_line[-1])
         return f"MACD below signal: MACD {macd_line[-1]:+.3f} vs signal {signal_line[-1]:+.3f} (diff {diff:+.3f})"
 

@@ -77,6 +77,11 @@ class BacktestResult:
 # ---------------------------------------------------------------------------
 
 
+def _rounded_annualized(cumulative: float, days: int, digits: int) -> float:
+    """Annualize *cumulative* over *days* calendar days and round to *digits*."""
+    return round(compute_annualized_return(cumulative, days), digits)
+
+
 def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
     """Write backtest results to a directory of machine-readable files."""
     if output_dir.is_file():
@@ -91,9 +96,10 @@ def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
 
 
 def _write_trades_csv(result: BacktestResult, path: Path) -> None:
+    """Write one trade-log-shaped CSV row per trade."""
     sell_basis = {id(trade): basis for trade, basis in pair_sells_with_basis(result.trades, result.basis_per_sell)}
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
         writer.writerow(TRADE_LOG_COLUMNS)
         for trade in result.trades:
             common = [
@@ -116,6 +122,7 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
 
 
 def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
+    """Write per-day NAV/drawdown rows, plus after-tax NAV when available."""
     drawdowns = _drawdown_series(result.equity_curve)
     has_after_tax = len(result.after_tax_equity_curve) == len(result.equity_curve) and bool(
         result.after_tax_equity_curve
@@ -123,8 +130,8 @@ def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
     after_tax_by_date: dict[date, float] = (
         {dt: nav for dt, nav in result.after_tax_equity_curve} if has_after_tax else {}
     )
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
         header = ["date", "nav", "drawdown"]
         if has_after_tax:
             header.append("nav_after_tax")
@@ -137,6 +144,7 @@ def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
 
 
 def _write_summary_json(result: BacktestResult, path: Path) -> None:
+    """Write the headline metrics (plus split/tax sections when present) as JSON."""
     starting_val = result.starting_value
     total_return = (result.final_value - starting_val) / starting_val if starting_val > 0 else 0.0
     bh_return = (result.buy_and_hold_value - starting_val) / starting_val if starting_val > 0 else 0.0
@@ -146,13 +154,13 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
         "starting_value": starting_val,
         "final_value": result.final_value,
         "total_return": round(total_return, 6),
-        "total_return_annualized": round(compute_annualized_return(total_return, total_days), 6),
+        "total_return_annualized": _rounded_annualized(total_return, total_days, 6),
         "cagr": result.cagr,
         "twr": result.twr,
-        "twr_annualized": round(compute_annualized_return(result.twr, total_days), 4),
+        "twr_annualized": _rounded_annualized(result.twr, total_days, 4),
         "buy_and_hold_value": result.buy_and_hold_value,
         "buy_and_hold_return": round(bh_return, 6),
-        "buy_and_hold_return_annualized": round(compute_annualized_return(bh_return, total_days), 6),
+        "buy_and_hold_return_annualized": _rounded_annualized(bh_return, total_days, 6),
         "total_trades": len(result.trades),
         "max_drawdown": result.max_drawdown,
         "sharpe_ratio": result.sharpe_ratio,
@@ -169,15 +177,13 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
         summary["split"] = {
             "date": result.split_date.isoformat(),
             "train_return": result.train_return,
-            "train_return_annualized": round(compute_annualized_return(result.train_return, result.train_days), 4),
+            "train_return_annualized": _rounded_annualized(result.train_return, result.train_days, 4),
             "test_return": result.test_return,
-            "test_return_annualized": round(compute_annualized_return(result.test_return, result.test_days), 4),
+            "test_return_annualized": _rounded_annualized(result.test_return, result.test_days, 4),
             "train_bh_return": result.train_bh_return,
-            "train_bh_return_annualized": round(
-                compute_annualized_return(result.train_bh_return, result.train_days), 4
-            ),
+            "train_bh_return_annualized": _rounded_annualized(result.train_bh_return, result.train_days, 4),
             "test_bh_return": result.test_bh_return,
-            "test_bh_return_annualized": round(compute_annualized_return(result.test_bh_return, result.test_days), 4),
+            "test_bh_return_annualized": _rounded_annualized(result.test_bh_return, result.test_days, 4),
             "train_trades": len(result.train_trades),
             "test_trades": len(result.test_trades),
         }
@@ -196,26 +202,27 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
     if result.tax_summary:
         summary["tax_summary"] = [
             {
-                "year": s.year,
-                "st_realized": round(s.st_realized, 4),
-                "lt_realized": round(s.lt_realized, 4),
-                "net_after_cross": round(s.net_after_cross, 4),
-                "deductible_loss": round(s.deductible_loss, 4),
-                "carry_forward": round(s.carry_forward, 4),
-                "tax_owed": round(s.tax_owed, 4),
-                "payment_date": s.payment_date.isoformat(),
+                "year": entry.year,
+                "st_realized": round(entry.st_realized, 4),
+                "lt_realized": round(entry.lt_realized, 4),
+                "net_after_cross": round(entry.net_after_cross, 4),
+                "deductible_loss": round(entry.deductible_loss, 4),
+                "carry_forward": round(entry.carry_forward, 4),
+                "tax_owed": round(entry.tax_owed, 4),
+                "payment_date": entry.payment_date.isoformat(),
             }
-            for s in result.tax_summary
+            for entry in result.tax_summary
         ]
 
-    with open(path, "w") as f:
-        json.dump(summary, f, indent=2)
-        f.write("\n")
+    with open(path, "w") as handle:
+        json.dump(summary, handle, indent=2)
+        handle.write("\n")
 
 
 def _write_strategy_breakdown_csv(result: BacktestResult, path: Path) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
+    """Write per-(strategy, ticker), per-strategy aggregate, and open-position rows."""
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
         writer.writerow(["strategy", "ticker", "trades", "buys", "sells", "win_rate", "pnl"])
 
         # Per-(strategy, ticker) rows

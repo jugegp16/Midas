@@ -10,6 +10,8 @@ from midas.strategies.base import EntrySignal
 
 
 class DonchianBreakout(EntrySignal):
+    """Entry signal: bullish when price breaks above the prior N-bar highest high."""
+
     def __init__(self, window: int = 20, breakout_scale: float = 0.02) -> None:
         self._window = window
         self._breakout_scale = breakout_scale

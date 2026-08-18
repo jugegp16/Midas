@@ -159,7 +159,7 @@ def compute_tax_summary(
         ``carry_forward`` is alive — the carry threads forward silently to the
         next year that has activity.
     """
-    paired = pair_sells_with_basis(list(trades), list(basis_per_sell))
+    paired = pair_sells_with_basis(trades, basis_per_sell)
     by_year_st: dict[int, float] = defaultdict(float)
     by_year_lt: dict[int, float] = defaultdict(float)
 
@@ -211,7 +211,6 @@ def compute_tax_summary(
             shave = min(remaining_carry, lt_after_cross)
             lt_after_cross -= shave
             remaining_carry -= shave
-        # Any still-remaining carry is pure loss applied to ST bucket.
         # Residual carry after exhausting gains in both buckets is pure ST loss
         # (carryforward already lost ST/LT character on rollover).
         st_after_cross -= remaining_carry
@@ -259,7 +258,7 @@ def compute_after_tax_curve(
     """
     if not summaries:
         return list(equity_curve)
-    pending = sorted(((s.payment_date, s.tax_owed) for s in summaries), key=lambda item: item[0])
+    pending = sorted(((summary.payment_date, summary.tax_owed) for summary in summaries), key=lambda item: item[0])
     out: list[tuple[date, float]] = []
     cumulative_deduction = 0.0
     payment_idx = 0

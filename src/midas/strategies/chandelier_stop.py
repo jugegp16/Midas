@@ -6,10 +6,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import ExitRule
+from midas.strategies.base import ExitRule, true_range_series
 
 
 class ChandelierStop(ExitRule):
+    """Exit rule: sell when price drops a multiple of ATR below the rolling high."""
+
     def __init__(self, window: int = 22, multiplier: float = 3.0) -> None:
         self._window = window
         self._multiplier = multiplier
@@ -26,24 +28,18 @@ class ChandelierStop(ExitRule):
     ) -> float:
         """Wilder-smoothed ATR over the full available history.
 
-        TR_t = max(H-L, |H - prevC|, |L - prevC|), with bar 0 falling back
-        to H - L since no prior close is available. The seed ATR is the
-        simple mean of the first ``window`` TRs; subsequent bars apply the
-        recursive formula ``ATR_t = ((window - 1) * ATR_{t-1} + TR_t) / window``.
+        The seed ATR is the simple mean of the first ``window`` TRs;
+        subsequent bars apply the recursive formula
+        ``ATR_t = ((window - 1) * ATR_{t-1} + TR_t) / window``.
 
         With exactly ``window`` bars of history this degenerates to the
         simple mean (no iteration). With more, the exponential decay tail
         matches Wilder's original definition and most charting tools.
         """
-        num_bars = len(close)
-        tr = np.empty(num_bars)
-        tr[0] = high[0] - low[0]
-        if num_bars > 1:
-            prev_c = close[:-1]
-            tr[1:] = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - prev_c), np.abs(low[1:] - prev_c)])
+        tr = true_range_series(high, low, close)
         window = self._window
         atr = float(tr[:window].mean())
-        for idx in range(window, num_bars):
+        for idx in range(window, len(close)):
             atr = ((window - 1) * atr + float(tr[idx])) / window
         return atr
 

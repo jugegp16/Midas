@@ -6,10 +6,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal
+from midas.strategies.base import RECURSIVE_WARMUP_MULTIPLIER, EntrySignal, rolling_mean
 
 
 class RSIOversold(EntrySignal):
+    """Entry signal: bullish as RSI drops below the 50 midpoint toward oversold."""
+
     def __init__(self, window: int = 14, oversold_threshold: float = 30.0) -> None:
         self._window = window
         self._oversold_threshold = oversold_threshold
@@ -30,14 +32,8 @@ class RSIOversold(EntrySignal):
         deltas = np.diff(prices)
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
-        g_cs = np.empty(len(gains) + 1)
-        g_cs[0] = 0.0
-        np.cumsum(gains, out=g_cs[1:])
-        l_cs = np.empty(len(losses) + 1)
-        l_cs[0] = 0.0
-        np.cumsum(losses, out=l_cs[1:])
-        avg_gain = (g_cs[window:] - g_cs[:-window]) / window
-        avg_loss = (l_cs[window:] - l_cs[:-window]) / window
+        avg_gain = rolling_mean(gains, window)
+        avg_loss = rolling_mean(losses, window)
         result = np.zeros(len(avg_gain))
         valid = avg_loss != 0
         rs = np.where(valid, avg_gain / np.where(valid, avg_loss, 1.0), 0.0)

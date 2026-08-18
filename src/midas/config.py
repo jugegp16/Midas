@@ -25,12 +25,61 @@ from midas.models import (
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        data = yaml.safe_load(f)
+    """Load a YAML file, requiring a top-level mapping.
+
+    Raises:
+        ValueError: If the file's top-level value is not a mapping.
+    """
+    with open(path) as handle:
+        data = yaml.safe_load(handle)
     if not isinstance(data, dict):
         msg = f"Expected a YAML mapping in {path}"
         raise ValueError(msg)
     return data
+
+
+def _parse_cash_infusion(raw: dict[str, Any]) -> CashInfusion | None:
+    """Build the optional ``cash_infusion:`` block, coercing its date field."""
+    if "cash_infusion" not in raw:
+        return None
+    ci = raw["cash_infusion"]
+    next_date = ci["next_date"]
+    if isinstance(next_date, str):
+        next_date = date.fromisoformat(next_date)
+    elif isinstance(next_date, datetime):
+        next_date = next_date.date()
+    return CashInfusion(
+        amount=float(ci["amount"]),
+        next_date=next_date,
+        frequency=ci.get("frequency"),
+    )
+
+
+def _parse_tax_config(tax_raw: Any) -> TaxConfig | None:
+    """Build the optional ``tax:`` block.
+
+    Raises:
+        ValueError: If the block has unrecognized keys or is neither a
+            mapping nor ``off``.
+    """
+    if isinstance(tax_raw, dict):
+        known_keys = {"short_term_rate", "long_term_rate", "deductible_loss_cap", "payment_lag_days"}
+        unknown_keys = set(tax_raw) - known_keys
+        if unknown_keys:
+            # A typo'd rate key would otherwise silently fall back to the
+            # default and skew every after-tax figure.
+            msg = f"tax: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
+            raise ValueError(msg)
+        return TaxConfig(
+            short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
+            long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
+            deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
+            payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
+        )
+    if tax_raw is not None and tax_raw is not False:
+        msg = f"tax: must be a mapping of rates or `off`, got {tax_raw!r}"
+        raise ValueError(msg)
+    return None
 
 
 def load_portfolio(path: Path) -> PortfolioConfig:
@@ -46,19 +95,7 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         for entry in raw["portfolio"]
     ]
 
-    infusion = None
-    if "cash_infusion" in raw:
-        ci = raw["cash_infusion"]
-        next_date = ci["next_date"]
-        if isinstance(next_date, str):
-            next_date = date.fromisoformat(next_date)
-        elif isinstance(next_date, datetime):
-            next_date = next_date.date()
-        infusion = CashInfusion(
-            amount=float(ci["amount"]),
-            next_date=next_date,
-            frequency=ci.get("frequency"),
-        )
+    infusion = _parse_cash_infusion(raw)
 
     restrictions = None
     if "trading_restrictions" in raw:
@@ -68,40 +105,17 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         )
 
     state_file_raw = raw.get("state_file")
-    state_file = Path(state_file_raw) if state_file_raw is not None else None
+    tax = _parse_tax_config(raw.get("tax"))
 
-    tax_raw = raw.get("tax")
-    tax_declared = "tax" in raw
-    tax: TaxConfig | None = None
-    if isinstance(tax_raw, dict):
-        known_keys = {"short_term_rate", "long_term_rate", "deductible_loss_cap", "payment_lag_days"}
-        unknown_keys = set(tax_raw) - known_keys
-        if unknown_keys:
-            # A typo'd rate key would otherwise silently fall back to the
-            # default and skew every after-tax figure.
-            msg = f"tax: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
-            raise ValueError(msg)
-        tax = TaxConfig(
-            short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
-            long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
-            deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
-            payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
-        )
-    elif tax_raw is not None and tax_raw is not False:
-        msg = f"tax: must be a mapping of rates or `off`, got {tax_raw!r}"
-        raise ValueError(msg)
-
-    portfolio = PortfolioConfig(
+    return PortfolioConfig(
         holdings=holdings,
         available_cash=float(raw["available_cash"]),
         cash_infusion=infusion,
         trading_restrictions=restrictions,
-        state_file=state_file,
+        state_file=Path(state_file_raw) if state_file_raw is not None else None,
         tax_config=tax,
-        tax_declared=tax_declared,
+        tax_declared="tax" in raw,
     )
-
-    return portfolio
 
 
 def load_strategies(
@@ -114,16 +128,15 @@ def load_strategies(
     """
     raw = _load_yaml(path)
 
-    configs = []
-    for strat in raw["strategies"]:
-        configs.append(
-            StrategyConfig(
-                name=strat["name"],
-                params=strat.get("params", {}),
-                tickers=strat.get("tickers"),
-                weight=float(strat.get("weight", 1.0)),
-            )
+    configs = [
+        StrategyConfig(
+            name=strat["name"],
+            params=strat.get("params", {}),
+            tickers=strat.get("tickers"),
+            weight=float(strat.get("weight", 1.0)),
         )
+        for strat in raw["strategies"]
+    ]
 
     max_pos = raw.get("max_position_pct")
     constraints = AllocationConstraints(
