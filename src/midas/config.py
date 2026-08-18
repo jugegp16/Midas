@@ -71,14 +71,18 @@ def load_portfolio(path: Path) -> PortfolioConfig:
     state_file = Path(state_file_raw) if state_file_raw is not None else None
 
     tax_raw = raw.get("tax")
+    tax_declared = "tax" in raw
     tax: TaxConfig | None = None
-    if tax_raw is not None:
+    if isinstance(tax_raw, dict):
         tax = TaxConfig(
             short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
             long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
             deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
             payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
         )
+    elif tax_raw:
+        msg = f"tax: must be a mapping of rates or `off`, got {tax_raw!r}"
+        raise ValueError(msg)
 
     portfolio = PortfolioConfig(
         holdings=holdings,
@@ -87,6 +91,7 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         trading_restrictions=restrictions,
         state_file=state_file,
         tax_config=tax,
+        tax_declared=tax_declared,
     )
 
     return portfolio

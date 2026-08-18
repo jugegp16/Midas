@@ -234,3 +234,36 @@ def test_load_portfolio_without_tax_block(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n")
     assert load_portfolio(path).tax_config is None
+
+
+def test_load_portfolio_tax_off_declares_without_config(tmp_path: Path) -> None:
+    """`tax: off` (YAML false) means: asked and declined — never prompt again."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax: off\n")
+    portfolio = load_portfolio(path)
+    assert portfolio.tax_config is None
+    assert portfolio.tax_declared is True
+
+
+def test_load_portfolio_absent_tax_is_undeclared(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n")
+    assert load_portfolio(path).tax_declared is False
+
+
+def test_load_portfolio_tax_mapping_is_declared(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "tax:\n  short_term_rate: 0.30\n  long_term_rate: 0.15\n"
+    )
+    portfolio = load_portfolio(path)
+    assert portfolio.tax_declared is True
+    assert portfolio.tax_config is not None
+
+
+def test_load_portfolio_tax_invalid_scalar_raises(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax: on\n")
+    with pytest.raises(ValueError, match="tax:"):
+        load_portfolio(path)

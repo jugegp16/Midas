@@ -76,6 +76,7 @@ class PortfolioConfig:
     trading_restrictions: TradingRestrictions | None = None
     state_file: Path | None = None
     tax_config: TaxConfig | None = None
+    tax_declared: bool = False
 
     def __post_init__(self) -> None:
         self._by_ticker = {holding.ticker: holding for holding in self.holdings}
