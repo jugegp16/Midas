@@ -82,12 +82,15 @@ def _capture_summary() -> str:
     return capture.get()
 
 
-def test_summary_shows_after_tax_final_value_in_performance() -> None:
+def test_after_tax_metrics_live_in_after_tax_block_only() -> None:
     text = _capture_summary()
-    assert "Final Value (After Tax)" in text
+    assert "After-Tax Final Value" in text
     assert "$11,500.00" in text
-    assert "Total Return (After Tax)" in text
+    assert "After-Tax Total Return" in text
     assert "15.00%" in text
+    # The main Performance table stays gross-only.
+    assert "Final Value (After Tax)" not in text
+    assert "Total Return (After Tax)" not in text
 
 
 def test_tax_table_total_row_sums_raw_buckets_not_carried_nets() -> None:
