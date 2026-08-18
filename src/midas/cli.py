@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from midas.models import (
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
+    TaxConfig,
     TradeRecord,
 )
 from midas.order_sizer import OrderSizer
@@ -27,7 +29,7 @@ from midas.output import make_wide_table, print_backtest_summary, print_status, 
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
-from midas.tax import AnnualTaxSummary, compute_tax_summary
+from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
 from midas.trade_log import LoggedTrade, read_trades
 
 TAX_REPORT_COLUMNS: tuple[str, ...] = (
@@ -99,6 +101,85 @@ def _to_date(dt: date | datetime) -> date:
 def _resolve_state_path(port: PortfolioConfig, portfolio_path: Path) -> Path:
     """State file from the portfolio config, defaulting to `<portfolio>.state.yaml` beside it."""
     return port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether both stdin and stdout are TTYs, i.e. it is safe to prompt."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_tax_rates() -> tuple[float, float, str]:
+    """Ask for capital-gains rates, directly or derived from income.
+
+    Returns:
+        ``(short_term_rate, long_term_rate, provenance)`` where provenance
+        is the YAML comment describing where the numbers came from.
+    """
+    mode = click.prompt(
+        "Enter rates directly, or derive them from your income",
+        type=click.Choice(["rates", "income"]),
+        default="income",
+    )
+    if mode == "rates":
+        short_term = click.prompt("Short-term capital-gains rate (decimal fraction)", type=float, default=0.37)
+        long_term = click.prompt("Long-term capital-gains rate (decimal fraction)", type=float, default=0.20)
+        return short_term, long_term, "configured interactively"
+    status = click.prompt("Filing status", type=click.Choice(["single", "married"]), default="single")
+    income = click.prompt("Approximate annual taxable income (USD)", type=float)
+    short_term, long_term = derive_tax_rates(status, income)
+    click.echo(
+        f"Derived rates: short-term {short_term:.1%}, long-term {long_term:.1%} "
+        f"({TAX_BRACKET_YEAR} federal brackets; add state taxes to both if applicable)"
+    )
+    return short_term, long_term, f"derived from ~${income:,.0f} {status}, {TAX_BRACKET_YEAR} federal brackets"
+
+
+def _ensure_tax_config(port: PortfolioConfig, portfolio_path: Path) -> TaxConfig | None:
+    """Return the portfolio's tax config, offering one-time interactive setup.
+
+    When the portfolio file has no ``tax:`` key at all and the session is
+    interactive, ask whether to set up after-tax accounting and append the
+    outcome to the file: a ``tax:`` block on yes, ``tax: off`` on no. A
+    file that declares ``tax:`` either way is never prompted about. The
+    income figure used for derivation is never written to the file.
+    """
+    if port.tax_declared:
+        return port.tax_config
+    if not _stdin_is_interactive():
+        return None
+    if not click.confirm(
+        f"No tax config in {portfolio_path} — set up after-tax accounting now?",
+        default=False,
+    ):
+        with open(portfolio_path, "a", encoding="utf-8") as handle:
+            handle.write("\ntax: off  # after-tax accounting disabled; delete this line to be asked again\n")
+        click.echo(f"Wrote `tax: off` to {portfolio_path}.")
+        return None
+    while True:
+        short_term, long_term, provenance = _prompt_tax_rates()
+        cap = click.prompt("Deductible loss cap (USD/year)", type=float, default=3000.0)
+        lag = click.prompt("Payment lag (days from year-end to payment)", type=int, default=105)
+        try:
+            tax_config = TaxConfig(
+                short_term_rate=short_term,
+                long_term_rate=long_term,
+                deductible_loss_cap=cap,
+                payment_lag_days=lag,
+            )
+            break
+        except ValueError as exc:
+            click.echo(f"Invalid tax config: {exc}. Let's try again.", err=True)
+    block = (
+        f"\ntax:  # {provenance}\n"
+        f"  short_term_rate: {tax_config.short_term_rate}\n"
+        f"  long_term_rate: {tax_config.long_term_rate}\n"
+        f"  deductible_loss_cap: {tax_config.deductible_loss_cap}\n"
+        f"  payment_lag_days: {tax_config.payment_lag_days}\n"
+    )
+    with open(portfolio_path, "a", encoding="utf-8") as handle:
+        handle.write(block)
+    click.echo(f"Wrote tax config to {portfolio_path}.")
+    return tax_config
 
 
 def _fetch_prices(
@@ -219,7 +300,7 @@ def backtest(
         enable_split=not no_split,
         log_fn=print_status,
         execution_mode=execution_mode,
-        tax_config=port.tax_config,
+        tax_config=_ensure_tax_config(port, Path(portfolio)),
     )
 
     print_status("Running backtest...")
@@ -260,6 +341,8 @@ def live(
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = _resolve_state_path(port, portfolio_path)
+    # Setup opportunity: live's trade log is what tax-report consumes later.
+    _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
@@ -341,11 +424,12 @@ def tax_report(
 
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
-    tax_config = port.tax_config
+    tax_config = _ensure_tax_config(port, portfolio_path)
     if tax_config is None:
         msg = (
             "portfolio file has no `tax:` block; tax-report requires configured rates "
-            "(short_term_rate, long_term_rate). See docs/tax-reporting.md."
+            "(short_term_rate, long_term_rate). Run interactively to be walked through "
+            "setup, or see docs/tax-reporting.md."
         )
         raise click.UsageError(msg)
 

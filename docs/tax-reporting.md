@@ -22,6 +22,18 @@ tax:
 All four fields have defaults; the block is parsed leniently. The validator
 also enforces `long_term_rate <= short_term_rate` to catch transposed values.
 
+### Interactive setup
+
+If the portfolio file has no `tax:` key at all, `midas backtest`,
+`midas live`, and `midas tax-report` offer a one-time setup when run in a
+terminal: answer a few questions and the block is appended to the file.
+You can enter the two rates directly, or give filing status
+(single / married filing jointly) and approximate taxable income to have
+flat rates derived from the current-year federal brackets (NIIT
+included). Declining writes `tax: off`, which silences the question;
+delete that line to be asked again. Non-interactive runs (pipes, CI)
+never prompt. Only the derived rates are written — income is not stored.
+
 ## Backtest: after-tax metrics
 
 Running `midas backtest` with a `tax:` block in the portfolio YAML adds:
@@ -126,3 +138,7 @@ supported) to include such sales.
 - **Pre-existing live deployments upgrading mid-year:** the trade log
   starts fresh on the first post-upgrade tick. Year-end report for the
   upgrade year is partial; merge with broker statements.
+- **Derived rates are federal-only, for one tax year.** The bracket table
+  (`TAX_BRACKET_YEAR` in `tax.py`) is federal; add your state's rate to
+  both fields by hand if applicable, and expect the table to be updated
+  yearly.
