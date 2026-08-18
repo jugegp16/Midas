@@ -169,6 +169,11 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
     if result.after_tax_final_value is not None:
         perf.add_row("Final Value (After Tax)", f"${result.after_tax_final_value:,.2f}")
     perf.add_row("Total Return", _return_row(total_return, total_days))
+    if result.after_tax_final_value is not None:
+        perf.add_row(
+            "Total Return (After Tax)",
+            _return_row(result.after_tax_total_return or 0.0, total_days),
+        )
     perf.add_row("CAGR (Annualized)", color_signed(result.cagr))
     perf.add_row("Time-Weighted Return", _return_row(result.twr, total_days))
     perf.add_row("Buy & Hold Value", f"${bh_val:,.2f}")

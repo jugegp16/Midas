@@ -86,6 +86,8 @@ def test_summary_shows_after_tax_final_value_in_performance() -> None:
     text = _capture_summary()
     assert "Final Value (After Tax)" in text
     assert "$11,500.00" in text
+    assert "Total Return (After Tax)" in text
+    assert "15.00%" in text
 
 
 def test_tax_table_total_row_sums_raw_buckets_not_carried_nets() -> None:
