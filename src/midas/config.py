@@ -70,12 +70,23 @@ def load_portfolio(path: Path) -> PortfolioConfig:
     state_file_raw = raw.get("state_file")
     state_file = Path(state_file_raw) if state_file_raw is not None else None
 
+    tax_raw = raw.get("tax")
+    tax: TaxConfig | None = None
+    if tax_raw is not None:
+        tax = TaxConfig(
+            short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
+            long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
+            deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
+            payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
+        )
+
     portfolio = PortfolioConfig(
         holdings=holdings,
         available_cash=float(raw["available_cash"]),
         cash_infusion=infusion,
         trading_restrictions=restrictions,
         state_file=state_file,
+        tax_config=tax,
     )
 
     return portfolio
@@ -83,13 +94,11 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
 def load_strategies(
     path: Path,
-) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig, TaxConfig | None]:
-    """Load strategy configs, allocation knobs, optional risk policy, and optional tax policy.
+) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
+    """Load strategy configs, allocation knobs, and optional risk policy.
 
-    Returns (strategies, constraints, risk_config, tax_config). Both risk and tax
-    blocks are optional; omitting either yields the documented default (default
-    ``RiskConfig`` for risk, ``None`` for tax — meaning after-tax accounting is
-    disabled).
+    Returns (strategies, constraints, risk_config). The risk block is
+    optional; omitting it yields a default ``RiskConfig``.
     """
     raw = _load_yaml(path)
 
@@ -127,14 +136,4 @@ def load_strategies(
         drawdown_floor=(float(risk_raw["drawdown_floor"]) if risk_raw.get("drawdown_floor") is not None else None),
     )
 
-    tax_raw = raw.get("tax")
-    tax: TaxConfig | None = None
-    if tax_raw is not None:
-        tax = TaxConfig(
-            short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
-            long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
-            deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
-            payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
-        )
-
-    return configs, constraints, risk, tax
+    return configs, constraints, risk

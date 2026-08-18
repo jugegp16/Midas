@@ -20,7 +20,6 @@ from midas.models import (
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
-    TaxConfig,
     TradeRecord,
 )
 from midas.order_sizer import OrderSizer
@@ -194,8 +193,8 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, risk_config, tax_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
 
     start_d, end_d = _to_date(start), _to_date(end)
@@ -220,7 +219,7 @@ def backtest(
         enable_split=not no_split,
         log_fn=print_status,
         execution_mode=execution_mode,
-        tax_config=tax_config,
+        tax_config=port.tax_config,
     )
 
     print_status("Running backtest...")
@@ -261,8 +260,8 @@ def live(
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = _resolve_state_path(port, portfolio_path)
-    strat_configs, constraints, risk_config, _ = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
+    strat_configs, constraints, risk_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
     provider = CachedYFinanceProvider()
 
@@ -292,16 +291,12 @@ def live(
 @click.option(
     "--portfolio",
     "-p",
-    default=None,
-    type=click.Path(exists=True),
-    help="Portfolio YAML; resolves the trade log next to its state file unless --from-trades is given.",
-)
-@click.option(
-    "--strategies",
-    "-s",
     required=True,
     type=click.Path(exists=True),
-    help="Strategies YAML containing the tax: block. Required — rates have no defaults at the CLI.",
+    help=(
+        "Portfolio YAML containing the tax: block; also resolves the trade log "
+        "next to its state file unless --from-trades is given."
+    ),
 )
 @click.option(
     "--from-trades",
@@ -323,8 +318,7 @@ def live(
     ),
 )
 def tax_report(
-    portfolio: str | None,
-    strategies: str,
+    portfolio: str,
     from_trades: str | None,
     year: int | None,
     start: datetime | None,
@@ -345,10 +339,12 @@ def tax_report(
     else:
         raise click.UsageError("either --year or both --start and --end must be provided")
 
-    _strats, _constraints, _risk, tax_config = load_strategies(Path(strategies))
+    portfolio_path = Path(portfolio)
+    port = load_portfolio(portfolio_path)
+    tax_config = port.tax_config
     if tax_config is None:
         msg = (
-            "strategies file has no `tax:` block; tax-report requires configured rates "
+            "portfolio file has no `tax:` block; tax-report requires configured rates "
             "(short_term_rate, long_term_rate). See docs/tax-reporting.md."
         )
         raise click.UsageError(msg)
@@ -356,10 +352,6 @@ def tax_report(
     if from_trades is not None:
         trades_path = Path(from_trades)
     else:
-        if portfolio is None:
-            raise click.UsageError("either --portfolio or --from-trades is required")
-        portfolio_path = Path(portfolio)
-        port = load_portfolio(portfolio_path)
         state_path = _resolve_state_path(port, portfolio_path)
         trades_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
         if not trades_path.exists():
@@ -529,9 +521,8 @@ def optimize(
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
     risk_config: RiskConfig = RiskConfig()
-    tax_config: TaxConfig | None = None
     if strategies:
-        strat_configs, strat_constraints, risk_config, tax_config = load_strategies(Path(strategies))
+        strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 
@@ -572,7 +563,6 @@ def optimize(
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
-            tax_config=tax_config,
         )
 
         console.print()
@@ -663,7 +653,6 @@ def optimize(
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
-            tax_config=tax_config,
         )
 
         console.print()

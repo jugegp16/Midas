@@ -12,8 +12,9 @@ from midas.cli import cli
 from midas.models import Direction, HoldingPeriod, TradeRecord
 from midas.trade_log import append_trade
 
-STRATEGIES_YAML = (
-    "strategies:\n  - name: Momentum\n    params: {window: 20}\ntax:\n  short_term_rate: 0.30\n  long_term_rate: 0.15\n"
+PORTFOLIO_YAML = (
+    "portfolio:\n  - ticker: AAPL\n    shares: 10\navailable_cash: 1000.0\n"
+    "tax:\n  short_term_rate: 0.30\n  long_term_rate: 0.15\n"
 )
 
 
@@ -67,13 +68,13 @@ def _seed_log(path: Path) -> None:
     )
 
 
-def _run_tax_report(log: Path, tmp_path: Path, *extra_args: str, strategies_text: str = STRATEGIES_YAML):
-    strategies = tmp_path / "strategies.yaml"
-    strategies.write_text(strategies_text)
+def _run_tax_report(log: Path, tmp_path: Path, *extra_args: str, portfolio_text: str = PORTFOLIO_YAML):
+    portfolio = tmp_path / "portfolio.yaml"
+    portfolio.write_text(portfolio_text)
     runner = CliRunner()
     return runner.invoke(
         cli,
-        ["tax-report", "--from-trades", str(log), "--strategies", str(strategies), *extra_args],
+        ["tax-report", "--portfolio", str(portfolio), "--from-trades", str(log), *extra_args],
     )
 
 
@@ -226,8 +227,8 @@ def test_tax_report_rejects_year_combined_with_start_end(tmp_path: Path) -> None
 def test_tax_report_requires_tax_block(tmp_path: Path) -> None:
     log = tmp_path / "trades.csv"
     _seed_log(log)
-    no_tax = "strategies:\n  - name: Momentum\n    params: {window: 20}\n"
-    result = _run_tax_report(log, tmp_path, "--year", "2026", strategies_text=no_tax)
+    no_tax = "portfolio:\n  - ticker: AAPL\n    shares: 10\navailable_cash: 1000.0\n"
+    result = _run_tax_report(log, tmp_path, "--year", "2026", portfolio_text=no_tax)
     assert result.exit_code != 0
     assert "no `tax:` block" in result.stderr
 
@@ -237,9 +238,7 @@ def test_tax_report_resolves_log_from_portfolio_state_file(tmp_path: Path) -> No
     log = tmp_path / "live.state.yaml.trades.csv"
     _seed_log(log)
     portfolio = tmp_path / "portfolio.yaml"
-    portfolio.write_text(f"portfolio:\n  - ticker: AAPL\n    shares: 10\navailable_cash: 1000.0\nstate_file: {state}\n")
-    strategies = tmp_path / "strategies.yaml"
-    strategies.write_text(STRATEGIES_YAML)
+    portfolio.write_text(f"{PORTFOLIO_YAML}state_file: {state}\n")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -248,8 +247,6 @@ def test_tax_report_resolves_log_from_portfolio_state_file(tmp_path: Path) -> No
             "tax-report",
             "--portfolio",
             str(portfolio),
-            "--strategies",
-            str(strategies),
             "--year",
             "2026",
             "--output",

@@ -2,13 +2,14 @@
 
 Midas can report realized capital gains in a Schedule D-shaped format and (in
 backtest mode only) compute after-tax return metrics. Tax accounting is opt-in:
-without a `tax:` block in the strategies YAML, all output is unchanged from
+without a `tax:` block in the portfolio YAML, all output is unchanged from
 pre-#66 behavior.
 
 ## Configuring rates
 
-Add a `tax:` block to the strategies YAML alongside the existing top-level
-keys (`min_cash_pct`, `softmax_temperature`, optional `risk:`):
+Tax rates are a property of the investor, not the trading policy, so they
+live in the portfolio YAML — add a `tax:` block alongside the existing
+top-level keys (`portfolio`, `available_cash`, optional `state_file`):
 
 ```yaml
 tax:
@@ -23,7 +24,7 @@ also enforces `long_term_rate <= short_term_rate` to catch transposed values.
 
 ## Backtest: after-tax metrics
 
-Running `midas backtest` with a `tax:` block in the strategies YAML adds:
+Running `midas backtest` with a `tax:` block in the portfolio YAML adds:
 
 - `after_tax_final_value`, `after_tax_total_return`, `after_tax_cagr`,
   `after_tax_twr` to `summary.json`.
@@ -71,17 +72,19 @@ line number) and lenient on content.
 ## `midas tax-report`
 
 ```
-midas tax-report --strategies strategies.yaml \
-                 --portfolio portfolio.yaml --year 2026 \
+midas tax-report --portfolio portfolio.yaml --year 2026 \
                  [--output schedule_d_2026.csv]
 ```
 
 Or against an explicit log path (e.g. backtest output):
 
 ```
-midas tax-report --strategies strategies.yaml \
+midas tax-report --portfolio portfolio.yaml \
                  --from-trades output/trades.csv --year 2026
 ```
+
+The portfolio file supplies the tax rates and (without `--from-trades`)
+resolves the trade log next to its state file.
 
 Prints a per-row table (ticker, shares, purchase/sale dates, basis,
 proceeds, P&L, days held, classification) and writes the same data to
