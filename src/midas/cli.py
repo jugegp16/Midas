@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import sys
-from datetime import date, datetime, timedelta
+from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -30,7 +30,7 @@ from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
 from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
-from midas.trade_log import LoggedTrade, read_trades
+from midas.trade_log import LoggedTrade, TradeLogError, read_trades
 
 TAX_REPORT_COLUMNS: tuple[str, ...] = (
     "ticker",
@@ -400,7 +400,8 @@ def live(
     default=None,
     help=(
         "Output CSV path. Defaults to schedule_d_<year>.csv (or schedule_d_<start>_<end>.csv). "
-        "Per-year aggregates are written alongside as <output>.summary.csv."
+        "Per-year aggregates land in a companion summary CSV named by swapping the extension "
+        "(schedule_d_2026.csv -> schedule_d_2026.summary.csv)."
     ),
 )
 def tax_report(
@@ -415,12 +416,16 @@ def tax_report(
     if year is not None:
         if start is not None or end is not None:
             raise click.UsageError("--year cannot be combined with --start/--end")
+        if not MINYEAR <= year <= MAXYEAR:
+            raise click.UsageError(f"--year must be a calendar year ({MINYEAR}-{MAXYEAR}), got {year}")
         start_d = date(year, 1, 1)
         end_d = date(year, 12, 31)
         period_label = str(year)
     elif start is not None and end is not None:
         start_d = _to_date(start)
         end_d = _to_date(end)
+        if start_d > end_d:
+            raise click.UsageError(f"--start ({start_d}) must be on or before --end ({end_d})")
         period_label = f"{start_d.isoformat()}_{end_d.isoformat()}"
     else:
         raise click.UsageError("either --year or both --start and --end must be provided")
@@ -448,8 +453,13 @@ def tax_report(
     # Netting and carryforward are annual and cumulative, so the tax engine
     # must see every SELL in the log — a loss realized before the report
     # window carries into it. The window only filters what gets displayed.
+    try:
+        logged_rows = read_trades(trades_path)
+    except TradeLogError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     usable_sells: list[LoggedTrade] = []
-    for row in read_trades(trades_path):
+    for row in logged_rows:
         if row.direction != Direction.SELL:
             continue
         if row.holding_period is None:

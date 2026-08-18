@@ -19,8 +19,10 @@ tax:
   payment_lag_days: 105   # Dec 31 → ~Apr 15 of following year
 ```
 
-All four fields have defaults; the block is parsed leniently. The validator
-also enforces `long_term_rate <= short_term_rate` to catch transposed values.
+All four fields have defaults, so any subset may be given — but unknown
+keys are rejected (a typo'd rate would otherwise silently become the
+default). The validator also enforces `long_term_rate <= short_term_rate`
+to catch transposed values.
 
 ### Interactive setup
 
@@ -106,8 +108,9 @@ realized_pnl` holds on every row.
 
 Per-year aggregates (`year`, `st_realized`, `lt_realized`,
 `net_after_cross`, `deductible_loss`, `carry_forward`, `tax_owed`,
-`payment_date`) go to a companion file, `<output>.summary.csv`, so both
-files parse cleanly as flat CSV. If the window contains no sales, both
+`payment_date`) go to a companion file named by swapping the extension
+(`schedule_d_2026.csv` → `schedule_d_2026.summary.csv`), so both files
+parse cleanly as flat CSV. If the window contains no sales, both
 files are written header-only (and only when `--output` is given).
 
 `--start` / `--end` accept arbitrary date ranges instead of `--year`.
@@ -142,3 +145,8 @@ supported) to include such sales.
   (`TAX_BRACKET_YEAR` in `tax.py`) is federal; add your state's rate to
   both fields by hand if applicable, and expect the table to be updated
   yearly.
+- **A failed live log append is not retried.** Live persists state before
+  appending to the trade log, and positions re-derive from state — so if a
+  tick fails after the state save, the affected rows are printed to the
+  error log but never re-attempted. Reconcile against broker fills and
+  hand-add any missing rows.

@@ -216,6 +216,35 @@ def test_tax_report_no_sells_with_output_writes_header_only_csvs(tmp_path: Path)
     assert len(summary_text.splitlines()) == 1
 
 
+def test_tax_report_corrupt_log_is_clean_cli_error(tmp_path: Path) -> None:
+    """A corrupt trade log surfaces as a CLI error with a line number, not a traceback."""
+    log = tmp_path / "trades.csv"
+    _seed_log(log)
+    with open(log, "a") as handle:
+        handle.write("2026-06-02,AAPL,SELL,abc,30.0,StopLoss,short-term,2026-01-01,20.0,100.0,0.5\n")
+
+    result = _run_tax_report(log, tmp_path, "--year", "2026")
+    assert result.exit_code == 1
+    assert result.exception is None or not isinstance(result.exception, ValueError)
+    assert "line 4" in result.stderr  # header + two seeded rows precede it
+
+
+def test_tax_report_rejects_out_of_range_year(tmp_path: Path) -> None:
+    log = tmp_path / "trades.csv"
+    _seed_log(log)
+    result = _run_tax_report(log, tmp_path, "--year", "12026")
+    assert result.exit_code != 0
+    assert "calendar year" in result.stderr
+
+
+def test_tax_report_rejects_start_after_end(tmp_path: Path) -> None:
+    log = tmp_path / "trades.csv"
+    _seed_log(log)
+    result = _run_tax_report(log, tmp_path, "--start", "2026-12-31", "--end", "2026-01-01")
+    assert result.exit_code != 0
+    assert "on or before" in result.stderr
+
+
 def test_tax_report_rejects_year_combined_with_start_end(tmp_path: Path) -> None:
     log = tmp_path / "trades.csv"
     _seed_log(log)

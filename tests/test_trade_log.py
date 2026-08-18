@@ -116,3 +116,18 @@ def test_partial_row_raises_with_line_number(tmp_path: Path) -> None:
     path.write_text(TRADE_LOG_HEADER + "2026-05-08,AAPL\n")  # 2 fields instead of 11
     with pytest.raises(TradeLogError, match="line 2"):
         read_trades(path)
+
+
+def test_non_numeric_shares_raises_with_line_number(tmp_path: Path) -> None:
+    """Hand-edited numeric cells must fail with the documented error, not a raw ValueError."""
+    path = tmp_path / "portfolio.state.yaml.trades.csv"
+    path.write_text(TRADE_LOG_HEADER + "2026-05-08,AAPL,SELL,abc,30.0,StopLoss,short-term,2026-01-01,20.0,100.0,0.5\n")
+    with pytest.raises(TradeLogError, match="line 2"):
+        read_trades(path)
+
+
+def test_non_numeric_price_raises_with_line_number(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.state.yaml.trades.csv"
+    path.write_text(TRADE_LOG_HEADER + "2026-05-08,AAPL,SELL,10.0,oops,StopLoss,short-term,2026-01-01,20.0,100.0,0.5\n")
+    with pytest.raises(TradeLogError, match="line 2"):
+        read_trades(path)

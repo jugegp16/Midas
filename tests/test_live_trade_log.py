@@ -375,3 +375,47 @@ def test_sell_spanning_st_and_lt_writes_two_rows(
     assert by_period["short-term"].purchase_date == date(2026, 4, 1)
     assert by_period["short-term"].cost_basis == pytest.approx(20.0)
     assert by_period["short-term"].shares == pytest.approx(20.0)
+
+
+def test_append_log_row_salvages_data_on_io_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed append must not crash the tick and must print the row for hand-entry.
+
+    State is saved before log appends, so a dropped row is never retried —
+    the salvage log line is the operator's only copy of the data.
+    """
+    import logging
+
+    import midas.live
+    from midas.models import HoldingPeriod, TradeRecord
+
+    engine = object.__new__(LiveEngine)
+    engine._trade_log_path = tmp_path / "trades.csv"
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(midas.live, "append_trade", boom)
+    record = TradeRecord(
+        date=date(2026, 6, 1),
+        ticker="AAPL",
+        direction=Direction.SELL,
+        shares=10.0,
+        price=30.0,
+        strategy_name="StopLoss",
+        holding_period=HoldingPeriod.SHORT_TERM,
+        purchase_date=date(2026, 1, 1),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="midas.live"):
+        engine._append_log_row(record, cost_basis=20.0, purchase_date=date(2026, 1, 1))
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "disk full" in message
+    assert "AAPL" in message
+    assert "shares=10.0" in message
+    assert "cost_basis=20.0" in message

@@ -74,6 +74,13 @@ def load_portfolio(path: Path) -> PortfolioConfig:
     tax_declared = "tax" in raw
     tax: TaxConfig | None = None
     if isinstance(tax_raw, dict):
+        known_keys = {"short_term_rate", "long_term_rate", "deductible_loss_cap", "payment_lag_days"}
+        unknown_keys = set(tax_raw) - known_keys
+        if unknown_keys:
+            # A typo'd rate key would otherwise silently fall back to the
+            # default and skew every after-tax figure.
+            msg = f"tax: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
+            raise ValueError(msg)
         tax = TaxConfig(
             short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
             long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),

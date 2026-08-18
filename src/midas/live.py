@@ -21,6 +21,7 @@ from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
     LiveState,
+    PurchaseDate,
     SellBreakdown,
     aggregate_cost_basis,
     apply_buy,
@@ -162,6 +163,39 @@ class LiveEngine:
                 time.sleep(self._poll_interval)
         except KeyboardInterrupt:
             print_status("Stopped.")
+
+    def _append_log_row(
+        self,
+        record: TradeRecord,
+        *,
+        cost_basis: float | None,
+        purchase_date: PurchaseDate,
+    ) -> None:
+        """Append one trade-log row, salvaging the data on IO failure.
+
+        State is already durable when this runs, so a failed append is never
+        retried by a later tick — print the row instead so the operator can
+        hand-add it to the (hand-editable) log.
+        """
+        try:
+            append_trade(self._trade_log_path, record, cost_basis=cost_basis, purchase_date=purchase_date)
+        except OSError as exc:
+            logger.error(
+                "failed to append to trade log %s (%s); add this row by hand: "
+                "date=%s ticker=%s direction=%s shares=%s price=%s strategy=%s "
+                "holding_period=%s purchase_date=%s cost_basis=%s",
+                self._trade_log_path,
+                exc,
+                record.date.isoformat(),
+                record.ticker,
+                record.direction.value,
+                record.shares,
+                record.price,
+                record.strategy_name,
+                record.holding_period.value if record.holding_period else "",
+                purchase_date,
+                cost_basis,
+            )
 
     def _tick(self, tickers: list[str]) -> None:
         today = date.today()
@@ -356,8 +390,10 @@ class LiveEngine:
         save_atomic(self._state, self._state_path)
 
         # Append a row per BUY and per non-empty ST/LT SELL bucket to the trade log.
-        # Order matters: state is durable first; if the append fails, the operator
-        # sees the error and re-running re-attempts the append.
+        # State is durable first, and a failed append is NOT retried on later
+        # ticks: positions re-derive from state, so the deltas are gone. On
+        # failure, _append_log_row prints the row so the operator can add it
+        # by hand (the log is hand-editable by design).
         for order in filtered:
             if order.shares <= 0:
                 continue
@@ -371,12 +407,7 @@ class LiveEngine:
                     strategy_name=order.context.source,
                     purchase_date=today,
                 )
-                append_trade(
-                    self._trade_log_path,
-                    buy_record,
-                    cost_basis=None,
-                    purchase_date=today,
-                )
+                self._append_log_row(buy_record, cost_basis=None, purchase_date=today)
             else:
                 breakdown = sell_breakdowns[id(order)]
                 if breakdown.st_shares > 0:
@@ -391,12 +422,7 @@ class LiveEngine:
                         holding_period=HoldingPeriod.SHORT_TERM,
                         purchase_date=st_purchase,
                     )
-                    append_trade(
-                        self._trade_log_path,
-                        st_record,
-                        cost_basis=breakdown.st_basis,
-                        purchase_date=st_purchase,
-                    )
+                    self._append_log_row(st_record, cost_basis=breakdown.st_basis, purchase_date=st_purchase)
                 if breakdown.lt_shares > 0:
                     lt_purchase = resolve_purchase_date(breakdown.lt_purchase_dates)
                     lt_record = TradeRecord(
@@ -409,12 +435,7 @@ class LiveEngine:
                         holding_period=HoldingPeriod.LONG_TERM,
                         purchase_date=lt_purchase,
                     )
-                    append_trade(
-                        self._trade_log_path,
-                        lt_record,
-                        cost_basis=breakdown.lt_basis,
-                        purchase_date=lt_purchase,
-                    )
+                    self._append_log_row(lt_record, cost_basis=breakdown.lt_basis, purchase_date=lt_purchase)
 
         # Emit alerts only when the order set changes
         current_keys = {(order.ticker, order.direction, order.shares) for order in filtered if order.shares > 0}

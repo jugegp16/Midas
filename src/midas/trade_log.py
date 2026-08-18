@@ -186,6 +186,8 @@ def read_trades(path: Path) -> list[LoggedTrade]:
             try:
                 trade_date = date.fromisoformat(row[0])
                 direction = Direction(row[2])
+                shares = float(row[3])
+                price = float(row[4])
             except ValueError as exc:
                 msg = f"trade-log row at line {line_num}: {exc}"
                 raise TradeLogError(msg) from exc
@@ -194,8 +196,8 @@ def read_trades(path: Path) -> list[LoggedTrade]:
                     date=trade_date,
                     ticker=row[1],
                     direction=direction,
-                    shares=float(row[3]),
-                    price=float(row[4]),
+                    shares=shares,
+                    price=price,
                     strategy_name=row[5],
                     holding_period=_parse_holding_period(row[6]),
                     purchase_date=_parse_purchase_date(row[7]),

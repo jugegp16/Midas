@@ -262,6 +262,16 @@ def test_load_portfolio_tax_mapping_is_declared(tmp_path: Path) -> None:
     assert portfolio.tax_config is not None
 
 
+def test_load_portfolio_tax_unknown_key_raises(tmp_path: Path) -> None:
+    """A typo'd rate key must not silently fall back to the default rate."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\ntax:\n  short_termrate: 0.24\n"
+    )
+    with pytest.raises(ValueError, match="short_termrate"):
+        load_portfolio(path)
+
+
 def test_load_portfolio_tax_invalid_value_raises(tmp_path: Path) -> None:
     base = "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
     for bad in ("tax: on\n", "tax: []\n", "tax: 0\n"):
