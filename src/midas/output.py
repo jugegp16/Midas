@@ -166,6 +166,8 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
     perf = make_metric_table("Performance")
     perf.add_row("Starting Value", f"${starting_val:,.2f}")
     perf.add_row("Final Value", f"${final_val:,.2f}")
+    if result.after_tax_final_value is not None:
+        perf.add_row("Final Value (After Tax)", f"${result.after_tax_final_value:,.2f}")
     perf.add_row("Total Return", _return_row(total_return, total_days))
     perf.add_row("CAGR (Annualized)", color_signed(result.cagr))
     perf.add_row("Time-Weighted Return", _return_row(result.twr, total_days))
@@ -212,6 +214,23 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
                     f"${s.tax_owed:+,.2f}",
                     f"${s.carry_forward:,.2f}",
                 )
+            # Net total is ST + LT raw sums, not the column sum: per-year
+            # nets re-apply carried-in losses, so summing them would count
+            # a carried loss once per year it appears in. Carry Forward
+            # shows the balance still outstanding at the end of the run.
+            total_st = sum(s.st_realized for s in result.tax_summary)
+            total_lt = sum(s.lt_realized for s in result.tax_summary)
+            total_tax = sum(s.tax_owed for s in result.tax_summary)
+            tax_table.add_section()
+            tax_table.add_row(
+                "Total",
+                f"${total_st:+,.2f}",
+                f"${total_lt:+,.2f}",
+                f"${total_st + total_lt:+,.2f}",
+                f"${total_tax:+,.2f}",
+                f"${result.tax_summary[-1].carry_forward:,.2f}",
+                style="bold",
+            )
             print_centered(tax_table)
 
     # --- Train / Test Split ---
