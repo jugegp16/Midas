@@ -100,9 +100,21 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         # A typo'd key would otherwise silently disable push notifications.
         msg = f"alerts: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
         raise ValueError(msg)
+    url_raw = alerts_raw.get("discord_webhook_url")
+    if url_raw is not None and not isinstance(url_raw, str):
+        # A YAML `discord_webhook_url: 123` would otherwise become the
+        # literal string "123" and build a sink that can never deliver.
+        msg = f"alerts: discord_webhook_url must be a string, got {url_raw!r}"
+        raise ValueError(msg)
+    timeout_raw = alerts_raw.get("timeout_seconds", 5.0)
+    try:
+        timeout_seconds = float(timeout_raw)
+    except TypeError, ValueError:
+        msg = f"alerts: timeout_seconds must be a number, got {timeout_raw!r}"
+        raise ValueError(msg) from None
     return AlertsConfig(
-        discord_webhook_url=str(alerts_raw.get("discord_webhook_url", "")),
-        timeout_seconds=float(alerts_raw.get("timeout_seconds", 5.0)),
+        discord_webhook_url=url_raw or "",
+        timeout_seconds=timeout_seconds,
     )
 
 
