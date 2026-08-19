@@ -466,3 +466,68 @@ def test_consume_lots_fifo_partial_lot_records_date_once() -> None:
     assert breakdown.lt_purchase_dates == (date(2024, 1, 1), date(2024, 6, 1))
     # Residual 5 shares of the second lot remain in `lots` — sanity check for the loop.
     assert lots == [PositionLot(shares=5.0, purchase_date=date(2024, 6, 1), cost_basis=12.0)]
+
+
+class TestPendingOrderPersistence:
+    def _state_with_pending(self) -> LiveState:
+        from datetime import UTC, datetime
+
+        from midas.live_state import PendingOrder
+        from midas.models import Direction
+
+        return LiveState(
+            available_cash=1000.0,
+            cash_infusion_next_date=None,
+            pending_orders=[
+                PendingOrder(
+                    ticker="AAPL",
+                    direction=Direction.BUY,
+                    shares=5.5,
+                    price=101.25,
+                    strategy_name="Momentum",
+                    reason="crossover",
+                    created_at=datetime(2026, 8, 19, 15, 0, 0, tzinfo=UTC),
+                    message_id="123456789",
+                )
+            ],
+        )
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.yaml"
+        save_atomic(self._state_with_pending(), path)
+
+        loaded = load_state(path)
+
+        assert loaded.pending_orders == self._state_with_pending().pending_orders
+
+    def test_old_state_without_pending_key_loads_empty(self, tmp_path: Path) -> None:
+        """Pre-#81 state files (no pending_orders key) load with no pendings."""
+        state = LiveState(available_cash=1000.0, cash_infusion_next_date=None)
+        path = tmp_path / "state.yaml"
+        save_atomic(state, path)
+        content = path.read_text()
+        content = "\n".join(line for line in content.splitlines() if "pending_orders" not in line) + "\n"
+        path.write_text(content)
+
+        assert load_state(path).pending_orders == []
+
+    def test_hand_edited_naive_timestamp_is_utc(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.yaml"
+        save_atomic(self._state_with_pending(), path)
+        content = path.read_text().replace("'2026-08-19T15:00:00+00:00'", "2026-08-19 15:00:00")
+        path.write_text(content)
+
+        loaded = load_state(path)
+
+        from datetime import UTC, datetime
+
+        assert loaded.pending_orders[0].created_at == datetime(2026, 8, 19, 15, 0, 0, tzinfo=UTC)
+
+    def test_invalid_pending_entry_raises_state_file_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.yaml"
+        save_atomic(self._state_with_pending(), path)
+        content = path.read_text().replace("direction: BUY", "direction: MAYBE")
+        path.write_text(content)
+
+        with pytest.raises(StateFileError, match="pending_orders"):
+            load_state(path)

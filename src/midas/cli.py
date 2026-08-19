@@ -19,6 +19,7 @@ from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
 from midas.models import (
+    AlertsConfig,
     AllocationConstraints,
     Direction,
     PortfolioConfig,
@@ -363,15 +364,21 @@ def live(
     dry_run: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
-    from midas.alerts import build_alert_sinks
+    from midas.alerts import build_confirmer
     from midas.live import LiveEngine
 
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = _resolve_state_path(port, portfolio_path)
-    alert_sinks = build_alert_sinks(port.alerts_config)
-    if alert_sinks:
-        click.echo("Discord alerts enabled.")
+    alerts_cfg = port.alerts_config or AlertsConfig()
+    try:
+        confirmer = build_confirmer(port.alerts_config)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if confirmer is not None and not dry_run:
+        click.echo("Discord confirm mode: orders fill only on \u2705 reaction.")
+    else:
+        click.echo("Terminal-only mode: alerts assume immediate execution.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
@@ -394,7 +401,9 @@ def live(
         constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,
-        alert_sinks=alert_sinks,
+        confirmer=confirmer,
+        pending_ttl_hours=alerts_cfg.pending_ttl_hours,
+        realert_hours=alerts_cfg.realert_hours,
     ) as engine:
         engine.run()
 

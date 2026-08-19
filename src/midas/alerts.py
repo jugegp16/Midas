@@ -1,12 +1,17 @@
-"""Push-notification alert sinks for the live engine (issue #73).
+"""Discord delivery and fill confirmation for live alerts (issues #73/#81).
 
-The terminal remains the alert channel of record — sinks are additive.
-A sink failure must never break a live tick: every network error is
-logged and swallowed inside the sink, mirroring the trade-log salvage
-philosophy in ``live.py``.
+The terminal remains the alert channel of record — Discord is additive.
+A delivery or polling failure must never break a live tick: every network
+error is logged and swallowed at this module's public surface, mirroring
+the trade-log salvage philosophy in ``live.py``.
 
-Only Discord is implemented. The ``AlertSink`` protocol exists so a
-second transport can be added later without touching the engine.
+Delivery is bot-based (``MIDAS_DISCORD_BOT_TOKEN`` + a channel id). The
+bot replaced the #73 webhook entirely: a bot can post the same embeds
+AND read reactions, which the confirm flow needs; keeping both meant
+two credentials and two send paths for nothing.
+
+The ``OrderConfirmer`` protocol exists so a second transport could back
+the pending-order flow later without touching the engine.
 """
 
 from __future__ import annotations
@@ -17,38 +22,76 @@ import os
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Literal, Protocol
 
-from midas.models import AlertsConfig, Direction, Order
+from midas.models import DEFAULT_ALERT_TIMEOUT_SECONDS, AlertsConfig, Direction, Order
 
 logger = logging.getLogger(__name__)
 
-DISCORD_WEBHOOK_ENV_VAR = "MIDAS_DISCORD_WEBHOOK"
-# Discord rejects payloads with more than 10 embeds per POST.
-MAX_EMBEDS_PER_POST = 10
+DISCORD_BOT_TOKEN_ENV_VAR = "MIDAS_DISCORD_BOT_TOKEN"
+DISCORD_API_BASE = "https://discord.com/api/v10"
 # On HTTP 429, honor retry_after once if it's short; otherwise drop the
-# batch — at a few alerts/day Midas never realistically hits the limit.
+# request — at a few alerts/day Midas never realistically hits the limit.
 MAX_RETRY_AFTER_SECONDS = 5.0
 COLOR_BUY = 0x57F287  # Discord green
 COLOR_SELL = 0xED4245  # Discord red
 # Cloudflare fronts Discord and rejects urllib's default Python-urllib/x.y
 # User-Agent with HTTP 403 (error code 1010), so send an explicit one.
-USER_AGENT = "midas-alerts/0.1"
+USER_AGENT = "midas-alerts/0.2"
+# Accepted reaction emoji, compared with the U+FE0F variation selector
+# stripped: without pre-seeded reactions the operator picks from the full
+# emoji picker, and ✔️ (U+2714) instead of ✅ (U+2705) must not leave a
+# confirmed-and-executed trade to silently expire.
+CONFIRM_EMOJIS = frozenset({"✅", "✔", "☑"})
+DECLINE_EMOJIS = frozenset({"❌", "❎", "✖", "⛔", "🚫"})
+
+# "unavailable" means the poll itself failed (outage, revoked token) —
+# distinct from None ("polled fine, no reaction yet") so the engine never
+# expires an order it could not actually check.
+type Decision = Literal["confirmed", "declined", "unavailable"] | None
 
 
-class AlertSink(Protocol):
-    """A push-notification transport for live order alerts."""
+class OrderConfirmer(Protocol):
+    """Transport for the pending-order confirmation flow.
 
-    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
-        """Deliver alerts for *orders*. Must never raise on delivery failure."""
+    Every method must swallow delivery/polling failures and degrade to a
+    "nothing happened" result — the live tick never breaks on transport
+    errors, and a pending order just waits for the next poll.
+    """
+
+    def post_order(self, order: Order, timestamp: datetime) -> str | None:
+        """Post one order alert awaiting confirmation.
+
+        Returns:
+            An opaque message id to poll later, or None on failure (the
+            caller must NOT create a pending order in that case — the
+            order will be re-proposed and re-posted on a later tick).
+        """
+
+    def poll_decision(self, message_id: str) -> Decision:
+        """Return the operator's decision on a posted order, if any yet."""
+
+    def mark_booked(self, message_id: str, note: str) -> None:
+        """Annotate a confirmed order's message as booked."""
+
+    def mark_declined(self, message_id: str) -> None:
+        """Annotate a declined order's message."""
+
+    def mark_expired(self, message_id: str) -> None:
+        """Annotate an expired (unconfirmed past TTL) order's message."""
+
+    def mark_superseded(self, message_id: str) -> None:
+        """Annotate an order replaced by a recomputed alert."""
+
+    def mark_unfillable(self, message_id: str, note: str) -> None:
+        """Annotate a confirmed order that could not be booked."""
 
 
-def _order_embed(order: Order, timestamp: datetime, *, dry_run: bool) -> dict[str, object]:
+def order_embed(order: Order, timestamp: datetime, *, dry_run: bool = False) -> dict[str, Any]:
     """Build one Discord embed for a sized order."""
     prefix = "[DRY RUN] " if dry_run else ""
-    title = f"{prefix}{order.direction.value} {order.ticker} — {order.shares:.4f} sh @ ${order.price:,.2f}"
+    title = f"{prefix}{order.direction.value} {order.ticker} — {order.shares:g} sh @ ${order.price:,.2f}"
     ctx = order.context
     return {
         "title": title,
@@ -62,70 +105,193 @@ def _order_embed(order: Order, timestamp: datetime, *, dry_run: bool) -> dict[st
     }
 
 
-class DiscordAlertSink:
-    """Delivers order alerts to a Discord channel via an incoming webhook.
+class DiscordApiError(Exception):
+    """A Discord REST call failed — network, HTTP, or malformed response.
 
-    All delivery failures are logged and swallowed — the live tick must
-    survive Discord being down, the URL being revoked, or the network
-    being absent.
+    Every failure mode of ``DiscordBotClient`` funnels into this one type
+    so callers cannot miss an exotic case (a 200 with a non-JSON
+    Cloudflare interstitial body raises ``json.JSONDecodeError``, which is
+    NOT an ``OSError`` — catching only ``OSError`` killed the live
+    process).
+
+    Attributes:
+        status: HTTP status code when the failure was an HTTP error,
+            else None.
     """
 
-    def __init__(self, webhook_url: str, timeout_seconds: float = 5.0) -> None:
-        """Store the webhook target.
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class DiscordBotClient:
+    """Thin REST client for the handful of Discord endpoints Midas uses.
+
+    Every failure raises ``DiscordApiError``; the confirmer above this
+    layer owns the never-break-the-tick guarantee. A single short 429
+    retry honoring ``Retry-After`` is handled here.
+    """
+
+    def __init__(self, bot_token: str, timeout_seconds: float = DEFAULT_ALERT_TIMEOUT_SECONDS) -> None:
+        """Store credentials.
 
         Args:
-            webhook_url: Discord incoming-webhook URL (a write-capability
-                secret — never log it).
-            timeout_seconds: Per-POST socket timeout.
+            bot_token: Discord bot token (a secret — never log it).
+            timeout_seconds: Per-request socket timeout.
         """
-        self._webhook_url = webhook_url
+        self._bot_token = bot_token
         self._timeout_seconds = timeout_seconds
 
-    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
-        """Post one embed per order, batched to Discord's per-POST cap."""
-        embeds = [_order_embed(order, timestamp, dry_run=dry_run) for order in orders]
-        for start in range(0, len(embeds), MAX_EMBEDS_PER_POST):
-            self._post_embeds(embeds[start : start + MAX_EMBEDS_PER_POST])
+    def create_message(self, channel_id: str, payload: dict[str, Any]) -> str:
+        """POST a message to *channel_id*; returns the new message's id."""
+        response = self._request("POST", f"/channels/{channel_id}/messages", payload)
+        if not isinstance(response, dict) or "id" not in response:
+            msg = "Discord message create returned no message id"
+            raise DiscordApiError(msg)
+        return str(response["id"])
 
-    def _post_embeds(self, embeds: list[dict[str, object]]) -> None:
-        """POST one batch, honoring a single short 429 retry. Never raises."""
+    def edit_message(self, channel_id: str, message_id: str, payload: dict[str, Any]) -> None:
+        """PATCH fields (e.g. ``content``) of an existing message."""
+        self._request("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
+
+    def get_message(self, channel_id: str, message_id: str) -> dict[str, Any]:
+        """GET one message (includes its ``reactions`` summary)."""
+        response = self._request("GET", f"/channels/{channel_id}/messages/{message_id}")
+        if not isinstance(response, dict):
+            msg = "Discord message fetch returned a non-object body"
+            raise DiscordApiError(msg)
+        return response
+
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         try:
-            self._post_once(embeds)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 429:
-                logger.error("Discord alert delivery failed (HTTP %s); alert remains in terminal output", exc.code)
-                return
-            retry_after = _parse_retry_after(exc)
-            if retry_after is None or retry_after > MAX_RETRY_AFTER_SECONDS:
-                logger.error("Discord rate limit (retry_after=%s); dropping %d alert(s)", retry_after, len(embeds))
-                return
-            time.sleep(retry_after)
             try:
-                self._post_once(embeds)
-            except OSError as retry_exc:
-                logger.error("Discord alert delivery failed after 429 retry: %s", retry_exc)
-        except OSError as exc:
-            # URLError, timeouts, and socket errors are all OSError subclasses.
-            logger.error("Discord alert delivery failed (%s); alert remains in terminal output", exc)
+                return self._request_once(method, path, payload)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429:
+                    raise
+                retry_after = _parse_retry_after(exc)
+                if retry_after is None or retry_after > MAX_RETRY_AFTER_SECONDS:
+                    raise
+                time.sleep(retry_after)
+                return self._request_once(method, path, payload)
+        except urllib.error.HTTPError as exc:
+            raise DiscordApiError(f"HTTP {exc.code}", status=exc.code) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            # URLError, timeouts, socket errors — and a 200 whose body is
+            # not JSON (Cloudflare interstitials).
+            raise DiscordApiError(str(exc)) from exc
 
-    def _post_once(self, embeds: list[dict[str, object]]) -> None:
-        payload = json.dumps({"username": "Midas", "embeds": embeds}).encode("utf-8")
-        request = urllib.request.Request(
-            self._webhook_url,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds):
-            pass
+    def _request_once(self, method: str, path: str, payload: dict[str, Any] | None) -> Any:
+        headers = {
+            "Authorization": f"Bot {self._bot_token}",
+            "User-Agent": USER_AGENT,
+        }
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(f"{DISCORD_API_BASE}{path}", data=data, headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+            body = response.read()
+        if not body:
+            return None
+        return json.loads(body)
+
+
+class DiscordConfirmer:
+    """Pending-order confirmation over a Discord channel.
+
+    Posts one embed per order and reads the operator's ✅/❌ reaction
+    back. Messages are deliberately bare — no instruction text, no
+    pre-seeded reactions (operator preference: the channel stays clean;
+    the ✅/❌ convention lives in the docs). All failures are logged and
+    swallowed; ``post_order`` degrades to ``None`` and ``poll_decision``
+    to "no decision yet".
+    """
+
+    def __init__(self, client: DiscordBotClient, channel_id: str) -> None:
+        self._client = client
+        self._channel_id = channel_id
+
+    def post_order(self, order: Order, timestamp: datetime) -> str | None:
+        """Post the order embed awaiting a ✅/❌ reaction."""
+        try:
+            return self._client.create_message(self._channel_id, {"embeds": [order_embed(order, timestamp)]})
+        except DiscordApiError as exc:
+            logger.error("Discord alert post failed (%s); will retry on a later tick", exc)
+            return None
+
+    def poll_decision(self, message_id: str) -> Decision:
+        """Check for an operator ✅ or ❌ on the message.
+
+        One message fetch reads the full reaction summary. Check-mark
+        variants count as confirm and cross variants as decline (the
+        operator picks from the raw emoji picker — see CONFIRM_EMOJIS);
+        anything else is logged so a near-miss reaction is never silent.
+        If both are present, confirm wins: an executed trade must be
+        booked — un-booking a real fill corrupts state, while an
+        accidental extra ❌ costs nothing.
+
+        Returns:
+            "confirmed"/"declined" on an operator reaction; None when the
+            message was polled fine but carries no decision (or was
+            deleted — HTTP 404 — so the normal TTL expiry applies);
+            "unavailable" when the poll itself failed, which the engine
+            must never treat as "no reaction".
+        """
+        try:
+            message = self._client.get_message(self._channel_id, message_id)
+        except DiscordApiError as exc:
+            if exc.status == 404:
+                # Message deleted — it can never be confirmed; let the
+                # TTL expire it normally.
+                return None
+            logger.error("Discord reaction poll failed (%s); will retry next tick", exc)
+            return "unavailable"
+        confirmed = False
+        declined = False
+        for reaction in message.get("reactions") or []:
+            emoji = reaction.get("emoji") or {}
+            name = str(emoji.get("name") or "").replace("\ufe0f", "")
+            if int(reaction.get("count") or 0) <= 0:
+                continue
+            if name in CONFIRM_EMOJIS:
+                confirmed = True
+            elif name in DECLINE_EMOJIS:
+                declined = True
+            else:
+                logger.warning("unrecognized reaction %r on alert message — react \u2705 or \u274c", name)
+        if confirmed:
+            return "confirmed"
+        if declined:
+            return "declined"
+        return None
+
+    def mark_booked(self, message_id: str, note: str) -> None:
+        self._edit_content(message_id, f"\u2705 Booked — {note}")
+
+    def mark_declined(self, message_id: str) -> None:
+        self._edit_content(message_id, "\u274c Declined — not executed")
+
+    def mark_expired(self, message_id: str) -> None:
+        self._edit_content(message_id, "\u23f0 Expired — no longer confirmable")
+
+    def mark_superseded(self, message_id: str) -> None:
+        self._edit_content(message_id, "\U0001f504 Superseded — replaced by a newer alert")
+
+    def mark_unfillable(self, message_id: str, note: str) -> None:
+        self._edit_content(message_id, f"\u26a0\ufe0f Confirmed but NOT booked — {note}")
+
+    def _edit_content(self, message_id: str, content: str) -> None:
+        try:
+            self._client.edit_message(self._channel_id, message_id, {"content": content})
+        except DiscordApiError as exc:
+            # Cosmetic — the state transition already happened.
+            logger.warning("failed to annotate alert message (%s)", exc)
 
 
 def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
-    """Extract the retry delay in seconds from a Discord 429 response.
-
-    Discord sends both a ``Retry-After`` header and a ``retry_after`` JSON
-    body field; the header is authoritative and cheaper to read.
-    """
+    """Extract the retry delay in seconds from a Discord 429 response."""
     header = exc.headers.get("Retry-After") if exc.headers is not None else None
     if header is None:
         return None
@@ -135,30 +301,33 @@ def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
         return None
 
 
-def build_alert_sinks(alerts_config: AlertsConfig | None) -> list[AlertSink]:
-    """Resolve configured push-notification sinks for a live run.
+def build_confirmer(alerts_config: AlertsConfig | None) -> DiscordConfirmer | None:
+    """Resolve the Discord confirmer for a live run, or None for terminal-only.
 
-    The ``MIDAS_DISCORD_WEBHOOK`` env var overrides (or stands in for) the
-    YAML ``discord_webhook_url``, so the secret URL never has to live in a
-    committed portfolio file. No URL from either source → no sinks, and
-    live behavior is byte-identical to before alerts existed.
+    Discord delivery requires BOTH the ``MIDAS_DISCORD_BOT_TOKEN`` env var
+    (the token is a secret — env only, never YAML) and ``discord_channel_id``
+    in the ``alerts:`` block. Neither → terminal-only with assumed fills,
+    behavior unchanged from before Discord existed.
 
     Raises:
-        ValueError: If the resolved URL is not ``https://``. Caught at
-            startup — a scheme-less URL would otherwise make ``urlopen``
-            raise mid-tick with the secret URL in the message.
+        ValueError: If exactly one of the two is configured — a half-wired
+            bot must be a loud startup error, not a silent fallback.
     """
-    webhook_url = os.environ.get(DISCORD_WEBHOOK_ENV_VAR, "").strip()
-    if not webhook_url and alerts_config is not None:
-        webhook_url = alerts_config.discord_webhook_url.strip()
-    if not webhook_url:
-        return []
-    if not webhook_url.startswith("https://"):
-        # Never echo the URL itself: the webhook token is a secret.
+    token = os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, "").strip()
+    channel_id = alerts_config.discord_channel_id.strip() if alerts_config is not None else ""
+    if not token and not channel_id:
+        return None
+    if not token:
         msg = (
-            "Discord webhook URL must start with https:// "
-            f"(value hidden; check the alerts: block or {DISCORD_WEBHOOK_ENV_VAR})"
+            f"alerts: discord_channel_id is set but {DISCORD_BOT_TOKEN_ENV_VAR} is not — "
+            "export the bot token or remove the channel id"
         )
         raise ValueError(msg)
-    timeout = alerts_config.timeout_seconds if alerts_config is not None else 5.0
-    return [DiscordAlertSink(webhook_url, timeout_seconds=timeout)]
+    if not channel_id:
+        msg = (
+            f"{DISCORD_BOT_TOKEN_ENV_VAR} is set but alerts: discord_channel_id is not — "
+            "add the channel id to the portfolio YAML or unset the token"
+        )
+        raise ValueError(msg)
+    timeout = alerts_config.timeout_seconds if alerts_config is not None else DEFAULT_ALERT_TIMEOUT_SECONDS
+    return DiscordConfirmer(DiscordBotClient(token, timeout_seconds=timeout), channel_id)

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from datetime import date, datetime
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from midas.alerts import AlertSink
 from midas.allocator import Allocator
 from midas.live import LiveEngine
 from midas.live_state import LiveState, StateFileError, aggregate_cost_basis, load_state, save_atomic
@@ -22,6 +21,7 @@ from midas.models import (
     OrderContext,
     PortfolioConfig,
     PositionLot,
+    TradingRestrictions,
 )
 from midas.order_sizer import OrderSizer
 
@@ -563,30 +563,53 @@ def test_drawdown_overlay_produces_smaller_exposure_under_real_drawdown() -> Non
     assert deep <= moderate <= no_dd
 
 
-class RecordingSink:
-    """AlertSink test double capturing every send_orders call."""
+class FakeConfirmer:
+    """OrderConfirmer test double with scriptable decisions."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[list[Order], bool]] = []
+        self.posted: list[Order] = []
+        self.decisions: dict[str, str | None] = {}
+        self.booked: list[tuple[str, str]] = []
+        self.declined: list[str] = []
+        self.expired: list[str] = []
+        self.superseded: list[str] = []
+        self.unfillable: list[tuple[str, str]] = []
+        self.fail_posts = False
+        self._counter = 0
 
-    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
-        self.calls.append((list(orders), dry_run))
+    def post_order(self, order: Order, timestamp: datetime) -> str | None:
+        self.posted.append(order)
+        if self.fail_posts:
+            return None
+        self._counter += 1
+        return f"msg-{self._counter}"
+
+    def poll_decision(self, message_id: str) -> str | None:
+        return self.decisions.get(message_id)
+
+    def mark_booked(self, message_id: str, note: str) -> None:
+        self.booked.append((message_id, note))
+
+    def mark_declined(self, message_id: str) -> None:
+        self.declined.append(message_id)
+
+    def mark_expired(self, message_id: str) -> None:
+        self.expired.append(message_id)
+
+    def mark_superseded(self, message_id: str) -> None:
+        self.superseded.append(message_id)
+
+    def mark_unfillable(self, message_id: str, note: str) -> None:
+        self.unfillable.append((message_id, note))
 
 
-class RaisingSink:
-    """AlertSink test double whose delivery always blows up."""
-
-    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
-        raise RuntimeError("sink bug")
-
-
-def _sized_order(ticker: str, direction: Direction, shares: float) -> Order:
+def _sized_order(ticker: str, direction: Direction, shares: float, price: float = 100.0) -> Order:
     return Order(
         ticker=ticker,
         direction=direction,
         shares=shares,
-        price=100.0,
-        estimated_value=shares * 100.0,
+        price=price,
+        estimated_value=shares * price,
         context=OrderContext(
             contributions={},
             blended_score=0.5,
@@ -598,60 +621,536 @@ def _sized_order(ticker: str, direction: Direction, shares: float) -> Order:
     )
 
 
-def _make_engine_with_sinks(tmp_path: Path, make_provider: ProviderFactory, sinks: list[AlertSink]) -> LiveEngine:
+def _make_confirm_engine(
+    tmp_path: Path,
+    make_provider: ProviderFactory,
+    confirmer: FakeConfirmer,
+    *,
+    pending_ttl_hours: float = 8.0,
+    restrictions: TradingRestrictions | None = None,
+) -> LiveEngine:
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
-        available_cash=1000.0,
+        available_cash=10_000.0,
+        trading_restrictions=restrictions,
     )
     allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
-    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)])
     return LiveEngine(
         portfolio=portfolio,
         allocator=allocator,
         order_sizer=OrderSizer(),
         provider=provider,
         state_path=tmp_path / "state.yaml",
-        alert_sinks=sinks,
+        confirmer=confirmer,
+        pending_ttl_hours=pending_ttl_hours,
     )
 
 
-def test_emit_alerts_dispatches_to_sinks(tmp_path: Path, make_provider: ProviderFactory) -> None:
-    sink = RecordingSink()
-    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
-        orders = [_sized_order("AAPL", Direction.BUY, 2.0), _sized_order("AAPL", Direction.SELL, 0.0)]
-        engine._emit_alerts(orders, pre_fill_cash=1000.0)
-
-    assert len(sink.calls) == 1
-    sent, dry_run = sink.calls[0]
-    # Zero-share orders are excluded, matching the terminal output.
-    assert [(o.ticker, o.direction, o.shares) for o in sent] == [("AAPL", Direction.BUY, 2.0)]
-    assert dry_run is False
+NOW = datetime(2026, 8, 19, 15, 0, 0, tzinfo=UTC)
+TODAY = date(2026, 8, 19)
 
 
-def test_emit_alerts_suppresses_duplicate_tick_for_sinks(tmp_path: Path, make_provider: ProviderFactory) -> None:
-    sink = RecordingSink()
-    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
-        orders = [_sized_order("AAPL", Direction.BUY, 2.0)]
-        engine._emit_alerts(orders, pre_fill_cash=1000.0)
-        engine._emit_alerts(orders, pre_fill_cash=1000.0)
+def test_post_pending_creates_pending_order_not_fill(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        cash_before = engine._state.available_cash
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, cash_before)
 
-    assert len(sink.calls) == 1
-
-
-def test_emit_alerts_survives_sink_exception(tmp_path: Path, make_provider: ProviderFactory) -> None:
-    """A buggy sink must not break the tick, and later sinks still fire."""
-    healthy = RecordingSink()
-    with _make_engine_with_sinks(tmp_path, make_provider, [RaisingSink(), healthy]) as engine:
-        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 2.0)], pre_fill_cash=1000.0)
-
-    assert len(healthy.calls) == 1
+        assert len(confirmer.posted) == 1
+        assert len(engine._state.pending_orders) == 1
+        pending = engine._state.pending_orders[0]
+        assert (pending.ticker, pending.direction, pending.shares) == ("AAPL", Direction.BUY, 5.0)
+        assert pending.message_id == "msg-1"
+        # Nothing filled: cash and lots untouched.
+        assert engine._state.available_cash == cash_before
+        assert sum(lot.shares for lot in engine._state.lots["AAPL"]) == 10.0
 
 
-def test_emit_alerts_no_sink_call_when_all_orders_zero(tmp_path: Path, make_provider: ProviderFactory) -> None:
-    """An order set collapsing to zero shares changes keys but sends nothing."""
-    sink = RecordingSink()
-    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
-        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 2.0)], pre_fill_cash=1000.0)
-        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 0.0)], pre_fill_cash=1000.0)
+def test_post_failure_leaves_no_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    confirmer.fail_posts = True
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
 
-    assert len(sink.calls) == 1
+        assert engine._state.pending_orders == []
+
+
+def test_pending_suppresses_same_intent(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        # Recomputed within tolerance (10%): suppressed, no second post.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.2)], NOW, 10_000.0)
+
+        assert len(confirmer.posted) == 1
+        assert len(engine._state.pending_orders) == 1
+
+
+def test_material_resize_replaces_pending_only_after_cooldown(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Size wobble within the cooldown must NOT churn expire-and-replace.
+
+    Live prices move every tick, so recomputed share counts routinely
+    cross the resize tolerance; replacing on every recompute buried the
+    operator in "Expired" spam minutes apart.
+    """
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        # Materially different size, but the pending alert is minutes old:
+        # keep the original alert, no churn.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(minutes=5), 10_000.0)
+        assert confirmer.superseded == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+
+        # Past the re-alert cooldown (1h default): now supersede.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(hours=2), 10_000.0)
+        assert confirmer.superseded == ["msg-1"]
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-2"]
+        assert engine._state.pending_orders[0].shares == 9.0
+
+
+def test_direction_flip_replaces_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
+
+        assert confirmer.superseded == ["msg-1"]
+        assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
+
+
+def test_confirmed_buy_books_fill_and_restriction(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(
+        tmp_path, make_provider, confirmer, restrictions=TradingRestrictions(round_trip_days=30)
+    ) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+        assert engine._state.pending_orders == []
+        assert engine._state.available_cash == 10_000.0 - 500.0
+        assert sum(lot.shares for lot in engine._state.lots["AAPL"]) == 15.0
+        assert confirmer.booked and confirmer.booked[0][0] == "msg-1"
+        # Round-trip clock started at confirm: an immediate SELL is blocked.
+        assert engine._restriction_tracker is not None
+        assert engine._restriction_tracker.is_blocked("AAPL", Direction.SELL, TODAY)
+        # Trade log row written.
+        log = (tmp_path / "state.yaml.trades.csv").read_text()
+        assert "AAPL" in log and "BUY" in log
+
+
+def test_declined_removes_without_fill(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+
+        engine._resolve_pending(TODAY, NOW)
+
+        assert engine._state.pending_orders == []
+        assert engine._state.available_cash == 10_000.0
+        assert confirmer.declined == ["msg-1"]
+
+
+def test_unresolved_pending_expires_after_ttl(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer, pending_ttl_hours=2.0) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=1))
+        assert len(engine._state.pending_orders) == 1  # still within TTL
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=3))
+        assert engine._state.pending_orders == []
+        assert confirmer.expired == ["msg-1"]
+        assert engine._state.available_cash == 10_000.0
+
+
+def test_confirmed_sell_books_buckets_and_clamps(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        # Ask to sell more than held: books the held 10, not the pending 12.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 12.0, price=110.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+        assert engine._state.pending_orders == []
+        assert "AAPL" not in engine._state.lots
+        assert engine._state.available_cash == 10_000.0 + 10.0 * 110.0
+        log = (tmp_path / "state.yaml.trades.csv").read_text()
+        assert "SELL" in log
+
+
+def test_dry_run_disables_confirm_mode(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        dry_run=True,
+        confirmer=FakeConfirmer(),
+    ) as engine:
+        assert engine._confirmer is None
+
+
+def test_confirmed_fill_is_durable_before_side_effects(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The fill and pending removal must hit disk inside _resolve_pending.
+
+    The operator's reaction is durable external state that gets re-polled
+    after a restart; if the booking weren't persisted before the trade-log
+    append and Discord edits, a crash mid-tick would replay the
+    confirmation and double-book the fill.
+    """
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        save_atomic(engine._state, tmp_path / "state.yaml")
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.pending_orders == []
+    assert on_disk.available_cash == 10_000.0 - 500.0
+    assert sum(lot.shares for lot in on_disk.lots["AAPL"]) == 15.0
+
+
+def test_sticky_reaction_is_not_replayed(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Discord never clears the operator's reaction — a resolved order must not re-book."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+        engine._resolve_pending(TODAY, NOW)  # reaction still "present"
+
+        assert engine._state.available_cash == 10_000.0 - 500.0
+        assert len(confirmer.booked) == 1
+
+
+def test_declined_intent_suppresses_reposting(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A declined trade must not come back on the next poll."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Same intent recomputed on later ticks — even at a different size.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW, 10_000.0)
+
+        assert len(confirmer.posted) == 1
+        assert engine._state.pending_orders == []
+
+
+def test_declined_intent_expires_after_ttl(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer, pending_ttl_hours=2.0) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Within the window: suppressed. Past it: re-alerted.
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=1))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW + timedelta(hours=1), 10_000.0)
+        assert len(confirmer.posted) == 1
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=3))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW + timedelta(hours=3), 10_000.0)
+        assert len(confirmer.posted) == 2
+
+
+def test_declined_buy_does_not_suppress_sell(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
+
+        assert len(confirmer.posted) == 2
+        assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
+
+
+def test_declined_intent_survives_restart(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert [(c.ticker, c.direction) for c in on_disk.intent_cooldowns] == [("AAPL", Direction.BUY)]
+
+
+def test_confirmed_fill_cools_down_realerts(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """After a ✅, the same intent must not fire again on the next tick."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Allocator still wants more AAPL a tick later: suppressed.
+        engine._resolve_pending(TODAY, NOW + timedelta(minutes=1))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 3.0)], NOW + timedelta(minutes=1), 9_500.0)
+        assert len(confirmer.posted) == 1
+
+        # After the cooldown (1h default), a genuine scale-in may re-alert.
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=2))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 3.0)], NOW + timedelta(hours=2), 9_500.0)
+        assert len(confirmer.posted) == 2
+
+
+def test_direction_flip_supersedes_within_cooldown(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An exit signal replaces a fresh pending BUY immediately — no waiting."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == ["msg-1"]
+        assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
+
+
+def test_unavailable_poll_never_expires_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A failing poll past TTL must NOT expire — the operator may have confirmed.
+
+    Expiring on an outage/revoked-token span drops a fill the operator
+    executed at the broker: exactly the phantom divergence #81 exists to
+    eliminate.
+    """
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer, pending_ttl_hours=1.0) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "unavailable"
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=10))
+        assert len(engine._state.pending_orders) == 1
+        assert confirmer.expired == []
+
+        # Discord answers again — and the operator had confirmed.
+        confirmer.decisions["msg-1"] = "confirmed"
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=10))
+        assert engine._state.available_cash == 10_000.0 - 500.0
+
+
+def test_posted_pending_is_durable_immediately(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The Discord message is durable the moment it posts — the pending
+    order must be too, or a crash before tick-end orphans the message."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        # No tick-end save has run — the pending must already be on disk.
+        on_disk = load_state(tmp_path / "state.yaml")
+        assert [p.message_id for p in on_disk.pending_orders] == ["msg-1"]
+
+
+def test_confirmed_nothing_held_marks_unfillable(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._state.lots.pop("AAPL", None)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+        assert confirmer.booked == []
+        assert len(confirmer.unfillable) == 1
+        assert engine._state.available_cash == 10_000.0
+
+
+def test_tick_confirm_mode_reserves_pending_buy_cash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
+    """Cash promised to an unconfirmed BUY must be excluded from this
+    tick's buy sizing, and the confirm branch must not assume-fill."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        post_time = datetime.now(tz=UTC)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], post_time, 10_000.0)
+
+        sizing_cash: list[float] = []
+
+        def capture_size_buys(*args: object, **_kw: object) -> list[Order]:
+            sizing_cash.append(float(args[3]))  # type: ignore[arg-type]
+            return []
+
+        monkeypatch.setattr(engine._order_sizer, "size_buys", capture_size_buys)
+        engine._tick(["AAPL"])
+
+        # $10,000 cash minus the $500 reserved by the pending BUY.
+        assert sizing_cash == [pytest.approx(9_500.0)]
+        # Confirm branch: no assumed fills, pending and cash untouched.
+        assert engine._state.available_cash == 10_000.0
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+        assert sum(lot.shares for lot in engine._state.lots["AAPL"]) == 10.0
+
+
+def test_tick_confirm_mode_resolves_fill_before_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
+    """A confirmed fill must update positions/cash BEFORE this tick's
+    allocation sees them, and the tick-end save must persist everything."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        post_time = datetime.now(tz=UTC)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], post_time, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        seen_weights: list[dict[str, float] | None] = []
+        original_allocate = engine._allocator.allocate
+
+        def spy_allocate(*args: object, **kwargs: object) -> object:
+            seen_weights.append(kwargs.get("current_weights"))  # type: ignore[arg-type]
+            return original_allocate(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(engine._allocator, "allocate", spy_allocate)
+        engine._tick(["AAPL"])
+
+        # Allocation saw the post-fill position: 15 sh x $100 of an $11,000
+        # portfolio — not the pre-fill 10 sh (1000/11000).
+        assert seen_weights == [{"AAPL": pytest.approx(1_500.0 / 11_000.0)}]
+        assert engine._state.available_cash == pytest.approx(9_500.0)
+        assert engine._state.pending_orders == []
+        assert confirmer.booked and confirmer.booked[0][0] == "msg-1"
+
+        # Tick-end save: the fill and peak equity are on disk.
+        on_disk = load_state(tmp_path / "state.yaml")
+        assert on_disk.available_cash == pytest.approx(9_500.0)
+        assert sum(lot.shares for lot in on_disk.lots["AAPL"]) == 15.0
+        assert on_disk.peak_equity == pytest.approx(11_000.0)
+
+
+def test_stranded_pendings_warn_when_confirm_mode_off(
+    tmp_path: Path, make_provider: ProviderFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Pending orders left by a confirm-mode run must be called out loudly
+    when the engine restarts without a confirmer (token unset or --dry-run):
+    they will never be polled, and terminal mode's assumed fills can
+    double-book the same intent when confirm mode returns."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    with caplog.at_level("WARNING", logger="midas.live"):
+        engine_off = LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)]),
+            state_path=tmp_path / "state.yaml",
+        )
+        engine_off.close()
+
+    warnings = [r.message for r in caplog.records if "pending order" in r.message]
+    assert len(warnings) == 1
+    assert "BUY AAPL" in warnings[0]
+    assert "msg-1" in warnings[0]
+
+
+def test_no_stranded_warning_without_pendings(
+    tmp_path: Path, make_provider: ProviderFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    with caplog.at_level("WARNING", logger="midas.live"):
+        engine = LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)]),
+            state_path=tmp_path / "state.yaml",
+        )
+        engine.close()
+
+    assert [r for r in caplog.records if "pending order" in r.message] == []
+
+
+def test_supersede_repolls_and_keeps_reacted_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A reaction landing between the top-of-tick poll and the supersede
+    check must not be dropped — the operator may already have executed.
+
+    The supersede path re-polls immediately before replacing; any decision
+    (or an unanswerable poll) keeps the pending for _resolve_pending.
+    """
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        # Operator confirms in the window after this tick's _resolve_pending
+        # already polled (and saw nothing).
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        # Direction flip would normally supersede immediately.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+        # Next tick's resolve books the confirmed fill normally.
+        engine._resolve_pending(TODAY, NOW + timedelta(minutes=2))
+        assert engine._state.available_cash == 10_000.0 - 500.0
+
+
+def test_supersede_defers_when_repoll_unavailable(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """If the pre-supersede re-poll cannot answer, keep the pending —
+    superseding blind could drop a fill the operator executed."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "unavailable"
+
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+
+
+def test_superseded_removal_is_durable_before_annotation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The supersede removal must hit disk before the Discord annotation,
+    matching the persist-before-side-effects rule everywhere else."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        on_disk_at_annotation: list[list[str]] = []
+        original_mark = confirmer.mark_superseded
+
+        def spy_mark(message_id: str) -> None:
+            on_disk_at_annotation.append([p.message_id for p in load_state(tmp_path / "state.yaml").pending_orders])
+            original_mark(message_id)
+
+        confirmer.mark_superseded = spy_mark  # type: ignore[method-assign]
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == ["msg-1"]
+        # When mark_superseded ran, msg-1 was already gone from disk.
+        assert on_disk_at_annotation == [[]]

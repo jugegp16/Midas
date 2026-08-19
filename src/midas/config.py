@@ -9,8 +9,11 @@ from typing import Any
 import yaml
 
 from midas.models import (
+    DEFAULT_ALERT_TIMEOUT_SECONDS,
     DEFAULT_MIN_BUY_DELTA,
     DEFAULT_MIN_CASH_PCT,
+    DEFAULT_PENDING_TTL_HOURS,
+    DEFAULT_REALERT_HOURS,
     DEFAULT_SOFTMAX_TEMPERATURE,
     DEFAULT_VOL_LOOKBACK_DAYS,
     AlertsConfig,
@@ -83,38 +86,61 @@ def _parse_tax_config(tax_raw: Any) -> TaxConfig | None:
     return None
 
 
+def _parse_alerts_number(alerts_raw: dict[str, Any], key: str, default: float) -> float:
+    """Coerce an ``alerts:`` numeric field with a clear error."""
+    raw_value = alerts_raw.get(key, default)
+    # bool is an int subclass, so float(True) would silently become 1.0.
+    if isinstance(raw_value, bool):
+        msg = f"alerts: {key} must be a number, got {raw_value!r}"
+        raise ValueError(msg)
+    try:
+        return float(raw_value)
+    except TypeError, ValueError:
+        msg = f"alerts: {key} must be a number, got {raw_value!r}"
+        raise ValueError(msg) from None
+
+
 def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
     """Build the optional ``alerts:`` block.
 
     Raises:
-        ValueError: If the block has unrecognized keys or is not a mapping.
+        ValueError: If the block has unrecognized keys, is not a mapping,
+            or still uses the webhook key removed in #81.
     """
     if alerts_raw is None:
         return None
     if not isinstance(alerts_raw, dict):
         msg = f"alerts: must be a mapping, got {alerts_raw!r}"
         raise ValueError(msg)
-    known_keys = {"discord_webhook_url", "timeout_seconds"}
+    if "discord_webhook_url" in alerts_raw:
+        # Removed in #81 — silently ignoring it would leave the operator
+        # believing alerts still flow through the (dead) webhook.
+        msg = (
+            "alerts: discord_webhook_url was replaced by bot delivery — "
+            "set discord_channel_id here and export MIDAS_DISCORD_BOT_TOKEN instead "
+            "(see docs/cli.md, Discord push notifications)"
+        )
+        raise ValueError(msg)
+    known_keys = {"discord_channel_id", "timeout_seconds", "pending_ttl_hours", "realert_hours"}
     unknown_keys = set(alerts_raw) - known_keys
     if unknown_keys:
         # A typo'd key would otherwise silently disable push notifications.
         msg = f"alerts: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
         raise ValueError(msg)
-    url_raw = alerts_raw.get("discord_webhook_url")
-    if url_raw is not None and not isinstance(url_raw, str):
-        # A YAML `discord_webhook_url: 123` would otherwise become the
-        # literal string "123" and build a sink that can never deliver.
-        msg = f"alerts: discord_webhook_url must be a string, got {url_raw!r}"
+    # Channel ids are snowflakes — huge integers that YAML happily parses
+    # as int. Accept int or str, normalize to a digits-only string.
+    channel_raw = alerts_raw.get("discord_channel_id")
+    channel_id = str(channel_raw).strip() if isinstance(channel_raw, int | str) else None
+    if channel_raw is None:
+        channel_id = ""
+    if channel_id is None or (channel_id and not channel_id.isdigit()):
+        msg = f"alerts: discord_channel_id must be a numeric Discord channel id, got {channel_raw!r}"
         raise ValueError(msg)
-    timeout_raw = alerts_raw.get("timeout_seconds", 5.0)
-    try:
-        timeout_seconds = float(timeout_raw)
-    except TypeError, ValueError:
-        msg = f"alerts: timeout_seconds must be a number, got {timeout_raw!r}"
-        raise ValueError(msg) from None
     return AlertsConfig(
-        discord_webhook_url=url_raw or "",
-        timeout_seconds=timeout_seconds,
+        discord_channel_id=channel_id,
+        timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", DEFAULT_ALERT_TIMEOUT_SECONDS),
+        pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", DEFAULT_PENDING_TTL_HOURS),
+        realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", DEFAULT_REALERT_HOURS),
     )
 
 

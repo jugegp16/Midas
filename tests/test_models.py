@@ -209,8 +209,17 @@ class TestTaxConfig:
 class TestAlertsConfig:
     def test_defaults(self) -> None:
         cfg = AlertsConfig()
-        assert cfg.discord_webhook_url == ""
+        assert cfg.discord_channel_id == ""
         assert cfg.timeout_seconds == 5.0
+        assert cfg.pending_ttl_hours == 8.0
+
+    def test_ttl_zero_invalid(self) -> None:
+        with pytest.raises(ValueError, match="pending_ttl_hours"):
+            AlertsConfig(pending_ttl_hours=0.0)
+
+    def test_ttl_nan_invalid(self) -> None:
+        with pytest.raises(ValueError, match="pending_ttl_hours"):
+            AlertsConfig(pending_ttl_hours=float("nan"))
 
     def test_timeout_zero_invalid(self) -> None:
         with pytest.raises(ValueError, match="timeout_seconds"):
