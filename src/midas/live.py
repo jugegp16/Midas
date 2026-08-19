@@ -442,25 +442,7 @@ class LiveEngine:
                 self._append_log_row(buy_record, cost_basis=None, purchase_date=today)
                 continue
             breakdown = sell_breakdowns[id(order)]
-            buckets = (
-                (HoldingPeriod.SHORT_TERM, breakdown.st_shares, breakdown.st_basis, breakdown.st_purchase_dates),
-                (HoldingPeriod.LONG_TERM, breakdown.lt_shares, breakdown.lt_basis, breakdown.lt_purchase_dates),
-            )
-            for period, shares, basis, dates in buckets:
-                if shares <= 0:
-                    continue
-                purchase = resolve_purchase_date(dates)
-                sell_record = TradeRecord(
-                    date=today,
-                    ticker=order.ticker,
-                    direction=Direction.SELL,
-                    shares=shares,
-                    price=order.price,
-                    strategy_name=order.context.source,
-                    holding_period=period,
-                    purchase_date=purchase,
-                )
-                self._append_log_row(sell_record, cost_basis=basis, purchase_date=purchase)
+            self._log_sell_buckets(order.ticker, order.price, order.context.source, breakdown, today)
 
     def _emit_alerts(self, orders: list[Order], pre_fill_cash: float) -> None:
         """Emit alerts only when the order set changes since the last tick."""
