@@ -14,6 +14,25 @@ from midas.data.price_history import PriceHistory
 from midas.models import CashInfusion, Holding, PortfolioConfig
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-bless the golden backtest outputs (tests/test_golden.py). "
+            "The blessing run fails on purpose — review the git diff of "
+            "tests/fixtures/golden/expected/, then re-run without the flag."
+        ),
+    )
+
+
+@pytest.fixture
+def update_golden(request: pytest.FixtureRequest) -> bool:
+    """Whether this run should re-bless the golden outputs."""
+    return bool(request.config.getoption("--update-golden"))
+
+
 @pytest.fixture
 def make_provider() -> Callable[[dict[str, list[float]], list[date]], MagicMock]:
     """Factory fixture producing a fake DataProvider with controlled OHLCV data."""

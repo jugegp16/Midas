@@ -41,7 +41,7 @@ uv run pytest tests/test_golden.py
   changes, objective work) → bless:
 
 ```
-UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py
+uv run pytest tests/test_golden.py --update-golden
 ```
 
 This rewrites `tests/fixtures/golden/expected/` and then **fails on
@@ -49,7 +49,7 @@ purpose**, so a blessing run is never mistaken for a passing one. Then:
 
 1. Review `git diff tests/fixtures/golden/expected/` — the diff IS the
    review artifact. Confirm the numbers moved the way the change intended.
-2. Re-run without the env var; it must pass.
+2. Re-run without the flag; it must pass.
 3. Commit the golden diff together with the code change, with a sentence
    in the commit/PR saying why results moved.
 

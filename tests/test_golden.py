@@ -5,7 +5,7 @@ tax → results writers — against committed golden outputs. Any change that
 shifts results fails here with a readable diff; intended shifts are
 blessed with:
 
-    UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py
+    uv run pytest tests/test_golden.py --update-golden
 
 after which the git diff of tests/fixtures/golden/expected/ is the review
 artifact. Golden tests detect change, not correctness — they complement
@@ -17,7 +17,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 import shutil
 from datetime import date
 from pathlib import Path
@@ -155,7 +154,7 @@ def _compare_outputs(actual_dir: Path) -> list[str]:
         expected_path = EXPECTED_DIR / filename
         actual_path = actual_dir / filename
         if not expected_path.exists():
-            mismatches.append(f"{MISSING_GOLDEN_PREFIX}{filename} — run UPDATE_GOLDEN=1 to bless")
+            mismatches.append(f"{MISSING_GOLDEN_PREFIX}{filename} — bless with --update-golden")
             continue
         if not actual_path.exists():
             mismatches.append(f"{MISSING_OUTPUT_PREFIX}{filename} not produced by this run")
@@ -167,12 +166,7 @@ def _compare_outputs(actual_dir: Path) -> list[str]:
     return mismatches
 
 
-def _update_golden_requested() -> bool:
-    """Whether this run should re-bless the goldens (UPDATE_GOLDEN=1 or true)."""
-    return os.environ.get("UPDATE_GOLDEN", "").lower() in ("1", "true")
-
-
-def test_golden_backtest(tmp_path: Path) -> None:
+def test_golden_backtest(tmp_path: Path, update_golden: bool) -> None:
     result = _run_scenario(tmp_path)
 
     # Guard against the scenario silently degrading into "no activity":
@@ -194,15 +188,15 @@ def test_golden_backtest(tmp_path: Path) -> None:
         "write_backtest_results emitted different files than OUTPUT_FILES pins"
     )
 
-    if _update_golden_requested():
+    if update_golden:
         EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
         for filename in OUTPUT_FILES:
             shutil.copy(tmp_path / filename, EXPECTED_DIR / filename)
         pytest.fail(
             "Goldens regenerated from this run. Review the git diff of "
-            "tests/fixtures/golden/expected/ and re-run WITHOUT UPDATE_GOLDEN "
-            "to confirm. (Failing on purpose so a blessing run is never "
-            "mistaken for a passing one.)"
+            "tests/fixtures/golden/expected/ and re-run without "
+            "--update-golden to confirm. (Failing on purpose so a blessing "
+            "run is never mistaken for a passing one.)"
         )
 
     # No orphans: expected/ must contain exactly the pinned files, so an
@@ -213,18 +207,18 @@ def test_golden_backtest(tmp_path: Path) -> None:
         )
 
     mismatches = _compare_outputs(tmp_path)
-    assert not mismatches, "golden mismatch (bless intended changes with UPDATE_GOLDEN=1):\n" + "\n".join(
+    assert not mismatches, "golden mismatch (bless intended changes with --update-golden):\n" + "\n".join(
         mismatches[:40]
     )
 
 
-def test_golden_detects_change(tmp_path: Path) -> None:
+def test_golden_detects_change(tmp_path: Path, update_golden: bool) -> None:
     """Meta-test: the comparator must actually catch a behavior change.
 
     Runs the scenario with 10x slippage — if the comparator still reports
     no mismatches, the golden net has a hole in it.
     """
-    if _update_golden_requested():
+    if update_golden:
         pytest.skip("blessing run")
     _run_scenario(tmp_path, order_sizer=OrderSizer(default_slippage=0.005))
     mismatches = _compare_outputs(tmp_path)
@@ -232,5 +226,5 @@ def test_golden_detects_change(tmp_path: Path) -> None:
     # they would make this pass without proving anything about the comparator.
     value_mismatches = [m for m in mismatches if not m.startswith((MISSING_GOLDEN_PREFIX, MISSING_OUTPUT_PREFIX))]
     if not value_mismatches and mismatches:
-        pytest.fail("goldens not blessed on this checkout — run UPDATE_GOLDEN=1 first; this meta-test needs them")
+        pytest.fail("goldens not blessed on this checkout — run with --update-golden first; this meta-test needs them")
     assert value_mismatches, "10x slippage produced byte-equivalent outputs — comparator is not detecting change"
