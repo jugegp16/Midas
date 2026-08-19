@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import csv
 import sys
+from collections.abc import Sequence
 from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 import pandas as pd
@@ -15,6 +17,7 @@ from midas.allocator import Allocator
 from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine, ExecutionMode
 from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
+from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
 from midas.models import (
     AllocationConstraints,
     Direction,
@@ -25,12 +28,26 @@ from midas.models import (
     TradeRecord,
 )
 from midas.order_sizer import OrderSizer
-from midas.output import make_wide_table, print_backtest_summary, print_status, print_strategy_table
+from midas.output import (
+    color_signed,
+    console,
+    make_metric_table,
+    make_wide_table,
+    print_backtest_summary,
+    print_centered,
+    print_params_table,
+    print_run_info,
+    print_status,
+    print_strategy_table,
+)
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
 from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
 from midas.trade_log import LoggedTrade, TradeLogError, read_trades
+
+if TYPE_CHECKING:
+    from midas.optimizer import FoldResult, OptimizeResult, WalkForwardResult
 
 TAX_REPORT_COLUMNS: tuple[str, ...] = (
     "ticker",
@@ -57,6 +74,7 @@ TAX_SUMMARY_COLUMNS: tuple[str, ...] = (
 
 
 def _build_strategy(cfg: StrategyConfig) -> Strategy:
+    """Instantiate a registered strategy from its config."""
     cls = STRATEGY_REGISTRY.get(cfg.name)
     if cls is None:
         msg = f"Unknown strategy '{cfg.name}'. Available: {', '.join(STRATEGY_REGISTRY)}"
@@ -96,6 +114,15 @@ def _build_components(
 def _to_date(dt: date | datetime) -> date:
     """Coerce click.DateTime output to a plain date."""
     return dt.date() if isinstance(dt, datetime) else dt
+
+
+def _load_strategy_bundle(
+    strategies: str | None,
+) -> tuple[list[StrategyConfig] | None, AllocationConstraints, RiskConfig]:
+    """Load strategy configs from YAML, or defaults when no path is given."""
+    if strategies:
+        return load_strategies(Path(strategies))
+    return None, AllocationConstraints(), RiskConfig()
 
 
 def _resolve_state_path(port: PortfolioConfig, portfolio_path: Path) -> Path:
@@ -277,17 +304,14 @@ def backtest(
     # Ask before the (slow) price download so the prompt isn't buried
     # behind fetch output or left waiting for a user who walked away.
     tax_config = _ensure_tax_config(port, Path(portfolio))
-    strat_configs, constraints, risk_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
-    )
+    strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
 
     start_d, end_d = _to_date(start), _to_date(end)
 
-    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
-        n_tickers,
+        port.active_ticker_count(),
         risk_config=risk_config,
     )
 
@@ -346,16 +370,13 @@ def live(
     state_path = _resolve_state_path(port, portfolio_path)
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
-    strat_configs, constraints, risk_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
-    )
+    strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
     provider = CachedYFinanceProvider()
 
-    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
-        n_tickers,
+        port.active_ticker_count(),
         risk_config=risk_config,
     )
 
@@ -371,6 +392,87 @@ def live(
         dry_run=dry_run,
     ) as engine:
         engine.run()
+
+
+def _resolve_report_period(
+    year: int | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[date, date, str]:
+    """Resolve --year or --start/--end into a report window.
+
+    Returns:
+        ``(start, end, period_label)`` for the report window.
+
+    Raises:
+        click.UsageError: If the options are missing, conflicting, or invalid.
+    """
+    if year is not None:
+        if start is not None or end is not None:
+            raise click.UsageError("--year cannot be combined with --start/--end")
+        if not MINYEAR <= year <= MAXYEAR:
+            raise click.UsageError(f"--year must be a calendar year ({MINYEAR}-{MAXYEAR}), got {year}")
+        return date(year, 1, 1), date(year, 12, 31), str(year)
+    if start is not None and end is not None:
+        start_d = _to_date(start)
+        end_d = _to_date(end)
+        if start_d > end_d:
+            raise click.UsageError(f"--start ({start_d}) must be on or before --end ({end_d})")
+        return start_d, end_d, f"{start_d.isoformat()}_{end_d.isoformat()}"
+    raise click.UsageError("either --year or both --start and --end must be provided")
+
+
+def _resolve_trades_path(port: PortfolioConfig, portfolio_path: Path, from_trades: str | None) -> Path:
+    """Locate the trade log, preferring an explicit --from-trades path.
+
+    Raises:
+        click.UsageError: If the state-file-derived trade log does not exist.
+    """
+    if from_trades is not None:
+        return Path(from_trades)
+    state_path = _resolve_state_path(port, portfolio_path)
+    trades_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
+    if not trades_path.exists():
+        msg = f"trade log not found at {trades_path}"
+        raise click.UsageError(msg)
+    return trades_path
+
+
+def _collect_usable_sells(logged_rows: Sequence[LoggedTrade]) -> list[LoggedTrade]:
+    """Filter the log to SELL rows usable for reporting, warning about gaps."""
+    usable_sells: list[LoggedTrade] = []
+    for row in logged_rows:
+        if row.direction != Direction.SELL:
+            continue
+        if row.holding_period is None:
+            click.echo(
+                f"warning: {row.date.isoformat()} {row.ticker} SELL has no holding_period; "
+                "excluded from report rows and totals",
+                err=True,
+            )
+            continue
+        if row.cost_basis is None:
+            click.echo(
+                f"warning: {row.date.isoformat()} {row.ticker} SELL has no cost_basis; "
+                "assuming basis equals sale price (realized P&L $0)",
+                err=True,
+            )
+        usable_sells.append(row)
+    return usable_sells
+
+
+def _basis_or_price(row: LoggedTrade) -> float:
+    """Per-share cost basis, falling back to sale price when unrecorded."""
+    return row.cost_basis if row.cost_basis is not None else row.price
+
+
+def _write_empty_report(out_path: Path) -> None:
+    """Write header-only report and summary CSVs for a window with no sales."""
+    out_path.write_text(",".join(TAX_REPORT_COLUMNS) + "\n")
+    summary_path = out_path.with_suffix(".summary.csv")
+    summary_path.write_text(",".join(TAX_SUMMARY_COLUMNS) + "\n")
+    click.echo(f"Wrote {out_path}")
+    click.echo(f"Wrote {summary_path}")
 
 
 @cli.command(name="tax-report")
@@ -413,22 +515,7 @@ def tax_report(
     output: str | None,
 ) -> None:
     """Year-end realized-P&L report (Schedule D-shaped) from a trade log."""
-    if year is not None:
-        if start is not None or end is not None:
-            raise click.UsageError("--year cannot be combined with --start/--end")
-        if not MINYEAR <= year <= MAXYEAR:
-            raise click.UsageError(f"--year must be a calendar year ({MINYEAR}-{MAXYEAR}), got {year}")
-        start_d = date(year, 1, 1)
-        end_d = date(year, 12, 31)
-        period_label = str(year)
-    elif start is not None and end is not None:
-        start_d = _to_date(start)
-        end_d = _to_date(end)
-        if start_d > end_d:
-            raise click.UsageError(f"--start ({start_d}) must be on or before --end ({end_d})")
-        period_label = f"{start_d.isoformat()}_{end_d.isoformat()}"
-    else:
-        raise click.UsageError("either --year or both --start and --end must be provided")
+    start_d, end_d, period_label = _resolve_report_period(year, start, end)
 
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
@@ -441,14 +528,7 @@ def tax_report(
         )
         raise click.UsageError(msg)
 
-    if from_trades is not None:
-        trades_path = Path(from_trades)
-    else:
-        state_path = _resolve_state_path(port, portfolio_path)
-        trades_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
-        if not trades_path.exists():
-            msg = f"trade log not found at {trades_path}"
-            raise click.UsageError(msg)
+    trades_path = _resolve_trades_path(port, portfolio_path, from_trades)
 
     # Netting and carryforward are annual and cumulative, so the tax engine
     # must see every SELL in the log — a loss realized before the report
@@ -458,68 +538,66 @@ def tax_report(
     except TradeLogError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    usable_sells: list[LoggedTrade] = []
-    for row in logged_rows:
-        if row.direction != Direction.SELL:
-            continue
-        if row.holding_period is None:
-            click.echo(
-                f"warning: {row.date.isoformat()} {row.ticker} SELL has no holding_period; "
-                "excluded from report rows and totals",
-                err=True,
-            )
-            continue
-        if row.cost_basis is None:
-            click.echo(
-                f"warning: {row.date.isoformat()} {row.ticker} SELL has no cost_basis; "
-                "assuming basis equals sale price (realized P&L $0)",
-                err=True,
-            )
-        usable_sells.append(row)
-
-    rows: list[LoggedTrade] = [row for row in usable_sells if start_d <= row.date <= end_d]
+    usable_sells = _collect_usable_sells(logged_rows)
+    rows = [row for row in usable_sells if start_d <= row.date <= end_d]
 
     if not rows:
         click.echo(f"No realized sales in {period_label}.")
         if output is not None:
-            out_path = Path(output)
-            out_path.write_text(",".join(TAX_REPORT_COLUMNS) + "\n")
-            summary_path = out_path.with_suffix(".summary.csv")
-            summary_path.write_text(",".join(TAX_SUMMARY_COLUMNS) + "\n")
-            click.echo(f"Wrote {out_path}")
-            click.echo(f"Wrote {summary_path}")
+            _write_empty_report(Path(output))
         return
 
     out_path = Path(output) if output is not None else Path(f"schedule_d_{period_label}.csv")
 
-    trade_records: list[TradeRecord] = []
-    basis_per_sell: list[float] = []
-    for row in usable_sells:
-        trade_records.append(
-            TradeRecord(
-                date=row.date,
-                ticker=row.ticker,
-                direction=row.direction,
-                shares=row.shares,
-                price=row.price,
-                strategy_name=row.strategy_name,
-                holding_period=row.holding_period,
-                purchase_date=row.purchase_date,
-            )
+    trade_records = [
+        TradeRecord(
+            date=row.date,
+            ticker=row.ticker,
+            direction=row.direction,
+            shares=row.shares,
+            price=row.price,
+            strategy_name=row.strategy_name,
+            holding_period=row.holding_period,
+            purchase_date=row.purchase_date,
         )
-        basis_per_sell.append(row.cost_basis if row.cost_basis is not None else row.price)
+        for row in usable_sells
+    ]
+    basis_per_sell = [_basis_or_price(row) for row in usable_sells]
 
     # end_date only clamps payment dates to a backtest's final bar; a report
     # has no curve to clamp against, so surface the natural payment dates.
     full_summary = compute_tax_summary(trade_records, basis_per_sell, tax_config, end_date=date.max)
     summary = [entry for entry in full_summary if start_d.year <= entry.year <= end_d.year]
-    period_basis = [row.cost_basis if row.cost_basis is not None else row.price for row in rows]
+    period_basis = [_basis_or_price(row) for row in rows]
     _print_tax_report(rows, period_basis, summary, period_label)
     _write_tax_report_csv(rows, period_basis, out_path)
     summary_path = out_path.with_suffix(".summary.csv")
     _write_tax_summary_csv(summary, summary_path)
     click.echo(f"\nWrote {out_path}")
     click.echo(f"Wrote {summary_path}")
+
+
+def _validate_optimize_options(
+    walk_forward: bool,
+    train_pct: float,
+    wf_min_train_pct: float | None,
+    wf_min_test_days: int | None,
+) -> None:
+    """Validate optimize-command option combinations.
+
+    Raises:
+        click.UsageError: On conflicting or out-of-range option values.
+    """
+    if walk_forward and train_pct != DEFAULT_TRAIN_PCT:
+        raise click.UsageError("--train-pct cannot be used with --walk-forward (walk-forward has its own split logic).")
+    if not walk_forward and (wf_min_train_pct is not None or wf_min_test_days is not None):
+        raise click.UsageError("--wf-min-train-pct and --wf-min-test-days require --walk-forward.")
+    if train_pct <= 0 or train_pct > 1:
+        raise click.UsageError("--train-pct must be in (0, 1].")
+    if wf_min_train_pct is not None and (wf_min_train_pct <= 0 or wf_min_train_pct >= 1):
+        raise click.UsageError("--wf-min-train-pct must be in (0, 1).")
+    if wf_min_test_days is not None and wf_min_test_days < 1:
+        raise click.UsageError("--wf-min-test-days must be >= 1.")
 
 
 @cli.command()
@@ -590,7 +668,6 @@ def optimize(
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import (
-        ALLOCATION_KEY,
         WF_MIN_TEST_DAYS,
         WF_MIN_TRAIN_PCT,
         max_warmup_for_search,
@@ -601,17 +678,7 @@ def optimize(
         optimize as run_optimize,
     )
 
-    # Validation
-    if walk_forward and train_pct != DEFAULT_TRAIN_PCT:
-        raise click.UsageError("--train-pct cannot be used with --walk-forward (walk-forward has its own split logic).")
-    if not walk_forward and (wf_min_train_pct is not None or wf_min_test_days is not None):
-        raise click.UsageError("--wf-min-train-pct and --wf-min-test-days require --walk-forward.")
-    if train_pct <= 0 or train_pct > 1:
-        raise click.UsageError("--train-pct must be in (0, 1].")
-    if wf_min_train_pct is not None and (wf_min_train_pct <= 0 or wf_min_train_pct >= 1):
-        raise click.UsageError("--wf-min-train-pct must be in (0, 1).")
-    if wf_min_test_days is not None and wf_min_test_days < 1:
-        raise click.UsageError("--wf-min-test-days must be >= 1.")
+    _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
 
     port = load_portfolio(Path(portfolio))
 
@@ -624,21 +691,8 @@ def optimize(
         min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
-    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
-    warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, n_tickers)
+    warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
-
-    from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
-    from midas.output import (
-        color_signed,
-        console,
-        make_metric_table,
-        make_wide_table,
-        print_backtest_summary,
-        print_centered,
-        print_params_table,
-        print_run_info,
-    )
 
     if walk_forward:
         wf_result = walk_forward_optimize(
@@ -654,83 +708,13 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
         )
-
         write_strategies_yaml(
             wf_result.best_params,
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
         )
-
-        console.print()
-
-        # Per-fold results — wider since this table has 9 columns.
-        fold_table = make_wide_table("Walk-Forward Analysis", width=140)
-        fold_table.add_column("Fold", justify="center", style="bold")
-        fold_table.add_column("IS Period")
-        fold_table.add_column("OOS Period")
-        fold_table.add_column("IS Return (Annualized)", justify="right")
-        fold_table.add_column("OOS Return (Annualized)", justify="right")
-        fold_table.add_column("Max DD", justify="right")
-        fold_table.add_column("Sharpe", justify="right")
-        fold_table.add_column("Sortino", justify="right")
-        fold_table.add_column("Win Rate", justify="right")
-        for fold in wf_result.folds:
-            fold_table.add_row(
-                str(fold.fold),
-                f"{fold.train_start} → {fold.train_end}",
-                f"{fold.test_start} → {fold.test_end}",
-                color_signed(fold.train_return),
-                color_signed(fold.test_return),
-                f"[red]{fold.max_drawdown:.2%}[/red]",
-                color_signed(fold.sharpe_ratio, fmt=".2f"),
-                color_signed(fold.sortino_ratio, fmt=".2f"),
-                f"{fold.win_rate:.0%}" if fold.win_rate > 0 else "—",
-            )
-        print_centered(fold_table)
-
-        short_folds = [
-            fold for fold in wf_result.folds if (fold.test_end - fold.test_start).days < SHORT_WINDOW_THRESHOLD_DAYS
-        ]
-        if short_folds:
-            shortest = min((fold.test_end - fold.test_start).days for fold in short_folds)
-            console.print(
-                f"[yellow]Note: {len(short_folds)}/{len(wf_result.folds)} OOS windows are "
-                f"under one year (shortest: {shortest} days). Per-fold annualized returns "
-                f"extrapolate from short samples and can be noisy.[/yellow]",
-                justify="center",
-            )
-
-        # Aggregate metrics — same layout as the backtest summary tables.
-        n_folds = len(wf_result.folds)
-        agg = make_metric_table("Walk-Forward Aggregate")
-        agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
-        agg.add_row(
-            "Per-Fold OOS Mean ± Std (Annualized)",
-            f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
-        )
-        agg.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")
-        agg.add_row(
-            "Best / Worst Fold",
-            f"{color_signed(wf_result.best_fold_return)} / {color_signed(wf_result.worst_fold_return)}",
-        )
-        agg.add_row("Efficiency Ratio", f"{wf_result.efficiency_ratio:.0%}")
-        agg.add_row("Mean Max Drawdown", f"[red]{wf_result.mean_max_drawdown:.2%}[/red]")
-        agg.add_row("Mean Sharpe Ratio", color_signed(wf_result.mean_sharpe, fmt=".2f"))
-        agg.add_row("Mean Sortino Ratio", color_signed(wf_result.mean_sortino, fmt=".2f"))
-        agg.add_row(
-            "Mean Win Rate",
-            f"{wf_result.mean_win_rate:.0%}" if wf_result.mean_win_rate > 0 else "—",
-        )
-        print_centered(agg)
-
-        print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
-        print_params_table(
-            "Deployed Parameters (from latest fold)",
-            wf_result.best_params,
-            global_key=ALLOCATION_KEY,
-        )
-
+        _print_walk_forward_report(wf_result, output)
     else:
         result = run_optimize(
             portfolio=port,
@@ -744,28 +728,117 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
         )
-
         write_strategies_yaml(
             result.best_params,
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
         )
+        _print_optimize_report(result, train_pct, output)
 
-        console.print()
 
-        # Reuse the backtest summary tables for the optimized strategy.
-        assert result.best_result is not None
-        print_backtest_summary(result.best_result)
-
-        print_run_info(
-            [
-                ("Trials", str(result.trials_run)),
-                ("Train/Test Split", f"{train_pct:.0%} / {1 - train_pct:.0%}" if train_pct < 1.0 else "100% / 0%"),
-                ("Output", output),
-            ]
+def _print_fold_table(folds: Sequence[FoldResult]) -> None:
+    """Render the per-fold walk-forward results table."""
+    # Per-fold results — wider since this table has 9 columns.
+    fold_table = make_wide_table("Walk-Forward Analysis", width=140)
+    fold_table.add_column("Fold", justify="center", style="bold")
+    fold_table.add_column("IS Period")
+    fold_table.add_column("OOS Period")
+    fold_table.add_column("IS Return (Annualized)", justify="right")
+    fold_table.add_column("OOS Return (Annualized)", justify="right")
+    fold_table.add_column("Max DD", justify="right")
+    fold_table.add_column("Sharpe", justify="right")
+    fold_table.add_column("Sortino", justify="right")
+    fold_table.add_column("Win Rate", justify="right")
+    for fold in folds:
+        fold_table.add_row(
+            str(fold.fold),
+            f"{fold.train_start} → {fold.train_end}",
+            f"{fold.test_start} → {fold.test_end}",
+            color_signed(fold.train_return),
+            color_signed(fold.test_return),
+            f"[red]{fold.max_drawdown:.2%}[/red]",
+            color_signed(fold.sharpe_ratio, fmt=".2f"),
+            color_signed(fold.sortino_ratio, fmt=".2f"),
+            f"{fold.win_rate:.0%}" if fold.win_rate > 0 else "—",
         )
-        print_params_table("Optimized Parameters", result.best_params, global_key=ALLOCATION_KEY)
+    print_centered(fold_table)
+
+
+def _print_short_fold_note(folds: Sequence[FoldResult]) -> None:
+    """Warn when some OOS windows are too short for stable annualization."""
+    short_folds = [fold for fold in folds if (fold.test_end - fold.test_start).days < SHORT_WINDOW_THRESHOLD_DAYS]
+    if not short_folds:
+        return
+    shortest = min((fold.test_end - fold.test_start).days for fold in short_folds)
+    console.print(
+        f"[yellow]Note: {len(short_folds)}/{len(folds)} OOS windows are "
+        f"under one year (shortest: {shortest} days). Per-fold annualized returns "
+        f"extrapolate from short samples and can be noisy.[/yellow]",
+        justify="center",
+    )
+
+
+def _print_wf_aggregate(wf_result: WalkForwardResult) -> None:
+    """Render the aggregate walk-forward metrics table."""
+    # Aggregate metrics — same layout as the backtest summary tables.
+    n_folds = len(wf_result.folds)
+    agg = make_metric_table("Walk-Forward Aggregate")
+    agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
+    agg.add_row(
+        "Per-Fold OOS Mean ± Std (Annualized)",
+        f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
+    )
+    agg.add_row("Winning Folds", f"{wf_result.winning_folds}/{n_folds}")
+    agg.add_row(
+        "Best / Worst Fold",
+        f"{color_signed(wf_result.best_fold_return)} / {color_signed(wf_result.worst_fold_return)}",
+    )
+    agg.add_row("Efficiency Ratio", f"{wf_result.efficiency_ratio:.0%}")
+    agg.add_row("Mean Max Drawdown", f"[red]{wf_result.mean_max_drawdown:.2%}[/red]")
+    agg.add_row("Mean Sharpe Ratio", color_signed(wf_result.mean_sharpe, fmt=".2f"))
+    agg.add_row("Mean Sortino Ratio", color_signed(wf_result.mean_sortino, fmt=".2f"))
+    agg.add_row(
+        "Mean Win Rate",
+        f"{wf_result.mean_win_rate:.0%}" if wf_result.mean_win_rate > 0 else "—",
+    )
+    print_centered(agg)
+
+
+def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> None:
+    """Render the full walk-forward console report."""
+    from midas.optimizer import ALLOCATION_KEY
+
+    console.print()
+    _print_fold_table(wf_result.folds)
+    _print_short_fold_note(wf_result.folds)
+    _print_wf_aggregate(wf_result)
+    print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
+    print_params_table(
+        "Deployed Parameters (from latest fold)",
+        wf_result.best_params,
+        global_key=ALLOCATION_KEY,
+    )
+
+
+def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str) -> None:
+    """Render the single-run optimization console report."""
+    from midas.optimizer import ALLOCATION_KEY
+
+    console.print()
+
+    # Reuse the backtest summary tables for the optimized strategy.
+    assert result.best_result is not None
+    print_backtest_summary(result.best_result)
+
+    print_run_info(
+        [
+            ("Trials", str(result.trials_run)),
+            ("Train/Test Split", f"{train_pct:.0%} / {1 - train_pct:.0%}" if train_pct < 1.0 else "100% / 0%"),
+            ("Output", output),
+        ]
+    )
+    print_params_table("Optimized Parameters", result.best_params, global_key=ALLOCATION_KEY)
 
 
 @cli.command(name="strategies")
@@ -774,12 +847,32 @@ def list_strategies() -> None:
     print_strategy_table([cls() for cls in STRATEGY_REGISTRY.values()])
 
 
+def _sell_row_values(row: LoggedTrade, basis: float) -> tuple[float, float, float, str, int | None]:
+    """Compute the derived report cells for one SELL row.
+
+    ``basis`` is per-share; the report columns are totals (Schedule D
+    column (e) is total cost basis), so proceeds - basis_total = pnl
+    holds row by row.
+
+    Returns:
+        ``(basis_total, proceeds, pnl, purchase_cell, days_held)`` where
+        ``days_held`` is ``None`` when the purchase date is unknown or mixed.
+    """
+    proceeds = row.shares * row.price
+    basis_total = basis * row.shares
+    pnl = proceeds - basis_total
+    if isinstance(row.purchase_date, date):
+        return basis_total, proceeds, pnl, row.purchase_date.isoformat(), (row.date - row.purchase_date).days
+    return basis_total, proceeds, pnl, row.purchase_date or "", None
+
+
 def _print_tax_report(
-    rows: list[LoggedTrade],
-    basis_per_sell: list[float],
-    summary: list[AnnualTaxSummary],
+    rows: Sequence[LoggedTrade],
+    basis_per_sell: Sequence[float],
+    summary: Sequence[AnnualTaxSummary],
     period_label: str,
 ) -> None:
+    """Render the Schedule D table and per-year summary lines to the console."""
     table_width = 140
     table = make_wide_table(f"Schedule D — {period_label}", width=table_width)
     table.add_column("Ticker", style="bold")
@@ -793,20 +886,7 @@ def _print_tax_report(
     table.add_column("Classification")
 
     for row, basis in zip(rows, basis_per_sell, strict=True):
-        # basis is per-share; the report columns are totals (Schedule D
-        # column (e) is total cost basis), so proceeds - basis_total = pnl
-        # holds row by row.
-        proceeds = row.shares * row.price
-        basis_total = basis * row.shares
-        pnl = proceeds - basis_total
-        if isinstance(row.purchase_date, date):
-            days_held = (row.date - row.purchase_date).days
-            purchase_disp = row.purchase_date.isoformat()
-            days_disp = str(days_held)
-        else:
-            purchase_disp = row.purchase_date or ""
-            days_disp = ""
-        classification = row.holding_period.value if row.holding_period else ""
+        basis_total, proceeds, pnl, purchase_disp, days_held = _sell_row_values(row, basis)
         table.add_row(
             row.ticker,
             f"{row.shares:.4f}",
@@ -815,40 +895,33 @@ def _print_tax_report(
             f"${basis_total:,.2f}",
             f"${proceeds:,.2f}",
             f"${pnl:+,.2f}",
-            days_disp,
-            classification,
+            str(days_held) if days_held is not None else "",
+            row.holding_period.value if row.holding_period else "",
         )
     # Use a width-pinned console so the rendered table isn't truncated when
     # stdout isn't a TTY (e.g. piped output, CliRunner in tests).
     Console(width=table_width).print(table, justify="center")
 
-    for s in summary:
+    for entry in summary:
         click.echo(
-            f"\nYear {s.year}: ST {s.st_realized:+,.2f}  LT {s.lt_realized:+,.2f}  "
-            f"Net {s.net_after_cross:+,.2f}  Deductible {s.deductible_loss:,.2f}  "
-            f"Tax {s.tax_owed:+,.2f}  Carry-Forward {s.carry_forward:,.2f}  "
-            f"Payment {s.payment_date.isoformat()}"
+            f"\nYear {entry.year}: ST {entry.st_realized:+,.2f}  LT {entry.lt_realized:+,.2f}  "
+            f"Net {entry.net_after_cross:+,.2f}  Deductible {entry.deductible_loss:,.2f}  "
+            f"Tax {entry.tax_owed:+,.2f}  Carry-Forward {entry.carry_forward:,.2f}  "
+            f"Payment {entry.payment_date.isoformat()}"
         )
 
 
 def _write_tax_report_csv(
-    rows: list[LoggedTrade],
-    basis_per_sell: list[float],
+    rows: Sequence[LoggedTrade],
+    basis_per_sell: Sequence[float],
     path: Path,
 ) -> None:
+    """Write the per-sale Schedule D rows to a CSV file."""
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(TAX_REPORT_COLUMNS)
         for row, basis in zip(rows, basis_per_sell, strict=True):
-            proceeds = row.shares * row.price
-            basis_total = basis * row.shares
-            pnl = proceeds - basis_total
-            if isinstance(row.purchase_date, date):
-                days_held: int | str = (row.date - row.purchase_date).days
-                purchase_cell: str = row.purchase_date.isoformat()
-            else:
-                days_held = ""
-                purchase_cell = row.purchase_date or ""
+            basis_total, proceeds, pnl, purchase_cell, days_held = _sell_row_values(row, basis)
             writer.writerow(
                 [
                     row.ticker,
@@ -858,26 +931,27 @@ def _write_tax_report_csv(
                     round(basis_total, 4),
                     round(proceeds, 4),
                     round(pnl, 4),
-                    days_held,
+                    days_held if days_held is not None else "",
                     row.holding_period.value if row.holding_period else "",
                 ]
             )
 
 
-def _write_tax_summary_csv(summary: list[AnnualTaxSummary], path: Path) -> None:
+def _write_tax_summary_csv(summary: Sequence[AnnualTaxSummary], path: Path) -> None:
+    """Write the per-year tax aggregates to a companion CSV file."""
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(TAX_SUMMARY_COLUMNS)
-        for s in summary:
+        for entry in summary:
             writer.writerow(
                 [
-                    s.year,
-                    round(s.st_realized, 4),
-                    round(s.lt_realized, 4),
-                    round(s.net_after_cross, 4),
-                    round(s.deductible_loss, 4),
-                    round(s.carry_forward, 4),
-                    round(s.tax_owed, 4),
-                    s.payment_date.isoformat(),
+                    entry.year,
+                    round(entry.st_realized, 4),
+                    round(entry.lt_realized, 4),
+                    round(entry.net_after_cross, 4),
+                    round(entry.deductible_loss, 4),
+                    round(entry.carry_forward, 4),
+                    round(entry.tax_owed, 4),
+                    entry.payment_date.isoformat(),
                 ]
             )

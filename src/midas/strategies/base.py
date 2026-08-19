@@ -70,6 +70,43 @@ def warmup_bars_to_calendar_days(bars: int) -> int:
     return max(calendar, MIN_WARMUP_CALENDAR_DAYS)
 
 
+def rolling_sum(values: np.ndarray, window: int) -> np.ndarray:
+    """Rolling *window*-bar sums of *values* via a one-pass prefix sum.
+
+    Args:
+        values: 1-D array of length ``n``.
+        window: Rolling window size in bars.
+
+    Returns:
+        Array of length ``n - window + 1`` where element ``i`` is the sum of
+        ``values[i : i + window]``.
+    """
+    prefix = np.empty(len(values) + 1)
+    prefix[0] = 0.0
+    np.cumsum(values, out=prefix[1:])
+    return prefix[window:] - prefix[:-window]
+
+
+def rolling_mean(values: np.ndarray, window: int) -> np.ndarray:
+    """Rolling *window*-bar means of *values* (see :func:`rolling_sum`)."""
+    return rolling_sum(values, window) / window
+
+
+def true_range_series(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """Full per-bar TR series of length ``len(close)``.
+
+    Bar 0 has no prior close available, so its TR falls back to H - L
+    (Wilder convention). Bars 1..n-1 use max(H-L, |H-prevC|, |L-prevC|).
+    """
+    num_bars = len(close)
+    tr = np.empty(num_bars)
+    tr[0] = high[0] - low[0]
+    if num_bars > 1:
+        prev_c = close[:-1]
+        tr[1:] = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - prev_c), np.abs(low[1:] - prev_c)])
+    return tr
+
+
 class Strategy(ABC):
     """Minimal base for all strategies. Subclass ``EntrySignal`` or ``ExitRule``."""
 

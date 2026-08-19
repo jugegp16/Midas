@@ -8,6 +8,8 @@ from midas.strategies.base import ExitRule
 
 
 class StopLoss(ExitRule):
+    """Exit rule: liquidate when unrealized loss exceeds the threshold."""
+
     def __init__(self, loss_threshold: float = 0.10) -> None:
         self._loss_threshold = loss_threshold
 

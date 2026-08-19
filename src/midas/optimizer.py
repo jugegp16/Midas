@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import decimal
 import logging
+import math
 import os
 import threading
 from collections.abc import Callable
@@ -151,6 +152,8 @@ WF_MIN_TEST_DAYS = 63
 
 @dataclass
 class OptimizeResult:
+    """Best parameters and headline returns from a single optimisation run."""
+
     best_params: dict[str, dict[str, float]]
     best_return: float
     best_bh_return: float
@@ -208,6 +211,20 @@ class WalkForwardResult:
     mean_win_rate: float = 0.0
 
 
+def _snap_high(lo: float, hi: float, step: float) -> float:
+    """Snap ``hi`` down so ``(hi - lo)`` is divisible by ``step``.
+
+    Uses Decimal to match Optuna's own divisibility check and avoid float noise.
+    """
+    d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
+    return float((d_hi - d_lo) // d_step * d_step + d_lo)
+
+
+def _pool_workers(n_trials: int) -> int:
+    """Worker-pool size: half the CPUs, capped by the trial count, at least one."""
+    return min((os.cpu_count() or 4) // 2, n_trials) or 1
+
+
 def _suggest_params(
     trial: optuna.Trial,
     strategy_name: str,
@@ -218,9 +235,7 @@ def _suggest_params(
     for param, (lo, hi, step) in ranges.items():
         key = f"{strategy_name}__{param}"
         # Snap hi down so (hi - lo) is divisible by step, avoiding Optuna warnings.
-        # Use Decimal to match Optuna's own check and avoid float noise.
-        d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
-        hi = float((d_hi - d_lo) // d_step * d_step + d_lo)
+        hi = _snap_high(lo, hi, step)
         if param in INT_PARAMS:
             params[param] = float(trial.suggest_int(key, int(lo), int(hi), step=int(step)))
         else:
@@ -228,23 +243,14 @@ def _suggest_params(
     return params
 
 
-def _run_trial(
+def _instantiate_strategies(
     strategy_params: dict[str, dict[str, float]],
-    portfolio: PortfolioConfig,
-    price_data: dict[str, pd.DataFrame],
-    start: date,
-    end: date,
-    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
-    train_pct: float = DEFAULT_TRAIN_PCT,
-    enable_split: bool = True,
-    risk_config: RiskConfig | None = None,
-) -> tuple[float, float, float, float, float, BacktestResult]:
-    """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
+) -> tuple[list[tuple[EntrySignal, float]], list[ExitRule]]:
+    """Build entry and exit strategy instances from sampled parameter dicts.
 
-    Returns (total_return, bh_return, train_return, test_return, twr, result).
+    Raises:
+        TypeError: If a named strategy is neither an EntrySignal nor an ExitRule.
     """
-    # Extract global allocation knobs
-    global_params = strategy_params.get(ALLOCATION_KEY, {})
     entries: list[tuple[EntrySignal, float]] = []
     exits: list[ExitRule] = []
 
@@ -266,8 +272,28 @@ def _run_trial(
             msg = f"Strategy {name!r} is neither EntrySignal nor ExitRule"
             raise TypeError(msg)
 
-    # Count tickers in portfolio
-    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
+    return entries, exits
+
+
+def _run_trial(
+    strategy_params: dict[str, dict[str, float]],
+    portfolio: PortfolioConfig,
+    price_data: dict[str, pd.DataFrame],
+    start: date,
+    end: date,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    train_pct: float = DEFAULT_TRAIN_PCT,
+    enable_split: bool = True,
+    risk_config: RiskConfig | None = None,
+) -> tuple[float, float, float, float, float, BacktestResult]:
+    """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
+
+    Returns (total_return, bh_return, train_return, test_return, twr, result).
+    """
+    # Extract global allocation knobs
+    global_params = strategy_params.get(ALLOCATION_KEY, {})
+    entries, exits = _instantiate_strategies(strategy_params)
+
     constraints = AllocationConstraints(
         max_position_pct=global_params.get("max_position_pct"),
         min_cash_pct=min_cash_pct,
@@ -275,7 +301,7 @@ def _run_trial(
         min_buy_delta=global_params.get("min_buy_delta", 0.02),
     )
 
-    allocator = Allocator(entries, constraints, n_tickers, risk_config=risk_config)
+    allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
     order_sizer = OrderSizer()
 
     engine = BacktestEngine(
@@ -309,6 +335,7 @@ def _init_worker(
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
 ) -> None:
+    """Initialise standard-optimizer workers with the full trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
     # explores boundary values that trigger heuristic warnings but are fine
     # to evaluate. Scoped to the worker process so the main-process final
@@ -329,6 +356,7 @@ def _init_worker(
 
 
 def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
+    """Evaluate one trial in a worker process, dropping the unpicklable result."""
     total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(strategy_params, **worker_state)
     return total_ret, bh_ret, train_ret, test_ret, twr
 
@@ -354,6 +382,7 @@ def _wf_trial_worker(
     start: date,
     end: date,
 ) -> tuple[float, ...]:
+    """Evaluate one walk-forward trial over the given window in a worker process."""
     total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(
         strategy_params,
         worker_state["portfolio"],
@@ -392,8 +421,7 @@ def max_warmup_for_search(
                 continue
             # Snap hi down the same way _suggest_params does so the upper
             # bound here matches values the optimizer actually tries.
-            d_lo, d_hi, d_step = decimal.Decimal(str(lo)), decimal.Decimal(str(hi)), decimal.Decimal(str(step))
-            snapped_hi = float((d_hi - d_lo) // d_step * d_step + d_lo)
+            snapped_hi = _snap_high(lo, hi, step)
             params[pname] = int(snapped_hi) if pname in INT_PARAMS else snapped_hi
         # Let TypeError propagate — if a search-range key doesn't match a
         # constructor param, that's a real configuration bug we want loud.
@@ -451,10 +479,9 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
 
-    max_workers = min((os.cpu_count() or 4) // 2, n_trials) or 1
+    max_workers = _pool_workers(n_trials)
 
     strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Optimizing {len(strat_names)} strategies over {start} to {end}")
@@ -481,13 +508,7 @@ def optimize(
     def objective(trial: optuna.Trial) -> float:
         nonlocal trials_done
 
-        strategy_params: dict[str, dict[str, float]] = {}
-        for name in names:
-            strategy_params[name] = _suggest_params(
-                trial,
-                name,
-                ranges[name],
-            )
+        strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
 
         _total_ret, bh_ret, train_ret, test_ret, _twr = pool.submit(
             _trial_worker,
@@ -548,6 +569,128 @@ def optimize(
     )
 
 
+def _fold_boundaries(n_days: int, min_train_pct: float, min_test_days: int) -> list[int]:
+    """Compute fold boundary indices into the sorted trading-day list.
+
+    Returns:
+        Indices ``[train_cutoff, train_cutoff + test_size, ..., n_days]``;
+        fold *i* trains on days ``[0, boundaries[i])`` and tests on
+        ``[boundaries[i], boundaries[i + 1])``. The last fold absorbs any
+        remainder days.
+
+    Raises:
+        ValueError: If there are too few trading days for two test folds.
+    """
+    train_cutoff = int(n_days * min_train_pct)
+    remaining = n_days - train_cutoff
+    if remaining < min_test_days * 2:
+        min_needed = int(min_test_days * 2 / (1 - min_train_pct))
+        msg = f"Not enough data for walk-forward ({n_days} days, need ≥{min_needed})"
+        raise ValueError(msg)
+
+    n_folds = max(remaining // min_test_days, 2)
+    test_size = remaining // n_folds
+
+    boundaries = [train_cutoff + i * test_size for i in range(n_folds + 1)]
+    boundaries[-1] = n_days  # last fold absorbs remainder
+    return boundaries
+
+
+def _make_wf_objective(
+    pool: ProcessPoolExecutor,
+    names: list[str],
+    ranges: dict[str, dict[str, tuple[float, float, float]]],
+    study: optuna.Study,
+    fold_trials: int,
+    train_start: date,
+    train_end: date,
+    log: Callable[[str], None],
+) -> Callable[[optuna.Trial], float]:
+    """Build the Optuna objective for one walk-forward fold (train-window TWR)."""
+    counter = [0]
+    lock = threading.Lock()
+
+    def objective(trial: optuna.Trial) -> float:
+        strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
+        _total_ret, _bh, _train, _test, twr = pool.submit(
+            _wf_trial_worker,
+            strategy_params,
+            train_start,
+            train_end,
+        ).result()
+        trial.set_user_attr("params", strategy_params)
+        with lock:
+            counter[0] += 1
+            if counter[0] % 25 == 0 or counter[0] == fold_trials:
+                pct = counter[0] * 100 // fold_trials
+                log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best: {study.best_value:.2%}")
+        return twr
+
+    return objective
+
+
+def _aggregate_folds(fold_results: list[FoldResult], log: Callable[[str], None]) -> WalkForwardResult:
+    """Aggregate per-fold results into a WalkForwardResult and log the summary."""
+    # Per-fold test returns are already annualized, so aggregates (mean, std,
+    # best/worst) compare folds of different lengths apples-to-apples.
+    test_returns = [fold.test_return for fold in fold_results]
+    mean_test = sum(test_returns) / len(test_returns)
+    variance = sum((ret - mean_test) ** 2 for ret in test_returns) / max(len(test_returns) - 1, 1)
+    std_test = variance**0.5
+
+    # Overall OOS CAGR: compound the *raw* per-fold returns (what actually
+    # happened to the equity chain) and then annualize over the full OOS span.
+    # Doing this on raw values avoids the double-annualization artefact that
+    # would come from chaining already-annualized fold returns.
+    compounded = math.prod(1.0 + fold.test_return_raw for fold in fold_results)
+    first_test_start = fold_results[0].test_start
+    last_test_end = fold_results[-1].test_end
+    years = (last_test_end - first_test_start).days / DAYS_PER_YEAR
+    annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
+
+    winning_folds = sum(1 for ret in test_returns if ret > 0)
+    best_fold = max(test_returns)
+    worst_fold = min(test_returns)
+
+    # Efficiency ratio: how much in-sample performance survives out-of-sample.
+    # Both sides are annualized so the ratio is dimensionally consistent even
+    # though IS windows are anchored (longer) and OOS windows are shorter.
+    train_returns = [fold.train_return for fold in fold_results]
+    mean_train = sum(train_returns) / len(train_returns)
+    efficiency = mean_test / mean_train if mean_train != 0 else 0.0
+
+    num_folds = len(fold_results)
+    mean_dd = sum(fold.max_drawdown for fold in fold_results) / num_folds
+    mean_sharpe = sum(fold.sharpe_ratio for fold in fold_results) / num_folds
+    mean_sortino = sum(fold.sortino_ratio for fold in fold_results) / num_folds
+    mean_wr = sum(fold.win_rate for fold in fold_results) / num_folds
+
+    log("")
+    log("Walk-forward complete")
+    log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
+    log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
+    log(f"  Winning folds: {winning_folds}/{num_folds} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
+    log(f"  Efficiency ratio: {efficiency:.0%}")
+    log(f"  Mean max drawdown: {mean_dd:.2%} | Mean Sharpe: {mean_sharpe:.2f}")
+
+    return WalkForwardResult(
+        folds=fold_results,
+        annualized_return=round(annualized, 4),
+        mean_test_return=round(mean_test, 4),
+        std_test_return=round(std_test, 4),
+        winning_folds=winning_folds,
+        best_fold_return=round(best_fold, 4),
+        worst_fold_return=round(worst_fold, 4),
+        efficiency_ratio=round(efficiency, 4),
+        best_params=fold_results[-1].best_params,
+        total_trials=sum(fold.trials_run for fold in fold_results),
+        mean_max_drawdown=round(mean_dd, 4),
+        mean_sharpe=round(mean_sharpe, 4),
+        mean_sortino=round(mean_sortino, 4),
+        mean_win_rate=round(mean_wr, 4),
+    )
+
+
 def walk_forward_optimize(
     portfolio: PortfolioConfig,
     price_data: dict[str, pd.DataFrame],
@@ -571,8 +714,7 @@ def walk_forward_optimize(
     """
     log = log_fn or (lambda _: None)
 
-    n_tickers = sum(1 for holding in portfolio.holdings if holding.shares > 0)
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, n_tickers)
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
 
     # Collect trading days across all tickers.
     all_dates: set[date] = set()
@@ -580,23 +722,12 @@ def walk_forward_optimize(
         all_dates.update(dt for dt in df.index if start <= dt <= end)
     trading_days = sorted(all_dates)
 
-    n_days = len(trading_days)
-    train_cutoff = int(n_days * min_train_pct)
-    remaining = n_days - train_cutoff
-    if remaining < min_test_days * 2:
-        min_needed = int(min_test_days * 2 / (1 - min_train_pct))
-        msg = f"Not enough data for walk-forward ({n_days} days, need ≥{min_needed})"
-        raise ValueError(msg)
-
-    n_folds = max(remaining // min_test_days, 2)
-    test_size = remaining // n_folds
-
-    # Build fold boundaries: [train_cutoff, train_cutoff + test_size, ...]
-    fold_boundaries = [train_cutoff + i * test_size for i in range(n_folds + 1)]
-    fold_boundaries[-1] = n_days  # last fold absorbs remainder
+    fold_boundaries = _fold_boundaries(len(trading_days), min_train_pct, min_test_days)
+    n_folds = len(fold_boundaries) - 1
+    test_size = fold_boundaries[1] - fold_boundaries[0]
 
     trials_per_fold = max(n_trials // n_folds, 10)
-    max_workers = min((os.cpu_count() or 4) // 2, trials_per_fold) or 1
+    max_workers = _pool_workers(trials_per_fold)
 
     strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Walk-forward optimization — {len(strat_names)} strategies, {start} to {end}")
@@ -637,40 +768,8 @@ def walk_forward_optimize(
             if prev_best_flat is not None:
                 study.enqueue_trial(prev_best_flat)
 
-            def _make_objective(
-                pool_ref: ProcessPoolExecutor,
-                names_ref: list[str],
-                ranges_ref: dict[str, dict[str, tuple[float, float, float]]],
-                study_ref: optuna.Study,
-                fold_trials: int,
-                train_start: date,
-                train_end: date,
-            ) -> Callable[[optuna.Trial], float]:
-                counter = [0]
-                lock = threading.Lock()
-
-                def objective(trial: optuna.Trial) -> float:
-                    strategy_params: dict[str, dict[str, float]] = {}
-                    for name in names_ref:
-                        strategy_params[name] = _suggest_params(trial, name, ranges_ref[name])
-                    _total_ret, _bh, _train, _test, twr = pool_ref.submit(
-                        _wf_trial_worker,
-                        strategy_params,
-                        train_start,
-                        train_end,
-                    ).result()
-                    trial.set_user_attr("params", strategy_params)
-                    with lock:
-                        counter[0] += 1
-                        if counter[0] % 25 == 0 or counter[0] == fold_trials:
-                            pct = counter[0] * 100 // fold_trials
-                            log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best: {study_ref.best_value:.2%}")
-                    return twr
-
-                return objective
-
             study.optimize(
-                _make_objective(pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end),
+                _make_wf_objective(pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end, log),
                 n_trials=trials_per_fold,
                 n_jobs=max_workers,
             )
@@ -720,66 +819,7 @@ def walk_forward_optimize(
     finally:
         pool.shutdown(wait=True)
 
-    # Per-fold test returns are already annualized, so aggregates (mean, std,
-    # best/worst) compare folds of different lengths apples-to-apples.
-    test_returns = [fold.test_return for fold in fold_results]
-    mean_test = sum(test_returns) / len(test_returns)
-    variance = sum((ret - mean_test) ** 2 for ret in test_returns) / max(len(test_returns) - 1, 1)
-    std_test = variance**0.5
-
-    # Overall OOS CAGR: compound the *raw* per-fold returns (what actually
-    # happened to the equity chain) and then annualize over the full OOS span.
-    # Doing this on raw values avoids the double-annualization artefact that
-    # would come from chaining already-annualized fold returns.
-    compounded = 1.0
-    for fold in fold_results:
-        compounded *= 1.0 + fold.test_return_raw
-    first_test_start = fold_results[0].test_start
-    last_test_end = fold_results[-1].test_end
-    years = (last_test_end - first_test_start).days / DAYS_PER_YEAR
-    annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
-
-    winning_folds = sum(1 for ret in test_returns if ret > 0)
-    best_fold = max(test_returns)
-    worst_fold = min(test_returns)
-
-    # Efficiency ratio: how much in-sample performance survives out-of-sample.
-    # Both sides are annualized so the ratio is dimensionally consistent even
-    # though IS windows are anchored (longer) and OOS windows are shorter.
-    train_returns = [fold.train_return for fold in fold_results]
-    mean_train = sum(train_returns) / len(train_returns)
-    efficiency = mean_test / mean_train if mean_train != 0 else 0.0
-
-    num_folds = len(fold_results)
-    mean_dd = sum(fold.max_drawdown for fold in fold_results) / num_folds
-    mean_sharpe = sum(fold.sharpe_ratio for fold in fold_results) / num_folds
-    mean_sortino = sum(fold.sortino_ratio for fold in fold_results) / num_folds
-    mean_wr = sum(fold.win_rate for fold in fold_results) / num_folds
-
-    log("")
-    log("Walk-forward complete")
-    log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
-    log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
-    log(f"  Winning folds: {winning_folds}/{num_folds} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
-    log(f"  Efficiency ratio: {efficiency:.0%}")
-    log(f"  Mean max drawdown: {mean_dd:.2%} | Mean Sharpe: {mean_sharpe:.2f}")
-
-    return WalkForwardResult(
-        folds=fold_results,
-        annualized_return=round(annualized, 4),
-        mean_test_return=round(mean_test, 4),
-        std_test_return=round(std_test, 4),
-        winning_folds=winning_folds,
-        best_fold_return=round(best_fold, 4),
-        worst_fold_return=round(worst_fold, 4),
-        efficiency_ratio=round(efficiency, 4),
-        best_params=fold_results[-1].best_params,
-        total_trials=sum(fold.trials_run for fold in fold_results),
-        mean_max_drawdown=round(mean_dd, 4),
-        mean_sharpe=round(mean_sharpe, 4),
-        mean_sortino=round(mean_sortino, 4),
-        mean_win_rate=round(mean_wr, 4),
-    )
+    return _aggregate_folds(fold_results, log)
 
 
 def write_strategies_yaml(
@@ -837,8 +877,8 @@ def write_strategies_yaml(
 
     output["strategies"] = strategies
 
-    with open(path, "w") as f:
-        yaml.dump(output, f, default_flow_style=False, sort_keys=False)
+    with open(path, "w") as handle:
+        yaml.dump(output, handle, default_flow_style=False, sort_keys=False)
 
 
 def _risk_block_for_yaml(risk_config: RiskConfig | None) -> dict[str, object]:

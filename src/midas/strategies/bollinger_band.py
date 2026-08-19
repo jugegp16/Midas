@@ -6,10 +6,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import EntrySignal
+from midas.strategies.base import EntrySignal, rolling_mean
 
 
 class BollingerBand(EntrySignal):
+    """Entry signal: bullish as price falls toward the lower Bollinger band."""
+
     def __init__(self, window: int = 20, num_std: float = 2.0) -> None:
         self._window = window
         self._num_std = num_std
@@ -25,16 +27,9 @@ class BollingerBand(EntrySignal):
         scores = np.full(num_bars, np.nan)
         if num_bars < window:
             return scores
-        cs = np.empty(num_bars + 1)
-        cs[0] = 0.0
-        np.cumsum(prices, out=cs[1:])
-        sq_cs = np.empty(num_bars + 1)
-        sq_cs[0] = 0.0
-        np.cumsum(prices**2, out=sq_cs[1:])
-        rolling_sum = cs[window:] - cs[:-window]
-        rolling_sq = sq_cs[window:] - sq_cs[:-window]
-        ma = rolling_sum / window
-        variance = (rolling_sq / window - ma**2) * window / (window - 1)
+        ma = rolling_mean(prices, window)
+        mean_sq = rolling_mean(prices**2, window)
+        variance = (mean_sq - ma**2) * window / (window - 1)
         std = np.sqrt(np.maximum(variance, 0.0))
         current = prices[window - 1 :]
         z_score = np.where(std != 0, (current - ma) / std, 0.0)

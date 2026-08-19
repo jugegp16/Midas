@@ -19,14 +19,16 @@ DEFAULT_CACHE_DIR = Path.home() / ".midas_cache"
 
 
 class CachedYFinanceProvider(DataProvider):
+    """Yahoo Finance provider that caches downloaded history as pickles on disk."""
+
     def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR) -> None:
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_history(self, ticker: str, start: date, end: date) -> pd.DataFrame:
-        cache_key = self._cache_path(ticker, start, end)
-        if cache_key.exists():
-            with open(cache_key, "rb") as f:
+        cache_path = self._cache_path(ticker, start, end)
+        if cache_path.exists():
+            with open(cache_path, "rb") as f:
                 return pickle.load(f)  # type: ignore[no-any-return]
 
         # yfinance end is exclusive, so add a day
@@ -77,7 +79,7 @@ class CachedYFinanceProvider(DataProvider):
         frame.index = pd.to_datetime(frame.index).date
         frame.index.name = "date"
 
-        with open(cache_key, "wb") as f:
+        with open(cache_path, "wb") as f:
             pickle.dump(frame, f)
 
         return frame
@@ -91,6 +93,7 @@ class CachedYFinanceProvider(DataProvider):
         return float(hist["Close"].iloc[-1])
 
     def _cache_path(self, ticker: str, start: date, end: date) -> Path:
+        """Deterministic cache file path for a (ticker, start, end) request."""
         key = f"{ticker}_{start}_{end}_ohlcv"
         hashed = hashlib.md5(key.encode()).hexdigest()
         return self._cache_dir / f"{hashed}.pkl"

@@ -27,16 +27,22 @@ FREQUENCY_DAYS: dict[str, int] = {
 
 
 class Direction(Enum):
+    """Trade direction."""
+
     BUY = "BUY"
     SELL = "SELL"
 
 
 class HoldingPeriod(Enum):
+    """Capital-gains holding-period classification for a realized sale."""
+
     SHORT_TERM = "short-term"
     LONG_TERM = "long-term"
 
 
 class AssetSuitability(Enum):
+    """Asset class a strategy is suited to trade."""
+
     BROAD_MARKET_ETF = "broad-market-etf"
     LARGE_CAP = "large-cap"
     INDIVIDUAL_EQUITY = "individual-equity"
@@ -46,6 +52,8 @@ class AssetSuitability(Enum):
 
 @dataclass
 class Holding:
+    """A single portfolio position, with optional per-share cost basis."""
+
     ticker: str
     shares: float
     cost_basis: float | None = None
@@ -53,6 +61,8 @@ class Holding:
 
 @dataclass
 class CashInfusion:
+    """A recurring (or one-off) cash deposit into the portfolio."""
+
     amount: float
     next_date: date
     frequency: str | None = None
@@ -70,6 +80,8 @@ class CashInfusion:
 
 @dataclass
 class PortfolioConfig:
+    """User portfolio: holdings, cash, and optional policy blocks."""
+
     holdings: list[Holding]
     available_cash: float
     cash_infusion: CashInfusion | None = None
@@ -82,11 +94,18 @@ class PortfolioConfig:
         self._by_ticker = {holding.ticker: holding for holding in self.holdings}
 
     def get_holding(self, ticker: str) -> Holding | None:
+        """Look up a holding by ticker, or None if not held."""
         return self._by_ticker.get(ticker)
+
+    def active_ticker_count(self) -> int:
+        """Number of holdings with a nonzero share count."""
+        return sum(1 for holding in self.holdings if holding.shares > 0)
 
 
 @dataclass(frozen=True)
 class OrderContext:
+    """Why an order was generated: scores, weights, and attribution."""
+
     contributions: dict[str, float]
     blended_score: float
     target_weight: float
@@ -97,6 +116,8 @@ class OrderContext:
 
 @dataclass(frozen=True)
 class Order:
+    """A sized order recommendation ready for execution."""
+
     ticker: str
     direction: Direction
     shares: float
@@ -150,11 +171,15 @@ class TradeRecord:
 
 @dataclass
 class TradingRestrictions:
+    """Broker/account trading limits applied during simulation."""
+
     round_trip_days: int = 0  # 0 = no restriction
 
 
 @dataclass(frozen=True)
 class AllocationConstraints:
+    """Portfolio-wide allocation knobs for the allocator."""
+
     max_position_pct: float | None = None
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
     min_buy_delta: float = DEFAULT_MIN_BUY_DELTA
@@ -163,6 +188,8 @@ class AllocationConstraints:
 
 @dataclass
 class StrategyConfig:
+    """One strategy entry from a strategies YAML file."""
+
     name: str
     params: dict[str, float | int | str] = field(default_factory=dict)
     tickers: list[str] | None = None

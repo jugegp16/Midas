@@ -12,6 +12,8 @@ from midas.strategies.base import ExitRule
 
 
 class MovingAverageCrossoverExit(ExitRule):
+    """Exit rule: liquidate on a death cross (short MA below long MA)."""
+
     def __init__(
         self,
         short_window: int = 20,

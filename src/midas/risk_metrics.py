@@ -6,6 +6,7 @@ existing output layer; never modifies allocator state or trade decisions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -64,9 +65,9 @@ class RiskHistory:
 
 
 def compute_risk_metrics(
-    equity_curve: list[tuple[date, float]],
+    equity_curve: Sequence[tuple[date, float]],
     vol_target: float | None,
-    per_strategy_pnl: dict[str, float],
+    per_strategy_pnl: Mapping[str, float],
     per_ticker_vol_contribution: dict[str, float] | None = None,
     risk_history: RiskHistory | None = None,
     vol_target_skip_count: int = 0,
@@ -92,26 +93,16 @@ def compute_risk_metrics(
     """
     aggregates = _aggregate_history(risk_history)
 
-    if not equity_curve:
-        return RiskMetrics(
-            realized_vol_60d=0.0,
-            vol_target=vol_target,
-            drawdown_from_peak=0.0,
-            rolling_sharpe_252d=0.0,
-            per_strategy_pnl=dict(per_strategy_pnl),
-            per_ticker_vol_contribution=per_ticker_vol_contribution or {},
-            vol_target_skip_count=vol_target_skip_count,
-            **aggregates,
-        )
-
-    values = np.array([v for _, v in equity_curve], dtype=float)
-
-    peak = float(np.maximum.accumulate(values)[-1])
-    current = float(values[-1])
-    drawdown = (peak - current) / peak if peak > 0 else 0.0
-
-    realized_vol = _annualized_vol(values, VOL_LOOKBACK_BARS)
-    sharpe = _rolling_sharpe(values, SHARPE_LOOKBACK_BARS)
+    realized_vol = 0.0
+    drawdown = 0.0
+    sharpe = 0.0
+    if equity_curve:
+        values = np.array([v for _, v in equity_curve], dtype=float)
+        peak = float(np.maximum.accumulate(values)[-1])
+        current = float(values[-1])
+        drawdown = (peak - current) / peak if peak > 0 else 0.0
+        realized_vol = _annualized_vol(values, VOL_LOOKBACK_BARS)
+        sharpe = _rolling_sharpe(values, SHARPE_LOOKBACK_BARS)
 
     return RiskMetrics(
         realized_vol_60d=realized_vol,
@@ -158,6 +149,7 @@ def _aggregate_history(history: RiskHistory | None) -> dict[str, float]:
 
 
 def _log_returns_window(values: np.ndarray, lookback: int) -> np.ndarray:
+    """Log returns over the trailing *lookback* bars, or empty when ill-defined."""
     if values.size < 2:
         return np.empty(0)
     window = values[-(lookback + 1) :] if values.size > lookback else values
@@ -170,6 +162,7 @@ def _log_returns_window(values: np.ndarray, lookback: int) -> np.ndarray:
 
 
 def _annualized_vol(values: np.ndarray, lookback: int) -> float:
+    """Annualized stdev of trailing log returns (0.0 on insufficient data)."""
     log_returns = _log_returns_window(values, lookback)
     if log_returns.size < 2:
         return 0.0
@@ -177,6 +170,7 @@ def _annualized_vol(values: np.ndarray, lookback: int) -> float:
 
 
 def _rolling_sharpe(values: np.ndarray, lookback: int) -> float:
+    """Annualized Sharpe of trailing log returns (0.0 on insufficient data)."""
     log_returns = _log_returns_window(values, lookback)
     if log_returns.size < 2:
         return 0.0

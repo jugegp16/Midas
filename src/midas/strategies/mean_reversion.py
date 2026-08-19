@@ -6,10 +6,12 @@ import numpy as np
 
 from midas.data.price_history import PriceHistory
 from midas.models import AssetSuitability
-from midas.strategies.base import EntrySignal
+from midas.strategies.base import EntrySignal, rolling_mean
 
 
 class MeanReversion(EntrySignal):
+    """Entry signal: bullish as price falls below its moving average."""
+
     def __init__(self, window: int = 30, threshold: float = 0.10) -> None:
         self._window = window
         self._threshold = threshold
@@ -25,10 +27,7 @@ class MeanReversion(EntrySignal):
         scores = np.full(num_bars, np.nan)
         if num_bars < window:
             return scores
-        cs = np.empty(num_bars + 1)
-        cs[0] = 0.0
-        np.cumsum(prices, out=cs[1:])
-        ma = (cs[window:] - cs[:-window]) / window
+        ma = rolling_mean(prices, window)
         current = prices[window - 1 :]
         pct_below = np.where(ma != 0, (ma - current) / ma, 0.0)
         scores[window - 1 :] = np.clip(pct_below / self._threshold, 0.0, 1.0)

@@ -67,8 +67,8 @@ class _NoAliasSafeDumper(yaml.SafeDumper):
     dumper writes each occurrence inline.
     """
 
-
-_NoAliasSafeDumper.ignore_aliases = lambda self, data: True  # type: ignore[method-assign]
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
 
 
 class StateFileError(ValueError):

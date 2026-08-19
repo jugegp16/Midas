@@ -48,6 +48,8 @@ MIN_TEMPERATURE = 1e-6
 
 @dataclass
 class _ScoredEntry:
+    """An entry signal paired with its blending weight."""
+
     strategy: EntrySignal
     weight: float
 
@@ -78,6 +80,8 @@ class AllocatorRiskTelemetry:
 
 @dataclass
 class AllocationResult:
+    """Target weights plus per-ticker scoring detail from one ``allocate`` call."""
+
     targets: dict[str, float]
     contributions: dict[str, dict[str, float]]  # ticker -> {strategy_name: score}
     blended_scores: dict[str, float]  # ticker -> blended score
@@ -125,10 +129,12 @@ class Allocator:
 
     @property
     def strategies(self) -> list[EntrySignal]:
+        """The configured entry signals, in blending order."""
         return [entry.strategy for entry in self._entries]
 
     @property
     def risk_config(self) -> RiskConfig | None:
+        """The risk-engine configuration, or None when disabled."""
         return self._risk_config
 
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
@@ -203,15 +209,59 @@ class Allocator:
         base_weight = investable / num_tickers  # fallback when current_weights unknown
         temperature = self._constraints.softmax_temperature
 
+        targets: dict[str, float] = dict.fromkeys(tickers, 0.0)
+        contributions, blended_scores, active, held = self._score_tickers(tickers, price_data, ctx)
+
+        offsets: dict[str, float] = {}
+        if self._risk_config is not None and self._risk_config.weighting == "inverse_vol" and active:
+            offsets, active = self._inverse_vol_offsets(active, price_data, held)
+
+        # Held tickers (Option A) consume their current weight from the
+        # investable budget. Remaining budget goes to the active softmax.
+        held_total = 0.0
+        for ticker in held:
+            weight = base_weight if current_weights is None else cur_weights.get(ticker, 0.0)
+            targets[ticker] = weight
+            held_total += weight
+
+        budget_for_active = max(investable - held_total, 0.0)
+
+        # Phase 2: Softmax construct-to-budget over active tickers.
+        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets, offsets)
+
+        # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
+        # max_position_pct and re-softmax the survivors over the reduced
+        # remaining budget. Cap *never* forces a sell — it just refuses to
+        # allocate more budget. Sells are exclusively ExitRule territory.
+        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
+
+        # Phase 4b: portfolio vol target. Scale all weights down when predicted
+        # annualized vol exceeds the target. Skipped if any active ticker has
+        # insufficient or degenerate history (constant-price → singular Σ row).
+        if self._risk_config is not None and self._risk_config.vol_target is not None and active:
+            self._apply_vol_target(active, price_data, targets, telemetry)
+
+        telemetry.target_gross_exposure = float(sum(targets.values()))
+        return AllocationResult(targets, contributions, blended_scores, risk_telemetry=telemetry)
+
+    def _score_tickers(
+        self,
+        tickers: list[str],
+        price_data: dict[str, PriceHistory],
+        ctx: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, float]], dict[str, float], list[str], list[str]]:
+        """Phase 1: score entry signals and compute blended scores per ticker.
+
+        Partitions tickers into `active` (at least one strategy scored > 0) and
+        `held` (all strategies abstained or scored 0 — Option A: hold current
+        weight). A pure-zero score is treated as "no opinion", consistent with
+        the entry-signal contract that 0 means "no contribution to budget".
+
+        Returns:
+            ``(contributions, blended_scores, active, held)``.
+        """
         contributions: dict[str, dict[str, float]] = {}
         blended_scores: dict[str, float] = {}
-        targets: dict[str, float] = dict.fromkeys(tickers, 0.0)
-
-        # Phase 1: Score entry signals and compute blended scores.
-        # Partition tickers into `active` (at least one strategy scored > 0) and
-        # `held` (all strategies abstained or scored 0 — Option A: hold current
-        # weight). A pure-zero score is treated as "no opinion", consistent with
-        # the entry-signal contract that 0 means "no contribution to budget".
         active: list[str] = []
         held: list[str] = []
 
@@ -246,60 +296,42 @@ class Allocator:
                 blended_scores[ticker] = 0.0
                 held.append(ticker)
 
-        # Held tickers (Option A) consume their current weight from the
-        # investable budget. Remaining budget goes to the active softmax.
-        def _held_target(ticker: str) -> float:
-            if current_weights is None:
-                return base_weight
-            return cur_weights.get(ticker, 0.0)
+        return contributions, blended_scores, active, held
 
-        # Phase 2 prep: when ``weighting=inverse_vol``, compute per-ticker
-        # ``-log(vol)`` offsets and reclassify tickers with insufficient or
-        # zero vol as held (Option A). Offsets are added *outside* the /T
-        # divider in _softmax_allocate, so inverse-vol intensity is invariant
-        # to softmax_temperature (PR #63 used (1/vol)^(1/T) and was rejected).
+    def _inverse_vol_offsets(
+        self,
+        active: list[str],
+        price_data: dict[str, PriceHistory],
+        held: list[str],
+    ) -> tuple[dict[str, float], list[str]]:
+        """Phase 2 prep: per-ticker ``-log(vol)`` offsets for inverse-vol weighting.
+
+        Tickers with insufficient or zero vol are reclassified as held
+        (Option A) by appending to *held* in place. Offsets are added
+        *outside* the /T divider in _softmax_allocate, so inverse-vol
+        intensity is invariant to softmax_temperature (PR #63 used
+        (1/vol)^(1/T) and was rejected).
+
+        Returns:
+            ``(offsets, still_active)`` — the offset map and the surviving
+            active tickers.
+        """
+        assert self._risk_config is not None
         offsets: dict[str, float] = {}
-        if self._risk_config is not None and self._risk_config.weighting == "inverse_vol" and active:
-            still_active: list[str] = []
-            for ticker in active:
-                history = price_data.get(ticker)
-                if history is None or len(history) < self._risk_config.vol_lookback_days + 1:
-                    held.append(ticker)
-                    continue
-                vol = realized_vol(np.asarray(history.close), self._risk_config.vol_lookback_days)
-                offset = inverse_vol_offset(vol, vol_floor=DEFAULT_VOL_FLOOR)
-                if math.isnan(offset):
-                    held.append(ticker)
-                    continue
-                offsets[ticker] = offset
-                still_active.append(ticker)
-            active = still_active
-
-        held_total = 0.0
-        for ticker in held:
-            weight = _held_target(ticker)
-            targets[ticker] = weight
-            held_total += weight
-
-        budget_for_active = max(investable - held_total, 0.0)
-
-        # Phase 2: Softmax construct-to-budget over active tickers.
-        self._softmax_allocate(active, blended_scores, budget_for_active, temperature, targets, offsets)
-
-        # Phase 3: Soft position cap. Iteratively clamp any ticker that exceeds
-        # max_position_pct and re-softmax the survivors over the reduced
-        # remaining budget. Cap *never* forces a sell — it just refuses to
-        # allocate more budget. Sells are exclusively ExitRule territory.
-        self._apply_cap_with_redistribution(active, blended_scores, budget_for_active, temperature, targets, offsets)
-
-        # Phase 4b: portfolio vol target. Scale all weights down when predicted
-        # annualized vol exceeds the target. Skipped if any active ticker has
-        # insufficient or degenerate history (constant-price → singular Σ row).
-        if self._risk_config is not None and self._risk_config.vol_target is not None and active:
-            self._apply_vol_target(active, price_data, targets, telemetry)
-
-        telemetry.target_gross_exposure = float(sum(targets.values()))
-        return AllocationResult(targets, contributions, blended_scores, risk_telemetry=telemetry)
+        still_active: list[str] = []
+        for ticker in active:
+            history = price_data.get(ticker)
+            if history is None or len(history) < self._risk_config.vol_lookback_days + 1:
+                held.append(ticker)
+                continue
+            vol = realized_vol(np.asarray(history.close), self._risk_config.vol_lookback_days)
+            offset = inverse_vol_offset(vol, vol_floor=DEFAULT_VOL_FLOOR)
+            if math.isnan(offset):
+                held.append(ticker)
+                continue
+            offsets[ticker] = offset
+            still_active.append(ticker)
+        return offsets, still_active
 
     def _softmax_allocate(
         self,

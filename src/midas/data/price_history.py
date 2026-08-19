@@ -57,6 +57,7 @@ class PriceHistory:
 
     @property
     def last_date(self) -> date | None:
+        """Date of the final bar, or ``None`` when the history is empty."""
         if len(self) == 0:
             return None
         return self.dates[-1]  # type: ignore[no-any-return]

@@ -60,12 +60,22 @@ class OrderSizer:
         soft cap only blocks further buys. Any required sells come from
         :meth:`size_sells`.
 
-        ``total_value`` must be the same portfolio basis the allocator used to
-        compute ``allocation.targets``. The caller is responsible for passing a
-        consistent value so that the per-ticker current weights computed inside
-        ``size_buys`` line up with the allocator's view; otherwise held tickers
-        can fire phantom buys when sells in the same tick free cash and shift
-        the denominator.
+        Args:
+            allocation: Allocator output whose ``targets`` drive the deltas.
+            positions: Ticker -> currently held shares.
+            prices: Ticker -> execution price.
+            cash: Cash available for buys (after sells have settled).
+            constraints: Global constraints; ``min_buy_delta`` gates small buys.
+            total_value: Portfolio basis the allocator used to compute
+                ``allocation.targets``. The caller is responsible for passing a
+                consistent value so that the per-ticker current weights computed
+                inside ``size_buys`` line up with the allocator's view; otherwise
+                held tickers can fire phantom buys when sells in the same tick
+                free cash and shift the denominator.
+
+        Returns:
+            Buy Orders for each positive delta above ``min_buy_delta``, after
+            cash and circuit-breaker caps.
         """
         if total_value <= 0:
             return []
@@ -157,16 +167,23 @@ class OrderSizer:
     ) -> list[Order]:
         """Sell orders from negative deltas (clamped target < current weight).
 
-        ``clamped_targets`` maps ticker → clamped target weight (after exit
-        rules have reduced the allocator's proposed targets).
-
-        ``clamp_attribution`` maps ticker → (source, reason) for attribution
-        when an exit rule fired. Only tickers present in this dict will
-        generate sell orders.
-
         Sells are sized from the negative delta between clamped target and
         current weight, capped at held shares. Slippage is applied
         conservatively (sell price below market).
+
+        Args:
+            clamped_targets: Ticker -> clamped target weight (after exit rules
+                have reduced the allocator's proposed targets).
+            positions: Ticker -> currently held shares.
+            prices: Ticker -> execution price.
+            total_value: Portfolio basis used to compute current weights.
+            clamp_attribution: Ticker -> (source, reason) for attribution when
+                an exit rule fired. Only tickers present in this dict will
+                generate sell orders.
+
+        Returns:
+            Sell Orders for each ticker whose current weight exceeds its
+            clamped target.
         """
         if total_value <= 0:
             return []
