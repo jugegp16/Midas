@@ -142,11 +142,23 @@ def build_alert_sinks(alerts_config: AlertsConfig | None) -> list[AlertSink]:
     YAML ``discord_webhook_url``, so the secret URL never has to live in a
     committed portfolio file. No URL from either source → no sinks, and
     live behavior is byte-identical to before alerts existed.
+
+    Raises:
+        ValueError: If the resolved URL is not ``https://``. Caught at
+            startup — a scheme-less URL would otherwise make ``urlopen``
+            raise mid-tick with the secret URL in the message.
     """
     webhook_url = os.environ.get(DISCORD_WEBHOOK_ENV_VAR, "").strip()
     if not webhook_url and alerts_config is not None:
         webhook_url = alerts_config.discord_webhook_url.strip()
     if not webhook_url:
         return []
+    if not webhook_url.startswith("https://"):
+        # Never echo the URL itself: the webhook token is a secret.
+        msg = (
+            "Discord webhook URL must start with https:// "
+            f"(value hidden; check the alerts: block or {DISCORD_WEBHOOK_ENV_VAR})"
+        )
+        raise ValueError(msg)
     timeout = alerts_config.timeout_seconds if alerts_config is not None else 5.0
     return [DiscordAlertSink(webhook_url, timeout_seconds=timeout)]

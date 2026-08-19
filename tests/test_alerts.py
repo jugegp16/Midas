@@ -250,3 +250,20 @@ class TestBuildAlertSinks:
 
         assert isinstance(sinks[0], DiscordAlertSink)
         assert sinks[0]._webhook_url == WEBHOOK
+
+    def test_schemeless_yaml_url_raises_without_leaking_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A scheme-less URL must fail at startup, and the secret token must not appear in the error."""
+        monkeypatch.delenv(DISCORD_WEBHOOK_ENV_VAR, raising=False)
+
+        with pytest.raises(ValueError, match="https://") as excinfo:
+            build_alert_sinks(AlertsConfig(discord_webhook_url="discord.com/api/webhooks/1/secrettoken"))
+
+        assert "secrettoken" not in str(excinfo.value)
+
+    def test_schemeless_env_url_raises_without_leaking_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_WEBHOOK_ENV_VAR, "discord.com/api/webhooks/1/secrettoken")
+
+        with pytest.raises(ValueError, match="https://") as excinfo:
+            build_alert_sinks(None)
+
+        assert "secrettoken" not in str(excinfo.value)

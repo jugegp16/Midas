@@ -326,3 +326,41 @@ def test_load_portfolio_alerts_non_mapping_raises(tmp_path: Path) -> None:
     path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts: on\n")
     with pytest.raises(ValueError, match="alerts:"):
         load_portfolio(path)
+
+
+def test_load_portfolio_alerts_null_url_parses_as_empty(tmp_path: Path) -> None:
+    """A bare `discord_webhook_url:` key means "use the env var", not the string 'None'."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_webhook_url:\n"
+    )
+    alerts = load_portfolio(path).alerts_config
+    assert alerts is not None
+    assert alerts.discord_webhook_url == ""
+
+
+def test_load_portfolio_alerts_non_string_url_raises(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_webhook_url: 123\n"
+    )
+    with pytest.raises(ValueError, match="alerts: discord_webhook_url"):
+        load_portfolio(path)
+
+
+def test_load_portfolio_alerts_null_timeout_raises(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  timeout_seconds:\n"
+    )
+    with pytest.raises(ValueError, match="alerts: timeout_seconds"):
+        load_portfolio(path)
+
+
+def test_load_portfolio_alerts_non_numeric_timeout_raises(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  timeout_seconds: fast\n"
+    )
+    with pytest.raises(ValueError, match="alerts: timeout_seconds"):
+        load_portfolio(path)
