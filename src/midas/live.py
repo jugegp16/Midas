@@ -8,6 +8,7 @@ import os
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
@@ -449,36 +450,97 @@ class LiveEngine:
 
         Runs at the top of the tick so a confirmed fill updates positions
         and cash BEFORE this tick's allocation decisions.
+
+        Durability ordering: for every transition, the pending order is
+        removed (and a confirmed fill applied) in state and persisted via
+        ``save_atomic`` BEFORE any other side effect — trade-log rows, the
+        restriction clock, terminal output, Discord edits. The operator's
+        ✅ reaction is durable external state that is re-polled after a
+        restart; if the booking were not on disk first, a crash mid-tick
+        would replay the confirmation and double-book the fill.
         """
         assert self._confirmer is not None
-        still_pending: list[PendingOrder] = []
-        for pending in self._state.pending_orders:
+        for pending in list(self._state.pending_orders):
             decision = self._confirmer.poll_decision(pending.message_id)
+            expired = decision is None and now - pending.created_at > self._pending_ttl
+            if decision is None and not expired:
+                continue
+
+            self._state.pending_orders = [p for p in self._state.pending_orders if p is not pending]
+            booked: SellBreakdown | None | Literal["buy", "nothing-held"] = None
+            note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
             if decision == "confirmed":
-                self._confirm_fill(pending, today)
+                booked, note = self._book_confirmed_fill(pending, today, note)
+            save_atomic(self._state, self._state_path)
+
+            # State is durable — everything below is replay-safe salvage.
+            if decision == "confirmed":
+                self._finish_confirmed_fill(pending, booked, note, today)
             elif decision == "declined":
                 print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares} shares)")
                 self._confirmer.mark_declined(pending.message_id)
-            elif now - pending.created_at > self._pending_ttl:
+            else:
                 print_status(
                     f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares} shares)"
                 )
                 self._confirmer.mark_expired(pending.message_id)
-            else:
-                still_pending.append(pending)
-        self._state.pending_orders = still_pending
 
-    def _confirm_fill(self, pending: PendingOrder, today: date) -> None:
-        """Book a confirmed pending order into state and the trade log.
+    def _book_confirmed_fill(
+        self,
+        pending: PendingOrder,
+        today: date,
+        note: str,
+    ) -> tuple[SellBreakdown | Literal["buy", "nothing-held"], str]:
+        """Apply a confirmed fill to in-memory state (no IO, no side effects).
 
         Fills at the alert price — the same price assumption the legacy
         path made; confirmation changes only the WHETHER (#74 will later
         correct the at-what from broker truth).
+
+        Returns:
+            ``(booked, note)`` where *booked* is ``"buy"``, the sell's
+            ``SellBreakdown``, or ``"nothing-held"`` when a SELL found no
+            shares left; *note* is the (possibly clamp-annotated) summary
+            used for logging and the Discord annotation.
         """
-        assert self._confirmer is not None
-        note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
         if pending.direction == Direction.BUY:
             apply_buy(self._state, pending.ticker, pending.shares, pending.price, today)
+            return "buy", note
+        held = sum(lot.shares for lot in self._state.lots.get(pending.ticker, []))
+        # Position may have shrunk since the alert (e.g. another sell
+        # confirmed first). Clamp rather than let apply_sell's oversell
+        # assertion kill the poll loop.
+        shares = min(pending.shares, held)
+        if shares <= 0:
+            return "nothing-held", f"{note} — WARNING: no shares held, nothing booked"
+        if shares < pending.shares:
+            logger.warning(
+                "confirmed SELL %s clamped from %s to %s shares (position shrank since alert)",
+                pending.ticker,
+                pending.shares,
+                shares,
+            )
+            note = f"{shares} sh @ ${pending.price:,.2f} on {today.isoformat()} (clamped from {pending.shares})"
+        return apply_sell(self._state, pending.ticker, shares, pending.price, today), note
+
+    def _finish_confirmed_fill(
+        self,
+        pending: PendingOrder,
+        booked: SellBreakdown | None | Literal["buy", "nothing-held"],
+        note: str,
+        today: date,
+    ) -> None:
+        """Post-persistence side effects of a confirmed fill: log, clock, annotate."""
+        assert self._confirmer is not None
+        if booked == "nothing-held":
+            logger.error(
+                "confirmed SELL %s for %s shares but none are held in state; nothing booked",
+                pending.ticker,
+                pending.shares,
+            )
+            self._confirmer.mark_booked(pending.message_id, note)
+            return
+        if booked == "buy":
             record = TradeRecord(
                 date=today,
                 ticker=pending.ticker,
@@ -490,29 +552,8 @@ class LiveEngine:
             )
             self._append_log_row(record, cost_basis=None, purchase_date=today)
         else:
-            held = sum(lot.shares for lot in self._state.lots.get(pending.ticker, []))
-            # Position may have shrunk since the alert (e.g. another sell
-            # confirmed first). Clamp rather than let apply_sell's oversell
-            # assertion kill the poll loop.
-            shares = min(pending.shares, held)
-            if shares <= 0:
-                logger.error(
-                    "confirmed SELL %s for %s shares but none are held in state; nothing booked",
-                    pending.ticker,
-                    pending.shares,
-                )
-                self._confirmer.mark_booked(pending.message_id, f"{note} — WARNING: no shares held, nothing booked")
-                return
-            if shares < pending.shares:
-                logger.warning(
-                    "confirmed SELL %s clamped from %s to %s shares (position shrank since alert)",
-                    pending.ticker,
-                    pending.shares,
-                    shares,
-                )
-                note = f"{shares} sh @ ${pending.price:,.2f} on {today.isoformat()} (clamped from {pending.shares})"
-            breakdown = apply_sell(self._state, pending.ticker, shares, pending.price, today)
-            self._log_sell_buckets(pending.ticker, pending.price, pending.strategy_name, breakdown, today)
+            assert isinstance(booked, SellBreakdown)
+            self._log_sell_buckets(pending.ticker, pending.price, pending.strategy_name, booked, today)
         if self._restriction_tracker is not None:
             # Round-trip clocks start at real execution, not at alert time.
             self._restriction_tracker.record_trade(pending.ticker, pending.direction, today)

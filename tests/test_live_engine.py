@@ -782,3 +782,41 @@ def test_dry_run_disables_confirm_mode(tmp_path: Path, make_provider: ProviderFa
         confirmer=FakeConfirmer(),
     ) as engine:
         assert engine._confirmer is None
+
+
+def test_confirmed_fill_is_durable_before_side_effects(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The fill and pending removal must hit disk inside _resolve_pending.
+
+    The operator's reaction is durable external state that gets re-polled
+    after a restart; if the booking weren't persisted before the trade-log
+    append and Discord edits, a crash mid-tick would replay the
+    confirmation and double-book the fill.
+    """
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        save_atomic(engine._state, tmp_path / "state.yaml")
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.pending_orders == []
+    assert on_disk.available_cash == 10_000.0 - 500.0
+    assert sum(lot.shares for lot in on_disk.lots["AAPL"]) == 15.0
+
+
+def test_sticky_reaction_is_not_replayed(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Discord never clears the operator's reaction — a resolved order must not re-book."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+        engine._resolve_pending(TODAY, NOW)  # reaction still "present"
+
+        assert engine._state.available_cash == 10_000.0 - 500.0
+        assert len(confirmer.booked) == 1
