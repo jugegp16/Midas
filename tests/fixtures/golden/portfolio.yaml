@@ -1,5 +1,5 @@
 # Golden-test portfolio. Do not edit casually — changes invalidate every
-# golden output. See tests/test_golden.py and issue #76.
+# golden output. See tests/test_golden.py and tests/README.md.
 portfolio:
   - ticker: AAA
     shares: 40

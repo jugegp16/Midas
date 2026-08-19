@@ -177,7 +177,7 @@ def test_backtest_runs_real_ohlcv_through_strategy() -> None:
     assert not other_buys, f"unexpected buys outside the gap-fill day: {other_buys}"
 
 
-# --- execution lag (#46) ---
+# --- execution lag ---
 #
 # Honest execution defers today's decision to tomorrow's open (or close)
 # instead of filling on the bar the signal reads — eliminating the

@@ -325,7 +325,7 @@ def test_load_portfolio_without_alerts_block(tmp_path: Path) -> None:
 
 
 def test_load_portfolio_alerts_removed_webhook_key_raises_migration_error(tmp_path: Path) -> None:
-    """The #73 webhook key must fail loudly, not be silently ignored."""
+    """The legacy webhook key must fail loudly, not be silently ignored."""
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"

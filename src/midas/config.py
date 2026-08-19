@@ -105,7 +105,7 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
 
     Raises:
         ValueError: If the block has unrecognized keys, is not a mapping,
-            or still uses the webhook key removed in #81.
+            or still uses the removed webhook key.
     """
     if alerts_raw is None:
         return None
@@ -113,8 +113,9 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         msg = f"alerts: must be a mapping, got {alerts_raw!r}"
         raise ValueError(msg)
     if "discord_webhook_url" in alerts_raw:
-        # Removed in #81 — silently ignoring it would leave the operator
-        # believing alerts still flow through the (dead) webhook.
+        # Removed when bot delivery replaced the webhook — silently ignoring
+        # it would leave the operator believing alerts still flow through
+        # the (dead) webhook.
         msg = (
             "alerts: discord_webhook_url was replaced by bot delivery — "
             "set discord_channel_id here and export MIDAS_DISCORD_BOT_TOKEN instead "

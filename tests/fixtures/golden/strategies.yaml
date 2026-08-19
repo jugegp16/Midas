@@ -1,9 +1,9 @@
 # Golden-test strategy config. Do not edit casually — changes invalidate
-# every golden output. See tests/test_golden.py and issue #76.
+# every golden output. See tests/test_golden.py and tests/README.md.
 min_cash_pct: 0.05
 min_buy_delta: 0.02
 softmax_temperature: 0.5
-# Exercise the #56 quantile rank transform in the pinned scenario.
+# Exercise the quantile rank transform in the pinned scenario.
 forecast_scaling: quantile
 
 strategies:

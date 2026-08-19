@@ -501,7 +501,7 @@ class TestPendingOrderPersistence:
         assert loaded.pending_orders == self._state_with_pending().pending_orders
 
     def test_old_state_without_pending_key_loads_empty(self, tmp_path: Path) -> None:
-        """Pre-#81 state files (no pending_orders key) load with no pendings."""
+        """Older state files without a pending_orders key load with no pendings."""
         state = LiveState(available_cash=1000.0, cash_infusion_next_date=None)
         path = tmp_path / "state.yaml"
         save_atomic(state, path)

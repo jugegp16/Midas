@@ -1,4 +1,4 @@
-"""Discord delivery and fill confirmation for live alerts (issues #73/#81).
+"""Discord delivery and fill confirmation for live alerts.
 
 The terminal remains the alert channel of record — Discord is additive.
 A delivery or polling failure must never break a live tick: every network
@@ -6,7 +6,7 @@ error is logged and swallowed at this module's public surface, mirroring
 the trade-log salvage philosophy in ``live.py``.
 
 Delivery is bot-based (``MIDAS_DISCORD_BOT_TOKEN`` + a channel id). The
-bot replaced the #73 webhook entirely: a bot can post the same embeds
+bot replaced an earlier webhook-based delivery entirely: a bot can post the same embeds
 AND read reactions, which the confirm flow needs; keeping both meant
 two credentials and two send paths for nothing.
 

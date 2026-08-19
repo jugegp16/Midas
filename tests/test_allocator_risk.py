@@ -112,7 +112,7 @@ def test_phase_4a_ignored_when_overlay_disabled() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: inverse-vol score offset (T-independence is the PR #63 regression)
+# Phase 2: inverse-vol score offset (temperature-independence regression)
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +136,7 @@ def test_inverse_vol_t_independence() -> None:
     """The offset is added *outside* /T, so the inverse-vol weight ratio at
     identical scores is invariant to softmax_temperature.
 
-    Regression for PR #63 — that bug used (1/vol)^(1/T), which would produce
+    Regression — an earlier implementation used (1/vol)^(1/T), which would produce
     wildly different ratios at T=0.2 vs T=2.0 (~32:1 vs ~1.4:1 instead of ~10:1).
     """
     prices = {

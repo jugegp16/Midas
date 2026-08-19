@@ -18,8 +18,7 @@ def wilder_rsi(prices: np.ndarray, window: int) -> np.ndarray:
     mean of the first *window* deltas, then updated recursively as
     ``avg_t = (avg_{t-1} * (window - 1) + value_t) / window``. This is
     the formulation every charting package and data provider uses — a
-    plain rolling mean systematically disagrees with all of them
-    (issue #45).
+    plain rolling mean systematically disagrees with all of them.
 
     Args:
         prices: Close prices, oldest first.

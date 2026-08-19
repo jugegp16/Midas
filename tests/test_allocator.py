@@ -303,7 +303,7 @@ class TestQuantileRank:
 
 
 class TestForecastScaling:
-    """Issue #56 acceptance: rules with different score scales get equal say."""
+    """Forecast-scaling acceptance: rules with different score scales get equal say."""
 
     def _allocator(self, forecast_scaling: str) -> Allocator:
         # Rule "timid" scores in [0, 0.1]; rule "bold" scores in [0, 1].

@@ -110,8 +110,8 @@ class TestRSIOversold:
         pandas ``ewm(alpha=1/w, adjust=False)`` seeded with the
         first-window mean IS Wilder's recursion
         (avg_t = (avg_{t-1}*(w-1) + x_t) / w), so it cross-checks our
-        loop without adding TA-Lib as a dependency (issue #45: the old
-        rolling-mean RSI disagreed with every charting package).
+        loop without adding TA-Lib as a dependency (the old rolling-mean
+        RSI disagreed with every charting package).
         """
         import pandas as pd
 

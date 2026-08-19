@@ -49,7 +49,7 @@ MIN_TEMPERATURE = 1e-6
 def quantile_rank(scores: dict[str, float]) -> dict[str, float]:
     """Rank-transform one rule's positive scores across the cross-section.
 
-    Phase 1.5 of the blend (issue #56): the i-th smallest positive score
+    Phase 1.5 of the blend: the i-th smallest positive score
     maps to ``rank / n_positive`` (average rank for ties), so every rule's
     strongest pick scores 1.0 and its weakest positive pick ``1/n``
     regardless of the rule's raw score distribution.
@@ -322,7 +322,7 @@ class Allocator:
                 if score is not None:
                     per_entry_scores[index][ticker] = score
 
-        # Phase 1.5: per-rule cross-sectional rank transform (issue #56).
+        # Phase 1.5: per-rule cross-sectional rank transform.
         # A 0.8 from one rule and a 0.8 from another are not the same
         # conviction — raw averaging lets fat-tailed rules dominate the
         # blend. Ranking within each rule's own cross-section makes the
@@ -364,8 +364,9 @@ class Allocator:
         Tickers with insufficient or zero vol are reclassified as held
         (Option A) by appending to *held* in place. Offsets are added
         *outside* the /T divider in _softmax_allocate, so inverse-vol
-        intensity is invariant to softmax_temperature (PR #63 used
-        (1/vol)^(1/T) and was rejected).
+        intensity is invariant to softmax_temperature (an earlier
+        implementation used (1/vol)^(1/T) and was rejected for coupling
+        the two knobs).
 
         Returns:
             ``(offsets, still_active)`` — the offset map and the surviving

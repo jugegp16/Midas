@@ -1,4 +1,4 @@
-"""Golden end-to-end backtest test (issue #76).
+"""Golden end-to-end backtest test.
 
 Pins the full pipeline — config → engine → allocator → risk overlays →
 tax → results writers — against committed golden outputs. Any change that
