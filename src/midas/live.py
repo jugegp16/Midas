@@ -632,7 +632,7 @@ class LiveEngine:
             else:
                 remaining_cash += order.estimated_value
             print_alert(order, remaining_cash, now, dry_run=self._dry_run)
-            print_status("Awaiting confirmation in Discord (react ✅ executed / ❌ skipped)")
+            print_status("Awaiting confirmation in Discord (✅ books the fill, ❌ skips it)")
 
             message_id = self._confirmer.post_order(order, now)
             if message_id is None:

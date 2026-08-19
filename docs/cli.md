@@ -77,8 +77,8 @@ Without Discord configured, live runs terminal-only and assumes every
 alert is executed immediately (the historical behavior).
 
 In confirm mode, each BUY/SELL alert becomes one embed (green/red) with
-the strategy, reason, and estimated value, pre-seeded with ✅/❌
-reactions:
+the strategy, reason, and estimated value. Respond by reacting to the
+message:
 
 - **React ✅** — you executed the trade. Midas books the fill at the
   alert price: position lots, cash, the trade log, and the round-trip
@@ -98,8 +98,8 @@ One-time setup (~5 minutes):
 
 1. [discord.com/developers](https://discord.com/developers/applications)
    → New Application → **Bot** tab → Reset Token → copy the token.
-2. OAuth2 → URL Generator → scope `bot` → permissions **Send Messages**,
-   **Read Message History**, **Add Reactions** → open the generated URL
+2. OAuth2 → URL Generator → scope `bot` → permissions **Send Messages** and
+   **Read Message History** → open the generated URL
    to invite the bot to your server.
 3. Discord settings → Advanced → Developer Mode on → right-click your
    alerts channel → Copy Channel ID.

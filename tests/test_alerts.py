@@ -130,14 +130,6 @@ class TestBotClient:
         assert req["headers"]["User-agent"] == alerts.USER_AGENT
         assert req["timeout"] == 2.5
 
-    def test_add_reaction_urlencodes_emoji(self, captured: list[dict[str, Any]]) -> None:
-        DiscordBotClient("tok").add_reaction(CHANNEL, "42", CONFIRM_EMOJI)
-
-        req = captured[0]
-        assert req["method"] == "PUT"
-        assert req["url"].endswith("/messages/42/reactions/%E2%9C%85/@me")
-        assert req["payload"] is None
-
     def test_edit_message_patches_content(self, captured: list[dict[str, Any]]) -> None:
         DiscordBotClient("tok").edit_message(CHANNEL, "42", {"content": "done"})
 
@@ -187,16 +179,16 @@ class TestConfirmer:
         monkeypatch.setattr(urllib.request, "urlopen", responder)
         return DiscordConfirmer(DiscordBotClient("tok"), CHANNEL)
 
-    def test_post_order_posts_embed_and_seeds_reactions(self, captured: list[dict[str, Any]]) -> None:
+    def test_post_order_posts_bare_embed_only(self, captured: list[dict[str, Any]]) -> None:
+        """One POST, embed only: no instruction content, no seeded reactions."""
         confirmer = DiscordConfirmer(DiscordBotClient("tok"), CHANNEL)
 
         message_id = confirmer.post_order(make_order(), NOW)
 
         assert message_id == "999888777"
-        assert [req["method"] for req in captured] == ["POST", "PUT", "PUT"]
+        assert [req["method"] for req in captured] == ["POST"]
         assert captured[0]["payload"]["embeds"][0]["title"].startswith("BUY AAPL")
-        assert "%E2%9C%85" in captured[1]["url"]
-        assert "%E2%9D%8C" in captured[2]["url"]
+        assert "content" not in captured[0]["payload"]
 
     def test_post_order_failure_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
@@ -205,21 +197,6 @@ class TestConfirmer:
         confirmer = self.make(monkeypatch, fake_urlopen)
 
         assert confirmer.post_order(make_order(), NOW) is None
-
-    def test_post_order_survives_seed_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A failed reaction seed must not orphan the already-posted message."""
-        calls: list[str] = []
-
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
-            calls.append(request.get_method())
-            if request.get_method() == "PUT":
-                raise http_error(403)
-            return FakeResponse(b'{"id": "77"}')
-
-        confirmer = self.make(monkeypatch, fake_urlopen)
-
-        assert confirmer.post_order(make_order(), NOW) == "77"
-        assert calls == ["POST", "PUT", "PUT"]
 
     def _reaction_responder(self, confirm_users: list[dict[str, Any]], decline_users: list[dict[str, Any]]) -> Any:
         def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:

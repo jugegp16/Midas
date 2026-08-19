@@ -33,6 +33,13 @@ def update_golden(request: pytest.FixtureRequest) -> bool:
     return bool(request.config.getoption("--update-golden"))
 
 
+@pytest.fixture(autouse=True)
+def isolate_discord_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite hermetic: an operator's real bot token in the shell
+    environment must not flip CLI/live tests into Discord confirm mode."""
+    monkeypatch.delenv("MIDAS_DISCORD_BOT_TOKEN", raising=False)
+
+
 @pytest.fixture
 def make_provider() -> Callable[[dict[str, list[float]], list[date]], MagicMock]:
     """Factory fixture producing a fake DataProvider with controlled OHLCV data."""

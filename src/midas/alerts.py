@@ -7,8 +7,8 @@ the trade-log salvage philosophy in ``live.py``.
 
 Delivery is bot-based (``MIDAS_DISCORD_BOT_TOKEN`` + a channel id). The
 bot replaced the #73 webhook entirely: a bot can post the same embeds
-AND seed/read reactions, which the confirm flow needs; keeping both
-meant two credentials and two send paths for nothing.
+AND read reactions, which the confirm flow needs; keeping both meant
+two credentials and two send paths for nothing.
 
 The ``OrderConfirmer`` protocol exists so a second transport could back
 the pending-order flow later without touching the engine.
@@ -121,11 +121,6 @@ class DiscordBotClient:
         """PATCH fields (e.g. ``content``) of an existing message."""
         self._request("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
 
-    def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
-        """Add the bot's own reaction (used to seed the tap targets)."""
-        encoded = urllib.parse.quote(emoji)
-        self._request("PUT", f"/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me")
-
     def get_reaction_users(self, channel_id: str, message_id: str, emoji: str) -> list[dict[str, Any]]:
         """List the user objects that reacted with *emoji* on a message."""
         encoded = urllib.parse.quote(emoji)
@@ -164,8 +159,10 @@ class DiscordBotClient:
 class DiscordConfirmer:
     """Pending-order confirmation over a Discord channel.
 
-    Posts one embed per order, seeds ✅/❌ so confirming is a single tap,
-    and reads the operator's reaction back. All failures are logged and
+    Posts one embed per order and reads the operator's ✅/❌ reaction
+    back. Messages are deliberately bare — no instruction text, no
+    pre-seeded reactions (operator preference: the channel stays clean;
+    the ✅/❌ convention lives in the docs). All failures are logged and
     swallowed; ``post_order`` degrades to ``None`` and ``poll_decision``
     to "no decision yet".
     """
@@ -175,31 +172,20 @@ class DiscordConfirmer:
         self._channel_id = channel_id
 
     def post_order(self, order: Order, timestamp: datetime) -> str | None:
-        """Post the order embed and seed the reaction tap targets."""
+        """Post the order embed awaiting a ✅/❌ reaction."""
         try:
-            message_id = self._client.create_message(
-                self._channel_id,
-                {"embeds": [order_embed(order, timestamp)], "content": "React ✅ executed / ❌ skipped"},
-            )
+            return self._client.create_message(self._channel_id, {"embeds": [order_embed(order, timestamp)]})
         except OSError as exc:
             logger.error("Discord alert post failed (%s); will retry on a later tick", _describe(exc))
             return None
-        # Seeding is cosmetic (one tap instead of an emoji search) — a
-        # failure here must not orphan the already-posted message.
-        for emoji in (CONFIRM_EMOJI, DECLINE_EMOJI):
-            try:
-                self._client.add_reaction(self._channel_id, message_id, emoji)
-            except OSError as exc:
-                logger.warning("failed to seed %s reaction on alert message: %s", emoji, _describe(exc))
-        return message_id
 
     def poll_decision(self, message_id: str) -> Decision:
         """Check for a human ✅ or ❌ on the message.
 
-        The bot's own seed reactions are filtered out via the ``bot`` flag
-        on Discord user objects. If both are present, ✅ wins: an executed
-        trade must be booked — un-booking a real fill corrupts state,
-        while an accidental extra ❌ costs nothing.
+        Reactions from bots are ignored via the ``bot`` flag on Discord
+        user objects — only a human's tap counts. If both are present,
+        ✅ wins: an executed trade must be booked — un-booking a real
+        fill corrupts state, while an accidental extra ❌ costs nothing.
         """
         if self._human_reacted(message_id, CONFIRM_EMOJI):
             return "confirmed"
