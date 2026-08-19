@@ -1,6 +1,7 @@
 """Tests for individual strategies — entry score() and exit clamp_target() interfaces."""
 
 import numpy as np
+import pytest
 from conftest import ph, ph_ohlc
 
 from midas.data.price_history import PriceHistory
@@ -102,6 +103,55 @@ class TestRSIOversold:
         s = RSIOversold(window=10, oversold_threshold=25.0)
         assert s.name == "RSIOversold"
         assert s.description
+
+    def test_matches_wilder_reference(self) -> None:
+        """Pin the RSI math to an independent Wilder implementation.
+
+        pandas ``ewm(alpha=1/w, adjust=False)`` seeded with the
+        first-window mean IS Wilder's recursion
+        (avg_t = (avg_{t-1}*(w-1) + x_t) / w), so it cross-checks our
+        loop without adding TA-Lib as a dependency (issue #45: the old
+        rolling-mean RSI disagreed with every charting package).
+        """
+        import pandas as pd
+
+        from midas.strategies.rsi_oversold import wilder_rsi
+
+        window = 14
+        rng = np.random.default_rng(45)
+        prices = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, 120))
+
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+
+        def wilder_smooth(values: np.ndarray) -> float:
+            seeded = pd.Series(np.concatenate(([values[:window].mean()], values[window:])))
+            return float(seeded.ewm(alpha=1.0 / window, adjust=False).mean().iloc[-1])
+
+        avg_gain = wilder_smooth(gains)
+        avg_loss = wilder_smooth(losses)
+        expected_rsi = 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+        assert wilder_rsi(prices, window)[-1] == pytest.approx(expected_rsi, rel=1e-12)
+
+        expected_score = float(np.clip((50.0 - expected_rsi) / (50.0 - 30.0), 0.0, 1.0))
+        strategy = RSIOversold(window=window, oversold_threshold=30.0)
+        score = strategy.score(ph(prices))
+        assert score == pytest.approx(expected_score, rel=1e-12)
+
+    def test_score_matches_precompute_last_bar(self, volatile_dropping_prices: PriceHistory) -> None:
+        """Live score and backtest precompute must agree bar-for-bar."""
+        strategy = RSIOversold(window=14, oversold_threshold=30.0)
+        scores = strategy.precompute(volatile_dropping_prices)
+        assert scores is not None
+        assert strategy.score(volatile_dropping_prices) == pytest.approx(float(scores[-1]))
+
+    def test_monotonic_rise_is_rsi_100_score_zero(self) -> None:
+        """No losses -> conventional RSI of 100 -> no buy signal."""
+        prices = np.linspace(100.0, 130.0, 60)
+        strategy = RSIOversold(window=14, oversold_threshold=30.0)
+        assert strategy.score(ph(prices)) == 0.0
 
 
 class TestBollingerBand:

@@ -11,7 +11,7 @@ date,ticker,direction,shares,price,strategy,holding_period,purchase_date,cost_ba
 2024-02-23,AAA,BUY,4,98.3604,RSIOversold,,2024-02-23,,,
 2024-03-04,BBB,BUY,173,29.3678,MeanReversion,,2024-03-04,,,
 2024-03-11,CCC,BUY,6,90.2898,Momentum,,2024-03-11,,,
-2024-03-13,AAA,BUY,4,98.948,MeanReversion,,2024-03-13,,,
+2024-03-13,AAA,BUY,4,98.948,RSIOversold,,2024-03-13,,,
 2024-03-22,BBB,BUY,15,28.9502,RSIOversold,,2024-03-22,,,
 2024-03-25,CCC,BUY,5,87.6362,RSIOversold,,2024-03-25,,,
 2024-04-08,AAA,BUY,6,98.131,RSIOversold,,2024-04-08,,,
@@ -29,7 +29,7 @@ date,ticker,direction,shares,price,strategy,holding_period,purchase_date,cost_ba
 2024-08-15,CCC,BUY,9,81.9413,RSIOversold,,2024-08-15,,,
 2024-09-09,BBB,BUY,26,29.1634,RSIOversold,,2024-09-09,,,
 2024-09-23,AAA,BUY,7,103.2206,RSIOversold,,2024-09-23,,,
-2024-09-23,CCC,BUY,9,80.7138,Momentum,,2024-09-23,,,
+2024-09-23,CCC,BUY,9,80.7138,RSIOversold,,2024-09-23,,,
 2024-10-17,BBB,BUY,27,27.3459,RSIOversold,,2024-10-17,,,
 2024-10-21,AAA,BUY,8,98.3632,RSIOversold,,2024-10-21,,,
 2024-11-11,CCC,BUY,9,80.1916,RSIOversold,,2024-11-11,,,
@@ -40,8 +40,8 @@ date,ticker,direction,shares,price,strategy,holding_period,purchase_date,cost_ba
 2025-01-27,BBB,BUY,33,29.1923,RSIOversold,,2025-01-27,,,
 2025-02-12,BBB,BUY,35,27.0815,RSIOversold,,2025-02-12,,,
 2025-02-24,BBB,SELL,420.0,25.8331,StopLoss,short-term,various,29.075,-1361.6184,-0.111503
-2025-03-06,BBB,BUY,424,26.5182,MeanReversion,,2025-03-06,,,
-2025-03-28,BBB,BUY,36,27.0851,Momentum,,2025-03-28,,,
+2025-03-06,BBB,BUY,424,26.5182,RSIOversold,,2025-03-06,,,
+2025-03-28,BBB,BUY,36,27.0851,RSIOversold,,2025-03-28,,,
 2025-04-22,AAA,SELL,49.0,121.408,ProfitTaking,short-term,various,103.1178,896.2205,0.177372
 2025-04-22,AAA,SELL,60.0,121.408,ProfitTaking,long-term,various,98.9951,1344.7743,0.226404
 2025-05-02,AAA,BUY,111,120.294,Momentum,,2025-05-02,,,
@@ -55,7 +55,7 @@ date,ticker,direction,shares,price,strategy,holding_period,purchase_date,cost_ba
 2025-07-23,CCC,SELL,90.0,104.8939,ProfitTaking,long-term,various,86.5508,1650.8824,0.211935
 2025-08-04,CCC,BUY,149,101.7946,Momentum,,2025-08-04,,,
 2025-08-05,BBB,BUY,56,24.9843,RSIOversold,,2025-08-05,,,
-2025-09-05,CCC,BUY,14,96.9186,RSIOversold,,2025-09-05,,,
+2025-10-07,CCC,BUY,15,100.0739,Momentum,,2025-10-07,,,
 2025-10-08,BBB,BUY,55,24.9452,Momentum,,2025-10-08,,,
-2025-11-19,BBB,BUY,61,23.8327,MeanReversion,,2025-11-19,,,
-2025-11-20,AAA,BUY,11,130.5376,MeanReversion,,2025-11-20,,,
+2025-11-19,BBB,BUY,61,23.8327,RSIOversold,,2025-11-19,,,
+2025-11-20,AAA,BUY,11,130.5376,RSIOversold,,2025-11-20,,,
