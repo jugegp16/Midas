@@ -41,6 +41,10 @@ SIM_END = date(2025, 12, 30)
 OUTPUT_FILES = ("summary.json", "trades.csv", "equity_curve.csv", "strategy_breakdown.csv")
 REL_TOL = 1e-6
 ABS_TOL = 1e-9
+# Structural tags for file-level (vs value-level) mismatch lines, so filters
+# never substring-match against human-readable text.
+MISSING_GOLDEN_PREFIX = "missing-golden: "
+MISSING_OUTPUT_PREFIX = "missing-output: "
 
 
 def _load_price_data() -> dict[str, pd.DataFrame]:
@@ -151,10 +155,10 @@ def _compare_outputs(actual_dir: Path) -> list[str]:
         expected_path = EXPECTED_DIR / filename
         actual_path = actual_dir / filename
         if not expected_path.exists():
-            mismatches.append(f"{filename}: no golden file — run UPDATE_GOLDEN=1 to bless")
+            mismatches.append(f"{MISSING_GOLDEN_PREFIX}{filename} — run UPDATE_GOLDEN=1 to bless")
             continue
         if not actual_path.exists():
-            mismatches.append(f"{filename}: not produced by this run")
+            mismatches.append(f"{MISSING_OUTPUT_PREFIX}{filename} not produced by this run")
             continue
         if filename.endswith(".json"):
             mismatches.extend(_compare_json(expected_path, actual_path))
@@ -224,7 +228,9 @@ def test_golden_detects_change(tmp_path: Path) -> None:
         pytest.skip("blessing run")
     _run_scenario(tmp_path, order_sizer=OrderSizer(default_slippage=0.005))
     mismatches = _compare_outputs(tmp_path)
-    # Missing-golden lines don't count — on an unblessed checkout they would
-    # make this pass without proving the comparator detects value changes.
-    value_mismatches = [m for m in mismatches if "no golden file" not in m and "not produced" not in m]
+    # File-level lines don't count as detection — on an unblessed checkout
+    # they would make this pass without proving anything about the comparator.
+    value_mismatches = [m for m in mismatches if not m.startswith((MISSING_GOLDEN_PREFIX, MISSING_OUTPUT_PREFIX))]
+    if not value_mismatches and mismatches:
+        pytest.fail("goldens not blessed on this checkout — run UPDATE_GOLDEN=1 first; this meta-test needs them")
     assert value_mismatches, "10x slippage produced byte-equivalent outputs — comparator is not detecting change"
