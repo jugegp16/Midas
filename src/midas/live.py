@@ -177,6 +177,25 @@ class LiveEngine:
                 logger.info("dry run: confirm mode disabled, alerts stay terminal-only with assumed fills")
                 confirmer = None
             self._confirmer = confirmer
+            if self._confirmer is None and self._state.pending_orders:
+                # Stranded pendings are a double-book vector: this mode
+                # assume-fills the same recomputed intents, and a later
+                # return to confirm mode would replay a stale reaction on
+                # top of that at the old alert price.
+                stranded = ", ".join(
+                    f"{p.direction.value} {p.ticker} ({p.shares:g} sh, message {p.message_id})"
+                    for p in self._state.pending_orders
+                )
+                logger.warning(
+                    "confirm mode is OFF but the state file holds %d pending order(s) "
+                    "awaiting confirmation: %s. They will not be polled — operator "
+                    "reactions are ignored, and this mode's assumed fills can "
+                    "double-book the same intent when confirm mode returns. Restart "
+                    "with the Discord bot configured (and without --dry-run), or "
+                    "remove pending_orders from the state file by hand.",
+                    len(self._state.pending_orders),
+                    stranded,
+                )
             self._pending_ttl = timedelta(hours=pending_ttl_hours)
             self._realert_cooldown = timedelta(hours=realert_hours)
             # Derive the history window from the largest warmup required across
@@ -646,6 +665,10 @@ class LiveEngine:
         recompute buried the operator in "Expired" spam. Intents under an
         active cooldown (operator declined, or a fill just booked) are
         skipped outright; cooldowns are pruned in ``_resolve_pending``.
+
+        A pending is re-polled immediately before being superseded: a
+        reaction that landed after the top-of-tick poll keeps it alive
+        for ``_resolve_pending`` instead of being silently dropped.
         """
         assert self._confirmer is not None
         cooled_keys = {(cooldown.ticker, cooldown.direction) for cooldown in self._state.intent_cooldowns}
@@ -654,6 +677,7 @@ class LiveEngine:
             if order.shares <= 0 or (order.ticker, order.direction) in cooled_keys:
                 continue
             keep_pending: list[PendingOrder] = []
+            superseded: list[tuple[PendingOrder, Order]] = []
             suppressed = False
             for pending in self._state.pending_orders:
                 if pending.ticker != order.ticker:
@@ -666,16 +690,30 @@ class LiveEngine:
                 replace = pending.direction != order.direction or (
                     resized and now - pending.created_at >= self._realert_cooldown
                 )
+                # Re-poll immediately before superseding: a reaction may have
+                # landed after _resolve_pending's top-of-tick poll, and
+                # replacing the pending now would silently drop a fill the
+                # operator already executed at the broker. Any decision — or
+                # an unanswerable poll — keeps the pending; _resolve_pending
+                # owns those transitions next tick.
+                if replace and self._confirmer.poll_decision(pending.message_id) is not None:
+                    replace = False
                 if replace:
-                    print_status(
-                        f"Superseded pending {pending.direction.value} {pending.ticker}: "
-                        f"recomputed as {order.direction.value} {order.shares:g} shares"
-                    )
-                    self._confirmer.mark_superseded(pending.message_id)
+                    superseded.append((pending, order))
                 else:
                     suppressed = True
                     keep_pending.append(pending)
             self._state.pending_orders = keep_pending
+            if superseded:
+                # Persist the removal BEFORE annotating Discord — the same
+                # persist-before-side-effects rule as _resolve_pending.
+                save_atomic(self._state, self._state_path)
+                for stale, replacement in superseded:
+                    print_status(
+                        f"Superseded pending {stale.direction.value} {stale.ticker}: "
+                        f"recomputed as {replacement.direction.value} {replacement.shares:g} shares"
+                    )
+                    self._confirmer.mark_superseded(stale.message_id)
             if suppressed:
                 continue
 

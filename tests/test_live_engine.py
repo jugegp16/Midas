@@ -979,3 +979,178 @@ def test_confirmed_nothing_held_marks_unfillable(tmp_path: Path, make_provider: 
         assert confirmer.booked == []
         assert len(confirmer.unfillable) == 1
         assert engine._state.available_cash == 10_000.0
+
+
+def test_tick_confirm_mode_reserves_pending_buy_cash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
+    """Cash promised to an unconfirmed BUY must be excluded from this
+    tick's buy sizing, and the confirm branch must not assume-fill."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        post_time = datetime.now(tz=UTC)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], post_time, 10_000.0)
+
+        sizing_cash: list[float] = []
+
+        def capture_size_buys(*args: object, **_kw: object) -> list[Order]:
+            sizing_cash.append(float(args[3]))  # type: ignore[arg-type]
+            return []
+
+        monkeypatch.setattr(engine._order_sizer, "size_buys", capture_size_buys)
+        engine._tick(["AAPL"])
+
+        # $10,000 cash minus the $500 reserved by the pending BUY.
+        assert sizing_cash == [pytest.approx(9_500.0)]
+        # Confirm branch: no assumed fills, pending and cash untouched.
+        assert engine._state.available_cash == 10_000.0
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+        assert sum(lot.shares for lot in engine._state.lots["AAPL"]) == 10.0
+
+
+def test_tick_confirm_mode_resolves_fill_before_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
+    """A confirmed fill must update positions/cash BEFORE this tick's
+    allocation sees them, and the tick-end save must persist everything."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        post_time = datetime.now(tz=UTC)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], post_time, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        seen_weights: list[dict[str, float] | None] = []
+        original_allocate = engine._allocator.allocate
+
+        def spy_allocate(*args: object, **kwargs: object) -> object:
+            seen_weights.append(kwargs.get("current_weights"))  # type: ignore[arg-type]
+            return original_allocate(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(engine._allocator, "allocate", spy_allocate)
+        engine._tick(["AAPL"])
+
+        # Allocation saw the post-fill position: 15 sh x $100 of an $11,000
+        # portfolio — not the pre-fill 10 sh (1000/11000).
+        assert seen_weights == [{"AAPL": pytest.approx(1_500.0 / 11_000.0)}]
+        assert engine._state.available_cash == pytest.approx(9_500.0)
+        assert engine._state.pending_orders == []
+        assert confirmer.booked and confirmer.booked[0][0] == "msg-1"
+
+        # Tick-end save: the fill and peak equity are on disk.
+        on_disk = load_state(tmp_path / "state.yaml")
+        assert on_disk.available_cash == pytest.approx(9_500.0)
+        assert sum(lot.shares for lot in on_disk.lots["AAPL"]) == 15.0
+        assert on_disk.peak_equity == pytest.approx(11_000.0)
+
+
+def test_stranded_pendings_warn_when_confirm_mode_off(
+    tmp_path: Path, make_provider: ProviderFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Pending orders left by a confirm-mode run must be called out loudly
+    when the engine restarts without a confirmer (token unset or --dry-run):
+    they will never be polled, and terminal mode's assumed fills can
+    double-book the same intent when confirm mode returns."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    with caplog.at_level("WARNING", logger="midas.live"):
+        engine_off = LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)]),
+            state_path=tmp_path / "state.yaml",
+        )
+        engine_off.close()
+
+    warnings = [r.message for r in caplog.records if "pending order" in r.message]
+    assert len(warnings) == 1
+    assert "BUY AAPL" in warnings[0]
+    assert "msg-1" in warnings[0]
+
+
+def test_no_stranded_warning_without_pendings(
+    tmp_path: Path, make_provider: ProviderFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    with caplog.at_level("WARNING", logger="midas.live"):
+        engine = LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=make_provider({"AAPL": [100.0]}, [date(2026, 8, 19)]),
+            state_path=tmp_path / "state.yaml",
+        )
+        engine.close()
+
+    assert [r for r in caplog.records if "pending order" in r.message] == []
+
+
+def test_supersede_repolls_and_keeps_reacted_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A reaction landing between the top-of-tick poll and the supersede
+    check must not be dropped — the operator may already have executed.
+
+    The supersede path re-polls immediately before replacing; any decision
+    (or an unanswerable poll) keeps the pending for _resolve_pending.
+    """
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        # Operator confirms in the window after this tick's _resolve_pending
+        # already polled (and saw nothing).
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        # Direction flip would normally supersede immediately.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+        # Next tick's resolve books the confirmed fill normally.
+        engine._resolve_pending(TODAY, NOW + timedelta(minutes=2))
+        assert engine._state.available_cash == 10_000.0 - 500.0
+
+
+def test_supersede_defers_when_repoll_unavailable(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """If the pre-supersede re-poll cannot answer, keep the pending —
+    superseding blind could drop a fill the operator executed."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "unavailable"
+
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+
+
+def test_superseded_removal_is_durable_before_annotation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The supersede removal must hit disk before the Discord annotation,
+    matching the persist-before-side-effects rule everywhere else."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        on_disk_at_annotation: list[list[str]] = []
+        original_mark = confirmer.mark_superseded
+
+        def spy_mark(message_id: str) -> None:
+            on_disk_at_annotation.append([p.message_id for p in load_state(tmp_path / "state.yaml").pending_orders])
+            original_mark(message_id)
+
+        confirmer.mark_superseded = spy_mark  # type: ignore[method-assign]
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.superseded == ["msg-1"]
+        # When mark_superseded ran, msg-1 was already gone from disk.
+        assert on_disk_at_annotation == [[]]

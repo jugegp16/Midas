@@ -89,6 +89,10 @@ def _parse_tax_config(tax_raw: Any) -> TaxConfig | None:
 def _parse_alerts_number(alerts_raw: dict[str, Any], key: str, default: float) -> float:
     """Coerce an ``alerts:`` numeric field with a clear error."""
     raw_value = alerts_raw.get(key, default)
+    # bool is an int subclass, so float(True) would silently become 1.0.
+    if isinstance(raw_value, bool):
+        msg = f"alerts: {key} must be a number, got {raw_value!r}"
+        raise ValueError(msg)
     try:
         return float(raw_value)
     except TypeError, ValueError:

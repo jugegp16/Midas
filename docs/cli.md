@@ -83,9 +83,12 @@ message:
 - **React ✅** (✔️/☑️ also count) — you executed the trade. Midas books the fill at the
   alert price: position lots, cash, the trade log, and the round-trip
   restriction clock all update at confirmation time, not alert time.
-- **React ❌** (✖️/⛔/🚫 also count) — you skipped it. Nothing is booked, and the same trade
+- **React ❌** (❎/✖️/⛔/🚫 also count) — you skipped it. Nothing is booked, and the same trade
   (ticker + direction) is not re-alerted until the decline ages past
   `pending_ttl_hours` — a declined trade stays declined for the day.
+  This applies to SELLs too: a declined exit stays silent for the full
+  window even if the position keeps falling, so decline a stop-loss
+  alert only if you really mean "no for today".
 - **No reaction** — the alert expires after `pending_ttl_hours`
   (default 8) and nothing is booked.
 
@@ -108,6 +111,10 @@ One-time setup (~5 minutes):
    to invite the bot to your server.
 3. Discord settings → Advanced → Developer Mode on → right-click your
    alerts channel → Copy Channel ID.
+
+Use a **private channel** only you (and the bot) can see: Midas cannot
+tell who reacted, so any channel member's ✅ books a fill against your
+portfolio state.
 
 Configure the channel in the portfolio YAML (the id is not a secret):
 

@@ -271,6 +271,10 @@ class TestConfirmer:
         confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u2716\ufe0f"}, "count": 1}]))
         assert confirmer.poll_decision("42") == "declined"
 
+        # \u274e (U+274E) is the likeliest decline near-miss from the raw picker.
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u274e"}, "count": 1}]))
+        assert confirmer.poll_decision("42") == "declined"
+
     def test_poll_unrecognized_reaction_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\U0001f44d"}, "count": 1}]))
 

@@ -383,6 +383,16 @@ def test_load_portfolio_alerts_null_timeout_raises(tmp_path: Path) -> None:
         load_portfolio(path)
 
 
+def test_load_portfolio_alerts_bool_timeout_raises(tmp_path: Path) -> None:
+    """YAML `true` is an int subclass — float() would silently make it 1.0."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  timeout_seconds: true\n"
+    )
+    with pytest.raises(ValueError, match="alerts: timeout_seconds"):
+        load_portfolio(path)
+
+
 def test_load_portfolio_alerts_non_numeric_ttl_raises(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(

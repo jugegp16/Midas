@@ -21,7 +21,6 @@ import logging
 import os
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -45,7 +44,7 @@ USER_AGENT = "midas-alerts/0.2"
 # emoji picker, and ✔️ (U+2714) instead of ✅ (U+2705) must not leave a
 # confirmed-and-executed trade to silently expire.
 CONFIRM_EMOJIS = frozenset({"✅", "✔", "☑"})
-DECLINE_EMOJIS = frozenset({"❌", "✖", "⛔", "🚫"})
+DECLINE_EMOJIS = frozenset({"❌", "❎", "✖", "⛔", "🚫"})
 
 # "unavailable" means the poll itself failed (outage, revoked token) —
 # distinct from None ("polled fine, no reaction yet") so the engine never
