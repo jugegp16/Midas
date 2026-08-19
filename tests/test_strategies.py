@@ -140,6 +140,23 @@ class TestRSIOversold:
         score = strategy.score(ph(prices))
         assert score == pytest.approx(expected_score, rel=1e-12)
 
+    def test_no_lookahead_prefix_consistency(self) -> None:
+        """RSI at bar t must depend only on prices up to bar t.
+
+        The reference test pins the final value, which every delta feeds
+        into either way — a one-bar lookahead shift would still pass it.
+        Prefix consistency pins the alignment of every interior bar.
+        """
+        from midas.strategies.rsi_oversold import wilder_rsi
+
+        window = 14
+        rng = np.random.default_rng(46)
+        prices = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, 120))
+
+        full = wilder_rsi(prices, window)
+        for k in (window + 1, 40, 80, 119):
+            assert wilder_rsi(prices[:k], window)[-1] == full[k - 1]
+
     def test_score_matches_precompute_last_bar(self, volatile_dropping_prices: PriceHistory) -> None:
         """Live score and backtest precompute must agree bar-for-bar."""
         strategy = RSIOversold(window=14, oversold_threshold=30.0)

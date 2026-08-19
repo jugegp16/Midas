@@ -83,10 +83,11 @@ class RSIOversold(EntrySignal):
         **kwargs: object,
     ) -> float | None:
         # Wilder RSI is recursive over the full history, so the live path
-        # delegates to precompute and reads the final bar — parity with
-        # backtest holds by construction instead of by a parallel
-        # implementation. O(bars) per tick over the warmup-sized window
-        # live feeds it, which is trivial.
+        # delegates to precompute and reads the final bar — the same code
+        # path the backtest runs. Parity is exact on identical inputs; a
+        # shorter live history differs only by the seed's residual weight,
+        # which the 4x recursive warmup keeps negligible. O(bars) per tick
+        # over the warmup-sized window live feeds it, which is trivial.
         scores = self.precompute(price_history)
         if scores is None or len(scores) == 0 or np.isnan(scores[-1]):
             return None
