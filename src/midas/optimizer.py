@@ -220,11 +220,6 @@ def _snap_high(lo: float, hi: float, step: float) -> float:
     return float((d_hi - d_lo) // d_step * d_step + d_lo)
 
 
-def _count_active_tickers(portfolio: PortfolioConfig) -> int:
-    """Number of holdings with a nonzero share count."""
-    return sum(1 for holding in portfolio.holdings if holding.shares > 0)
-
-
 def _pool_workers(n_trials: int) -> int:
     """Worker-pool size: half the CPUs, capped by the trial count, at least one."""
     return min((os.cpu_count() or 4) // 2, n_trials) or 1
@@ -306,7 +301,7 @@ def _run_trial(
         min_buy_delta=global_params.get("min_buy_delta", 0.02),
     )
 
-    allocator = Allocator(entries, constraints, _count_active_tickers(portfolio), risk_config=risk_config)
+    allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
     order_sizer = OrderSizer()
 
     engine = BacktestEngine(
@@ -484,7 +479,7 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, _count_active_tickers(portfolio))
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
 
     max_workers = _pool_workers(n_trials)
 
@@ -719,7 +714,7 @@ def walk_forward_optimize(
     """
     log = log_fn or (lambda _: None)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, _count_active_tickers(portfolio))
+    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
 
     # Collect trading days across all tickers.
     all_dates: set[date] = set()

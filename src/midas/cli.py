@@ -116,11 +116,6 @@ def _to_date(dt: date | datetime) -> date:
     return dt.date() if isinstance(dt, datetime) else dt
 
 
-def _count_active_tickers(port: PortfolioConfig) -> int:
-    """Number of holdings with a nonzero share count."""
-    return sum(1 for holding in port.holdings if holding.shares > 0)
-
-
 def _load_strategy_bundle(
     strategies: str | None,
 ) -> tuple[list[StrategyConfig] | None, AllocationConstraints, RiskConfig]:
@@ -316,7 +311,7 @@ def backtest(
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
-        _count_active_tickers(port),
+        port.active_ticker_count(),
         risk_config=risk_config,
     )
 
@@ -381,7 +376,7 @@ def live(
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
-        _count_active_tickers(port),
+        port.active_ticker_count(),
         risk_config=risk_config,
     )
 
@@ -696,7 +691,7 @@ def optimize(
         min_cash_pct = strat_constraints.min_cash_pct
 
     start_d, end_d = _to_date(start), _to_date(end)
-    warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, _count_active_tickers(port))
+    warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
     if walk_forward:

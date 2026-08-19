@@ -352,7 +352,7 @@ def _print_trade_quality(result: BacktestResult) -> None:
     trade_table.add_row("Win Rate", color_signed(result.win_rate))
     pf_str = f"{result.profit_factor:.2f}" if not math.isinf(result.profit_factor) else "∞"
     trade_table.add_row("Profit Factor", pf_str)
-    trade_table.add_row("Avg Win", f"[green]${result.avg_win:,.2f}[/green]")
+    trade_table.add_row("Avg Win", _signed_dollar(result.avg_win))
     trade_table.add_row("Avg Loss", f"[red]${result.avg_loss:,.2f}[/red]")
     print_centered(trade_table)
 

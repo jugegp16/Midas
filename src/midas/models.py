@@ -97,6 +97,10 @@ class PortfolioConfig:
         """Look up a holding by ticker, or None if not held."""
         return self._by_ticker.get(ticker)
 
+    def active_ticker_count(self) -> int:
+        """Number of holdings with a nonzero share count."""
+        return sum(1 for holding in self.holdings if holding.shares > 0)
+
 
 @dataclass(frozen=True)
 class OrderContext:
