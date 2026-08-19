@@ -56,6 +56,7 @@ cash_infusion:
 softmax_temperature: 0.5
 min_buy_delta: 0.02
 min_cash_pct: 0.05
+forecast_scaling: quantile   # rank-normalize rule scores before blending (default: none)
 
 strategies:
   # Entry signals — score buy candidates, blended into target weights.

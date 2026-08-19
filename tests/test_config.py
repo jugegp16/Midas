@@ -400,3 +400,21 @@ def test_load_portfolio_alerts_non_numeric_ttl_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="alerts: pending_ttl_hours"):
         load_portfolio(path)
+
+
+def test_load_strategies_forecast_scaling(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "forecast_scaling: quantile\nstrategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "quantile"
+
+
+def test_load_strategies_forecast_scaling_defaults_to_none(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "strategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "none"
+
+
+def test_load_strategies_invalid_forecast_scaling_raises(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "forecast_scaling: softmax\nstrategies:\n  - name: Momentum\n")
+    with pytest.raises(ValueError, match="forecast_scaling"):
+        load_strategies(path)

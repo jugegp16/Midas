@@ -212,6 +212,7 @@ def load_strategies(
         min_buy_delta=float(
             raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
+        forecast_scaling=str(raw.get("forecast_scaling", "none")),
     )
 
     risk_raw = raw.get("risk") or {}

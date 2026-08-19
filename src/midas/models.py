@@ -185,6 +185,17 @@ class AllocationConstraints:
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
     min_buy_delta: float = DEFAULT_MIN_BUY_DELTA
     softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
+    # "quantile" rank-transforms each rule's scores across the cross-section
+    # before blending (issue #56); "none" blends raw scores as before.
+    forecast_scaling: str = "none"
+
+    def __post_init__(self) -> None:
+        if self.forecast_scaling not in ("none", "quantile"):
+            msg = (
+                f"forecast_scaling must be 'none' or 'quantile', got {self.forecast_scaling!r} "
+                "(zscore was considered in #56 and deferred until quantile proves insufficient)"
+            )
+            raise ValueError(msg)
 
 
 @dataclass
