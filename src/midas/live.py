@@ -35,6 +35,8 @@ from midas.live_state import (
     save_atomic,
 )
 from midas.models import (
+    DEFAULT_PENDING_TTL_HOURS,
+    DEFAULT_REALERT_HOURS,
     AllocationConstraints,
     Direction,
     HoldingPeriod,
@@ -113,8 +115,8 @@ class LiveEngine:
         dry_run: bool = False,
         history_days: int | None = None,
         confirmer: OrderConfirmer | None = None,
-        pending_ttl_hours: float = 8.0,
-        realert_hours: float = 1.0,
+        pending_ttl_hours: float = DEFAULT_PENDING_TTL_HOURS,
+        realert_hours: float = DEFAULT_REALERT_HOURS,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -230,7 +232,14 @@ class LiveEngine:
 
         try:
             while True:
-                self._tick(tickers)
+                try:
+                    self._tick(tickers)
+                except Exception:
+                    # A live process watching real money must not die
+                    # overnight on a one-tick bug — state transitions are
+                    # individually durable, so skipping a tick is safe.
+                    # Same crash-proofing rationale as _fetch_histories.
+                    logger.exception("tick failed; continuing next poll")
                 time.sleep(self._poll_interval)
         except KeyboardInterrupt:
             print_status("Stopped.")
@@ -470,6 +479,11 @@ class LiveEngine:
         self._state.intent_cooldowns = [cooldown for cooldown in self._state.intent_cooldowns if now < cooldown.until]
         for pending in list(self._state.pending_orders):
             decision = self._confirmer.poll_decision(pending.message_id)
+            if decision == "unavailable":
+                # The poll itself failed — the operator may have reacted
+                # and executed. Expiring here would drop a real fill, so
+                # the order waits (even past TTL) until Discord answers.
+                continue
             expired = decision is None and now - pending.created_at > self._pending_ttl
             if decision is None and not expired:
                 continue
@@ -529,6 +543,13 @@ class LiveEngine:
         """
         if pending.direction == Direction.BUY:
             apply_buy(self._state, pending.ticker, pending.shares, pending.price, today)
+            if self._state.available_cash < 0:
+                logger.warning(
+                    "available cash went negative (%.2f) booking confirmed BUY %s — "
+                    "verify against the brokerage balance",
+                    self._state.available_cash,
+                    pending.ticker,
+                )
             return "buy", note
         held = sum(lot.shares for lot in self._state.lots.get(pending.ticker, []))
         # Position may have shrunk since the alert (e.g. another sell
@@ -536,7 +557,7 @@ class LiveEngine:
         # assertion kill the poll loop.
         shares = min(pending.shares, held)
         if shares <= 0:
-            return "nothing-held", f"{note} — WARNING: no shares held, nothing booked"
+            return "nothing-held", f"{note} — no shares held in state"
         if shares < pending.shares:
             logger.warning(
                 "confirmed SELL %s clamped from %s to %s shares (position shrank since alert)",
@@ -562,7 +583,7 @@ class LiveEngine:
                 pending.ticker,
                 pending.shares,
             )
-            self._confirmer.mark_booked(pending.message_id, note)
+            self._confirmer.mark_unfillable(pending.message_id, note)
             return
         if booked == "buy":
             record = TradeRecord(
@@ -648,9 +669,9 @@ class LiveEngine:
                 if replace:
                     print_status(
                         f"Superseded pending {pending.direction.value} {pending.ticker}: "
-                        f"recomputed as {order.direction.value} {order.shares} shares"
+                        f"recomputed as {order.direction.value} {order.shares:g} shares"
                     )
-                    self._confirmer.mark_expired(pending.message_id)
+                    self._confirmer.mark_superseded(pending.message_id)
                 else:
                     suppressed = True
                     keep_pending.append(pending)
@@ -684,6 +705,13 @@ class LiveEngine:
                     message_id=message_id,
                 )
             )
+            # Persist immediately: the Discord message is durable external
+            # state the moment it posts. A crash before the tick-end save
+            # would orphan it — the operator's reaction on a message no
+            # restart knows about would be silently ignored, and the next
+            # tick would post a duplicate. Same reasoning as the
+            # persist-before-side-effects rule in _resolve_pending.
+            save_atomic(self._state, self._state_path)
 
     def _tick(self, tickers: list[str]) -> None:
         """Run one poll cycle: fetch, allocate, size, fill, persist, alert."""
@@ -765,6 +793,16 @@ class LiveEngine:
         exit_orders = self._filter_restricted(exit_orders, today)
         sell_proceeds = sum(order.estimated_value for order in exit_orders)
         post_sell_cash = self._state.available_cash + sell_proceeds
+        if self._confirmer is not None:
+            # Cash already promised to unconfirmed BUY alerts is spoken
+            # for — sizing against it would let two confirmed buys drive
+            # cash negative with no guard.
+            reserved = sum(
+                pending.shares * pending.price
+                for pending in self._state.pending_orders
+                if pending.direction == Direction.BUY
+            )
+            post_sell_cash = max(0.0, post_sell_cash - reserved)
 
         clamped_allocation = AllocationResult(
             targets=clamped_targets,

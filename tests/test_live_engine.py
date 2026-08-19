@@ -572,6 +572,8 @@ class FakeConfirmer:
         self.booked: list[tuple[str, str]] = []
         self.declined: list[str] = []
         self.expired: list[str] = []
+        self.superseded: list[str] = []
+        self.unfillable: list[tuple[str, str]] = []
         self.fail_posts = False
         self._counter = 0
 
@@ -593,6 +595,12 @@ class FakeConfirmer:
 
     def mark_expired(self, message_id: str) -> None:
         self.expired.append(message_id)
+
+    def mark_superseded(self, message_id: str) -> None:
+        self.superseded.append(message_id)
+
+    def mark_unfillable(self, message_id: str, note: str) -> None:
+        self.unfillable.append((message_id, note))
 
 
 def _sized_order(ticker: str, direction: Direction, shares: float, price: float = 100.0) -> Order:
@@ -693,12 +701,12 @@ def test_material_resize_replaces_pending_only_after_cooldown(tmp_path: Path, ma
         # Materially different size, but the pending alert is minutes old:
         # keep the original alert, no churn.
         engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(minutes=5), 10_000.0)
-        assert confirmer.expired == []
+        assert confirmer.superseded == []
         assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
 
         # Past the re-alert cooldown (1h default): now supersede.
         engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(hours=2), 10_000.0)
-        assert confirmer.expired == ["msg-1"]
+        assert confirmer.superseded == ["msg-1"]
         assert [p.message_id for p in engine._state.pending_orders] == ["msg-2"]
         assert engine._state.pending_orders[0].shares == 9.0
 
@@ -709,7 +717,7 @@ def test_direction_flip_replaces_pending(tmp_path: Path, make_provider: Provider
         engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
         engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
 
-        assert confirmer.expired == ["msg-1"]
+        assert confirmer.superseded == ["msg-1"]
         assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
 
 
@@ -919,5 +927,55 @@ def test_direction_flip_supersedes_within_cooldown(tmp_path: Path, make_provider
         engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
         engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
 
-        assert confirmer.expired == ["msg-1"]
+        assert confirmer.superseded == ["msg-1"]
         assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
+
+
+def test_unavailable_poll_never_expires_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A failing poll past TTL must NOT expire — the operator may have confirmed.
+
+    Expiring on an outage/revoked-token span drops a fill the operator
+    executed at the broker: exactly the phantom divergence #81 exists to
+    eliminate.
+    """
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer, pending_ttl_hours=1.0) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "unavailable"
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=10))
+        assert len(engine._state.pending_orders) == 1
+        assert confirmer.expired == []
+
+        # Discord answers again — and the operator had confirmed.
+        confirmer.decisions["msg-1"] = "confirmed"
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=10))
+        assert engine._state.available_cash == 10_000.0 - 500.0
+
+
+def test_posted_pending_is_durable_immediately(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The Discord message is durable the moment it posts — the pending
+    order must be too, or a crash before tick-end orphans the message."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+
+        # No tick-end save has run — the pending must already be on disk.
+        on_disk = load_state(tmp_path / "state.yaml")
+        assert [p.message_id for p in on_disk.pending_orders] == ["msg-1"]
+
+
+def test_confirmed_nothing_held_marks_unfillable(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._state.lots.pop("AAPL", None)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+
+        engine._resolve_pending(TODAY, NOW)
+
+        assert confirmer.booked == []
+        assert len(confirmer.unfillable) == 1
+        assert engine._state.available_cash == 10_000.0

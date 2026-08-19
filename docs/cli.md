@@ -80,10 +80,10 @@ In confirm mode, each BUY/SELL alert becomes one embed (green/red) with
 the strategy, reason, and estimated value. Respond by reacting to the
 message:
 
-- **React ✅** — you executed the trade. Midas books the fill at the
+- **React ✅** (✔️/☑️ also count) — you executed the trade. Midas books the fill at the
   alert price: position lots, cash, the trade log, and the round-trip
   restriction clock all update at confirmation time, not alert time.
-- **React ❌** — you skipped it. Nothing is booked, and the same trade
+- **React ❌** (✖️/⛔/🚫 also count) — you skipped it. Nothing is booked, and the same trade
   (ticker + direction) is not re-alerted until the decline ages past
   `pending_ttl_hours` — a declined trade stays declined for the day.
 - **No reaction** — the alert expires after `pending_ttl_hours`

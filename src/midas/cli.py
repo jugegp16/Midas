@@ -19,6 +19,7 @@ from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
 from midas.models import (
+    AlertsConfig,
     AllocationConstraints,
     Direction,
     PortfolioConfig,
@@ -369,6 +370,7 @@ def live(
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = _resolve_state_path(port, portfolio_path)
+    alerts_cfg = port.alerts_config or AlertsConfig()
     try:
         confirmer = build_confirmer(port.alerts_config)
     except ValueError as exc:
@@ -400,8 +402,8 @@ def live(
         poll_interval=interval,
         dry_run=dry_run,
         confirmer=confirmer,
-        pending_ttl_hours=port.alerts_config.pending_ttl_hours if port.alerts_config else 8.0,
-        realert_hours=port.alerts_config.realert_hours if port.alerts_config else 1.0,
+        pending_ttl_hours=alerts_cfg.pending_ttl_hours,
+        realert_hours=alerts_cfg.realert_hours,
     ) as engine:
         engine.run()
 

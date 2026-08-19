@@ -13,8 +13,8 @@ import pytest
 
 from midas import alerts
 from midas.alerts import (
-    CONFIRM_EMOJI,
     DISCORD_BOT_TOKEN_ENV_VAR,
+    DiscordApiError,
     DiscordBotClient,
     DiscordConfirmer,
     build_confirmer,
@@ -144,13 +144,45 @@ class TestBotClient:
         assert req["url"].endswith(f"/channels/{CHANNEL}/messages/42")
         assert req["payload"] == {"content": "done"}
 
-    def test_get_reaction_users_parses_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        body = json.dumps([{"id": "1", "bot": True}, {"id": "2"}]).encode()
+    def test_get_message_returns_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        body = json.dumps({"id": "42", "reactions": []}).encode()
         monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(body))
 
-        users = DiscordBotClient("tok").get_reaction_users(CHANNEL, "42", CONFIRM_EMOJI)
+        message = DiscordBotClient("tok").get_message(CHANNEL, "42")
 
-        assert users == [{"id": "1", "bot": True}, {"id": "2"}]
+        assert message["id"] == "42"
+
+    def test_non_json_200_body_raises_discord_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A Cloudflare interstitial (200 + HTML) must not escape as JSONDecodeError."""
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(b"<html>nope</html>"))
+
+        with pytest.raises(DiscordApiError):
+            DiscordBotClient("tok").get_message(CHANNEL, "42")
+
+    def test_missing_message_id_raises_discord_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(b'{"oops": 1}'))
+
+        with pytest.raises(DiscordApiError):
+            DiscordBotClient("tok").create_message(CHANNEL, {"content": "hi"})
+
+    def test_network_error_raises_discord_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise urllib.error.URLError("down")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(DiscordApiError):
+            DiscordBotClient("tok").get_message(CHANNEL, "42")
+
+    def test_http_error_carries_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise http_error(404)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(DiscordApiError) as excinfo:
+            DiscordBotClient("tok").get_message(CHANNEL, "42")
+        assert excinfo.value.status == 404
 
     def test_429_with_short_retry_after_retries_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
@@ -176,14 +208,19 @@ class TestBotClient:
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(DiscordApiError) as excinfo:
             DiscordBotClient("tok").create_message(CHANNEL, {"content": "hi"})
+        assert excinfo.value.status == 429
 
 
 class TestConfirmer:
     def make(self, monkeypatch: pytest.MonkeyPatch, responder: Any) -> DiscordConfirmer:
         monkeypatch.setattr(urllib.request, "urlopen", responder)
         return DiscordConfirmer(DiscordBotClient("tok"), CHANNEL)
+
+    def _message_responder(self, reactions: list[dict[str, Any]]) -> Any:
+        body = json.dumps({"id": "42", "reactions": reactions}).encode()
+        return lambda request, timeout=None: FakeResponse(body)
 
     def test_post_order_posts_bare_embed_only(self, captured: list[dict[str, Any]]) -> None:
         """One POST, embed only: no instruction content, no seeded reactions."""
@@ -204,52 +241,74 @@ class TestConfirmer:
 
         assert confirmer.post_order(make_order(), NOW) is None
 
-    def _reaction_responder(self, confirm_users: list[dict[str, Any]], decline_users: list[dict[str, Any]]) -> Any:
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
-            if "%E2%9C%85" in request.full_url:
-                return FakeResponse(json.dumps(confirm_users).encode())
-            return FakeResponse(json.dumps(decline_users).encode())
+    def test_post_order_non_json_response_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The failure that killed the live process: 200 + non-JSON body."""
+        confirmer = self.make(monkeypatch, lambda request, timeout=None: FakeResponse(b"<html>cf</html>"))
 
-        return fake_urlopen
+        assert confirmer.post_order(make_order(), NOW) is None  # must not raise
 
-    def test_poll_ignores_bot_seed_reactions(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        bot_only = [{"id": "1", "bot": True}]
-        confirmer = self.make(monkeypatch, self._reaction_responder(bot_only, bot_only))
+    def test_poll_no_reactions_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(monkeypatch, self._message_responder([]))
 
         assert confirmer.poll_decision("42") is None
 
-    def test_poll_human_confirm(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        confirmer = self.make(
-            monkeypatch,
-            self._reaction_responder([{"id": "1", "bot": True}, {"id": "2"}], [{"id": "1", "bot": True}]),
-        )
+    def test_poll_confirm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u2705"}, "count": 1}]))
 
         assert confirmer.poll_decision("42") == "confirmed"
 
-    def test_poll_human_decline(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        confirmer = self.make(
-            monkeypatch,
-            self._reaction_responder([{"id": "1", "bot": True}], [{"id": "1", "bot": True}, {"id": "2"}]),
-        )
+    def test_poll_accepts_check_mark_variants(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """\u2714\ufe0f from the raw picker must count — a confirmed-and-executed
+        trade must not silently expire over a near-miss codepoint."""
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u2714\ufe0f"}, "count": 1}]))
 
+        assert confirmer.poll_decision("42") == "confirmed"
+
+    def test_poll_decline_and_cross_variants(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u274c"}, "count": 1}]))
         assert confirmer.poll_decision("42") == "declined"
+
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\u2716\ufe0f"}, "count": 1}]))
+        assert confirmer.poll_decision("42") == "declined"
+
+    def test_poll_unrecognized_reaction_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(monkeypatch, self._message_responder([{"emoji": {"name": "\U0001f44d"}, "count": 1}]))
+
+        assert confirmer.poll_decision("42") is None
 
     def test_poll_confirm_wins_over_decline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both tapped: an executed trade must be booked."""
-        both = [{"id": "2"}]
-        confirmer = self.make(monkeypatch, self._reaction_responder(both, both))
+        confirmer = self.make(
+            monkeypatch,
+            self._message_responder(
+                [{"emoji": {"name": "\u274c"}, "count": 1}, {"emoji": {"name": "\u2705"}, "count": 1}]
+            ),
+        )
 
         assert confirmer.poll_decision("42") == "confirmed"
 
-    def test_poll_failure_means_no_decision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_poll_failure_is_unavailable_not_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An outage must be distinguishable from "no reaction yet" — the
+        engine must never TTL-expire an order it could not check."""
+
         def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
-            raise urllib.error.URLError("down")
+            raise http_error(500)
+
+        confirmer = self.make(monkeypatch, fake_urlopen)
+
+        assert confirmer.poll_decision("42") == "unavailable"
+
+    def test_poll_deleted_message_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """404 = message gone, never confirmable — normal TTL expiry applies."""
+
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise http_error(404)
 
         confirmer = self.make(monkeypatch, fake_urlopen)
 
         assert confirmer.poll_decision("42") is None
 
-    def test_mark_booked_edits_content_and_swallows_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_marks_edit_content_and_swallow_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
             raise http_error(404)
 
@@ -258,6 +317,8 @@ class TestConfirmer:
         confirmer.mark_booked("42", "note")  # must not raise
         confirmer.mark_declined("42")
         confirmer.mark_expired("42")
+        confirmer.mark_superseded("42")
+        confirmer.mark_unfillable("42", "note")
 
 
 class TestBuildConfirmer:

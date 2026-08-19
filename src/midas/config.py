@@ -9,8 +9,11 @@ from typing import Any
 import yaml
 
 from midas.models import (
+    DEFAULT_ALERT_TIMEOUT_SECONDS,
     DEFAULT_MIN_BUY_DELTA,
     DEFAULT_MIN_CASH_PCT,
+    DEFAULT_PENDING_TTL_HOURS,
+    DEFAULT_REALERT_HOURS,
     DEFAULT_SOFTMAX_TEMPERATURE,
     DEFAULT_VOL_LOOKBACK_DAYS,
     AlertsConfig,
@@ -131,9 +134,9 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         raise ValueError(msg)
     return AlertsConfig(
         discord_channel_id=channel_id,
-        timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", 5.0),
-        pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", 8.0),
-        realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", 1.0),
+        timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", DEFAULT_ALERT_TIMEOUT_SECONDS),
+        pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", DEFAULT_PENDING_TTL_HOURS),
+        realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", DEFAULT_REALERT_HOURS),
     )
 
 

@@ -274,6 +274,11 @@ class TaxConfig:
             raise ValueError(msg)
 
 
+DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
+DEFAULT_PENDING_TTL_HOURS = 8.0
+DEFAULT_REALERT_HOURS = 1.0
+
+
 @dataclass(frozen=True)
 class AlertsConfig:
     """Optional Discord alert-delivery policy for live mode.
@@ -289,9 +294,9 @@ class AlertsConfig:
     """
 
     discord_channel_id: str = ""
-    timeout_seconds: float = 5.0
-    pending_ttl_hours: float = 8.0
-    realert_hours: float = 1.0
+    timeout_seconds: float = DEFAULT_ALERT_TIMEOUT_SECONDS
+    pending_ttl_hours: float = DEFAULT_PENDING_TTL_HOURS
+    realert_hours: float = DEFAULT_REALERT_HOURS
 
     def __post_init__(self) -> None:
         # Inverted comparisons so NaN is rejected rather than slipping through.
