@@ -89,6 +89,7 @@ class PortfolioConfig:
     state_file: Path | None = None
     tax_config: TaxConfig | None = None
     tax_declared: bool = False
+    alerts_config: AlertsConfig | None = None
 
     def __post_init__(self) -> None:
         self._by_ticker = {holding.ticker: holding for holding in self.holdings}
@@ -270,4 +271,24 @@ class TaxConfig:
                 f"long_term_rate ({self.long_term_rate}) must be <= short_term_rate "
                 f"({self.short_term_rate}); preferential LT rate is always <= the ST rate"
             )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class AlertsConfig:
+    """Optional push-notification policy for live alerts.
+
+    The webhook URL is a write-capability secret: anyone holding it can post
+    to the channel. Prefer the ``MIDAS_DISCORD_WEBHOOK`` env var over the
+    YAML field if the portfolio file is ever committed or shared. The URL
+    may be empty here when the operator relies solely on the env var.
+    """
+
+    discord_webhook_url: str = ""
+    timeout_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        # Inverted comparison so NaN is rejected rather than slipping through.
+        if not self.timeout_seconds > 0:
+            msg = f"timeout_seconds must be > 0, got {self.timeout_seconds}"
             raise ValueError(msg)

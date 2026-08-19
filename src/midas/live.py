@@ -16,6 +16,7 @@ try:
 except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
+from midas.alerts import AlertSink
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
@@ -102,6 +103,7 @@ class LiveEngine:
         poll_interval: int = 60,
         dry_run: bool = False,
         history_days: int | None = None,
+        alert_sinks: list[AlertSink] | None = None,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -117,6 +119,8 @@ class LiveEngine:
             dry_run: When True, alerts are labeled as dry-run.
             history_days: Explicit history window override (tests); derived
                 from strategy warmups when None.
+            alert_sinks: Push-notification transports invoked alongside the
+                terminal output. Terminal alerts are unaffected by sinks.
 
         Raises:
             RuntimeError: If file locking is unavailable on this platform or
@@ -150,6 +154,7 @@ class LiveEngine:
             self._provider = provider
             self._poll_interval = poll_interval
             self._dry_run = dry_run
+            self._alert_sinks = alert_sinks or []
             # Derive the history window from the largest warmup required across
             # configured strategies (plus slack for weekends/holidays). An explicit
             # ``history_days`` override is still honored for tests.
@@ -416,6 +421,7 @@ class LiveEngine:
 
         now = datetime.now(tz=UTC)
         remaining_cash = pre_fill_cash
+        alerted: list[Order] = []
         for order in orders:
             if order.shares <= 0:
                 continue
@@ -424,6 +430,19 @@ class LiveEngine:
             else:
                 remaining_cash += order.estimated_value
             print_alert(order, remaining_cash, now, dry_run=self._dry_run)
+            alerted.append(order)
+
+        if not alerted:
+            return
+        for sink in self._alert_sinks:
+            # Sinks contractually swallow delivery failures, but a sink bug
+            # must not kill the poll loop either — the terminal alert above
+            # already went out and is the channel of record. Same
+            # crash-proofing rationale as _fetch_histories.
+            try:
+                sink.send_orders(alerted, now, dry_run=self._dry_run)
+            except Exception:
+                logger.exception("alert sink %s raised; terminal alert already emitted", type(sink).__name__)
 
     def _tick(self, tickers: list[str]) -> None:
         """Run one poll cycle: fetch, allocate, size, fill, persist, alert."""

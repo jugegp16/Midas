@@ -363,11 +363,15 @@ def live(
     dry_run: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
+    from midas.alerts import build_alert_sinks
     from midas.live import LiveEngine
 
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = _resolve_state_path(port, portfolio_path)
+    alert_sinks = build_alert_sinks(port.alerts_config)
+    if alert_sinks:
+        click.echo("Discord alerts enabled.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
@@ -390,6 +394,7 @@ def live(
         constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,
+        alert_sinks=alert_sinks,
     ) as engine:
         engine.run()
 

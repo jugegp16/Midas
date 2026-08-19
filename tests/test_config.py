@@ -279,3 +279,50 @@ def test_load_portfolio_tax_invalid_value_raises(tmp_path: Path) -> None:
         path.write_text(base + bad)
         with pytest.raises(ValueError, match="tax:"):
             load_portfolio(path)
+
+
+def test_load_portfolio_with_alerts_block(tmp_path: Path) -> None:
+    """Optional alerts: block parses to an AlertsConfig."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_webhook_url: https://discord.com/api/webhooks/1/x\n  timeout_seconds: 2.5\n"
+    )
+    alerts = load_portfolio(path).alerts_config
+    assert alerts is not None
+    assert alerts.discord_webhook_url == "https://discord.com/api/webhooks/1/x"
+    assert alerts.timeout_seconds == 2.5
+
+
+def test_load_portfolio_alerts_defaults(tmp_path: Path) -> None:
+    """An empty alerts: block gets defaults (URL supplied via env var later)."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts: {}\n")
+    alerts = load_portfolio(path).alerts_config
+    assert alerts is not None
+    assert alerts.discord_webhook_url == ""
+    assert alerts.timeout_seconds == 5.0
+
+
+def test_load_portfolio_without_alerts_block(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n")
+    assert load_portfolio(path).alerts_config is None
+
+
+def test_load_portfolio_alerts_unknown_key_raises(tmp_path: Path) -> None:
+    """A typo'd key must not silently disable push notifications."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_webhook: https://discord.com/api/webhooks/1/x\n"
+    )
+    with pytest.raises(ValueError, match="discord_webhook"):
+        load_portfolio(path)
+
+
+def test_load_portfolio_alerts_non_mapping_raises(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts: on\n")
+    with pytest.raises(ValueError, match="alerts:"):
+        load_portfolio(path)
