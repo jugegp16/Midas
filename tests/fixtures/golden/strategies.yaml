@@ -1,0 +1,38 @@
+# Golden-test strategy config. Do not edit casually — changes invalidate
+# every golden output. See tests/test_golden.py and issue #76.
+min_cash_pct: 0.05
+min_buy_delta: 0.02
+softmax_temperature: 0.5
+
+strategies:
+  - name: Momentum
+    weight: 1.0
+    params:
+      window: 20
+      momentum_scale: 0.05
+  - name: MeanReversion
+    weight: 1.2
+    params:
+      window: 30
+      threshold: 0.08
+  - name: RSIOversold
+    weight: 1.0
+    params:
+      window: 14
+      oversold_threshold: 35.0
+  - name: StopLoss
+    params:
+      loss_threshold: 0.10
+  - name: ProfitTaking
+    params:
+      gain_threshold: 0.20
+
+risk:
+  weighting: inverse_vol
+  vol_lookback_days: 60
+  # Low enough that the fixture's realized vol crosses it — the golden run
+  # must ENGAGE the vol-target overlay, not just configure it (see the
+  # vol_target_scale guard in test_golden.py).
+  vol_target: 0.08
+  drawdown_penalty: 1.5
+  drawdown_floor: 0.5

@@ -84,6 +84,7 @@ Don't want to build your own? Start with one of the [pre-built compositions](exa
 - [Architecture](docs/architecture.md) -- how the engine works: entry signals, exit rules, allocator, order sizer, and execution modes
 - [Strategies](docs/strategies.md) -- all available strategies, how to compose them, and how they interact
 - [CLI Reference](docs/cli.md) -- every command and option
+- [Tax Reporting](docs/tax-reporting.md) -- after-tax accounting, the trade log, and `midas tax-report`
 
 ## Development
 
@@ -96,3 +97,6 @@ uv run ruff check . --fix   # lint
 uv run ruff format .        # format
 uv run mypy src             # type check
 ```
+
+Changes that intentionally shift backtest results must re-bless the golden
+test and include its diff — see [tests/README.md](tests/README.md).

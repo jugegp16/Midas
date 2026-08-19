@@ -1,0 +1,28 @@
+# Golden-test portfolio. Do not edit casually — changes invalidate every
+# golden output. See tests/test_golden.py and issue #76.
+portfolio:
+  - ticker: AAA
+    shares: 40
+    cost_basis: 78.0
+  - ticker: BBB
+    shares: 100
+    cost_basis: 44.0
+  - ticker: CCC
+    shares: 20
+    cost_basis: 118.0
+
+available_cash: 8000.00
+
+trading_restrictions:
+  round_trip_days: 10
+
+cash_infusion:
+  amount: 1000.00
+  next_date: 2024-01-15
+  frequency: biweekly
+
+tax:
+  short_term_rate: 0.32
+  long_term_rate: 0.15
+  deductible_loss_cap: 3000.0
+  payment_lag_days: 105
