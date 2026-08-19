@@ -30,6 +30,9 @@ strategies:
 risk:
   weighting: inverse_vol
   vol_lookback_days: 60
-  vol_target: 0.18
+  # Low enough that the fixture's realized vol crosses it — the golden run
+  # must ENGAGE the vol-target overlay, not just configure it (see the
+  # vol_target_scale guard in test_golden.py).
+  vol_target: 0.08
   drawdown_penalty: 1.5
   drawdown_floor: 0.5

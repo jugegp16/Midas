@@ -177,6 +177,7 @@ def test_golden_backtest(tmp_path: Path) -> None:
     assert result.tax_summary, "tax summary empty — after-tax path not exercised"
     assert result.risk_history is not None
     assert any(s != 1.0 for s in result.risk_history.cppi_scale), "CPPI overlay never engaged"
+    assert any(s != 1.0 for s in result.risk_history.vol_target_scale), "vol-target overlay never engaged"
     # Every file the writer emits must be pinned — a fifth output file added
     # later has to show up in OUTPUT_FILES (and get a golden) to pass.
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(OUTPUT_FILES), (
