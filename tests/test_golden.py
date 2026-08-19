@@ -58,11 +58,10 @@ def _run_scenario(out_dir: Path, order_sizer: OrderSizer | None = None) -> Backt
     """Run the golden scenario exactly as the CLI wires it."""
     port = load_portfolio(FIXTURE_DIR / "portfolio.yaml")
     strat_configs, constraints, risk_config = load_strategies(FIXTURE_DIR / "strategies.yaml")
-    n_tickers = sum(1 for holding in port.holdings if holding.shares > 0)
     allocator, default_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
-        n_tickers,
+        port.active_ticker_count(),
         risk_config=risk_config,
     )
     engine = BacktestEngine(
@@ -102,7 +101,9 @@ def _compare_values(expected: Any, actual: Any, path: str, mismatches: list[str]
         for idx, (exp_item, act_item) in enumerate(zip(expected, actual, strict=True)):
             _compare_values(exp_item, act_item, f"{path}[{idx}]", mismatches)
     elif isinstance(expected, bool) or isinstance(actual, bool):
-        if expected != actual:
+        # bool-ness itself must match: JSON true vs 1 is a real difference
+        # even though Python evaluates True == 1.
+        if isinstance(expected, bool) != isinstance(actual, bool) or expected != actual:
             mismatches.append(f"{path}: {expected!r} != {actual!r}")
     elif isinstance(expected, int | float) and isinstance(actual, int | float):
         if not math.isclose(expected, actual, rel_tol=REL_TOL, abs_tol=ABS_TOL):
@@ -162,6 +163,11 @@ def _compare_outputs(actual_dir: Path) -> list[str]:
     return mismatches
 
 
+def _update_golden_requested() -> bool:
+    """Whether this run should re-bless the goldens (UPDATE_GOLDEN=1 or true)."""
+    return os.environ.get("UPDATE_GOLDEN", "").lower() in ("1", "true")
+
+
 def test_golden_backtest(tmp_path: Path) -> None:
     result = _run_scenario(tmp_path)
 
@@ -184,7 +190,7 @@ def test_golden_backtest(tmp_path: Path) -> None:
         "write_backtest_results emitted different files than OUTPUT_FILES pins"
     )
 
-    if os.environ.get("UPDATE_GOLDEN"):
+    if _update_golden_requested():
         EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
         for filename in OUTPUT_FILES:
             shutil.copy(tmp_path / filename, EXPECTED_DIR / filename)
@@ -193,6 +199,13 @@ def test_golden_backtest(tmp_path: Path) -> None:
             "tests/fixtures/golden/expected/ and re-run WITHOUT UPDATE_GOLDEN "
             "to confirm. (Failing on purpose so a blessing run is never "
             "mistaken for a passing one.)"
+        )
+
+    # No orphans: expected/ must contain exactly the pinned files, so an
+    # output removed from OUTPUT_FILES can't leave a stale golden behind.
+    if EXPECTED_DIR.exists():
+        assert sorted(p.name for p in EXPECTED_DIR.iterdir()) == sorted(OUTPUT_FILES), (
+            "expected/ contents differ from OUTPUT_FILES — remove orphaned goldens"
         )
 
     mismatches = _compare_outputs(tmp_path)
@@ -207,8 +220,11 @@ def test_golden_detects_change(tmp_path: Path) -> None:
     Runs the scenario with 10x slippage — if the comparator still reports
     no mismatches, the golden net has a hole in it.
     """
-    if os.environ.get("UPDATE_GOLDEN"):
+    if _update_golden_requested():
         pytest.skip("blessing run")
     _run_scenario(tmp_path, order_sizer=OrderSizer(default_slippage=0.005))
     mismatches = _compare_outputs(tmp_path)
-    assert mismatches, "10x slippage produced byte-equivalent outputs — comparator is not detecting change"
+    # Missing-golden lines don't count — on an unblessed checkout they would
+    # make this pass without proving the comparator detects value changes.
+    value_mismatches = [m for m in mismatches if "no golden file" not in m and "not produced" not in m]
+    assert value_mismatches, "10x slippage produced byte-equivalent outputs — comparator is not detecting change"

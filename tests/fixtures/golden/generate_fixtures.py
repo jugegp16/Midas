@@ -16,6 +16,7 @@ Ticker personalities (so every strategy family actually fires):
 
 from __future__ import annotations
 
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 SEED = 76
+TICKERS = ("AAA", "BBB", "CCC")
 START = date(2023, 1, 3)
 END = date(2025, 12, 30)
 OUT_DIR = Path(__file__).parent
@@ -64,7 +66,7 @@ def generate() -> None:
     days = _business_days(START, END)
     n_days = len(days)
 
-    for ticker, base in (("AAA", 80.0), ("BBB", 45.0), ("CCC", 120.0)):
+    for ticker, base in zip(TICKERS, (80.0, 45.0, 120.0), strict=True):
         drift = _daily_drifts(n_days, ticker)
         noise = rng.normal(0.0, 0.011, n_days)
         close = base * np.cumprod(1.0 + drift + noise)
@@ -97,4 +99,10 @@ def generate() -> None:
 
 
 if __name__ == "__main__":
+    existing = [f"{t}.csv" for t in TICKERS if (OUT_DIR / f"{t}.csv").exists()]
+    if existing and "--force" not in sys.argv:
+        raise SystemExit(
+            f"fixture CSVs already exist ({', '.join(existing)}); regenerating "
+            "invalidates every golden. Re-run with --force if that is the intent."
+        )
     generate()
