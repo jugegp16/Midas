@@ -401,6 +401,7 @@ def live(
         dry_run=dry_run,
         confirmer=confirmer,
         pending_ttl_hours=port.alerts_config.pending_ttl_hours if port.alerts_config else 8.0,
+        realert_hours=port.alerts_config.realert_hours if port.alerts_config else 1.0,
     ) as engine:
         engine.run()
 

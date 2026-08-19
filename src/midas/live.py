@@ -22,7 +22,7 @@ from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
-    DeclinedIntent,
+    IntentCooldown,
     LiveState,
     PendingOrder,
     PurchaseDate,
@@ -51,8 +51,9 @@ from midas.trade_log import append_trade
 logger = logging.getLogger(__name__)
 
 # A pending order suppresses re-alerts for the same (ticker, direction)
-# unless the recomputed share count moves by more than this fraction —
-# then the stale alert is expired and replaced.
+# unless the recomputed share count moves by more than this fraction AND
+# the pending alert has outlived the re-alert cooldown — then the stale
+# alert is expired and replaced. (Direction flips replace immediately.)
 PENDING_RESIZE_TOLERANCE = 0.10
 
 
@@ -113,6 +114,7 @@ class LiveEngine:
         history_days: int | None = None,
         confirmer: OrderConfirmer | None = None,
         pending_ttl_hours: float = 8.0,
+        realert_hours: float = 1.0,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -133,6 +135,9 @@ class LiveEngine:
                 orders become pending at alert time and fill only on
                 operator confirmation. None keeps assumed-fill behavior.
             pending_ttl_hours: Hours a pending order stays confirmable.
+            realert_hours: Minimum hours before the same (ticker,
+                direction) is re-alerted after a confirmed fill or a
+                resize of a still-pending alert.
 
         Raises:
             RuntimeError: If file locking is unavailable on this platform or
@@ -171,6 +176,7 @@ class LiveEngine:
                 confirmer = None
             self._confirmer = confirmer
             self._pending_ttl = timedelta(hours=pending_ttl_hours)
+            self._realert_cooldown = timedelta(hours=realert_hours)
             # Derive the history window from the largest warmup required across
             # configured strategies (plus slack for weekends/holidays). An explicit
             # ``history_days`` override is still honored for tests.
@@ -461,11 +467,7 @@ class LiveEngine:
         would replay the confirmation and double-book the fill.
         """
         assert self._confirmer is not None
-        # Age out decline memory: a decline suppresses its intent for one
-        # confirmation window (~a trading day), not forever.
-        self._state.declined_intents = [
-            declined for declined in self._state.declined_intents if now - declined.declined_at <= self._pending_ttl
-        ]
+        self._state.intent_cooldowns = [cooldown for cooldown in self._state.intent_cooldowns if now < cooldown.until]
         for pending in list(self._state.pending_orders):
             decision = self._confirmer.poll_decision(pending.message_id)
             expired = decision is None and now - pending.created_at > self._pending_ttl
@@ -475,13 +477,23 @@ class LiveEngine:
             self._state.pending_orders = [p for p in self._state.pending_orders if p is not pending]
             booked: SellBreakdown | None | Literal["buy", "nothing-held"] = None
             note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
+            # Cooldowns are recorded in the same durable transition as the
+            # removal, so suppression survives a crash/restart like a fill.
+            # A decline silences the intent for the rest of the confirmation
+            # window ("no for today"); a confirmed fill only for the shorter
+            # re-alert cooldown (scale-ins at most hourly, not every tick).
             if decision == "confirmed":
                 booked, note = self._book_confirmed_fill(pending, today, note)
+                self._state.intent_cooldowns.append(
+                    IntentCooldown(
+                        ticker=pending.ticker,
+                        direction=pending.direction,
+                        until=now + self._realert_cooldown,
+                    )
+                )
             elif decision == "declined":
-                # Recorded in the same durable transition as the removal, so
-                # the suppression survives a crash/restart just like a fill.
-                self._state.declined_intents.append(
-                    DeclinedIntent(ticker=pending.ticker, direction=pending.direction, declined_at=now)
+                self._state.intent_cooldowns.append(
+                    IntentCooldown(ticker=pending.ticker, direction=pending.direction, until=now + self._pending_ttl)
                 )
             save_atomic(self._state, self._state_path)
 
@@ -605,18 +617,20 @@ class LiveEngine:
         """Post new orders for confirmation, honoring the pending gate.
 
         A live pending order suppresses re-alerts for the same
-        (ticker, direction) unless the recomputed shares moved beyond
-        ``PENDING_RESIZE_TOLERANCE`` or the direction flipped — then the
-        stale alert is expired and replaced. A decline suppresses its
-        (ticker, direction) outright — regardless of size — until the
-        decline ages past the confirmation TTL (pruned in
-        ``_resolve_pending``); the operator said no for today.
+        (ticker, direction). A direction flip supersedes the stale alert
+        immediately (an exit signal must not wait), but a mere resize
+        beyond ``PENDING_RESIZE_TOLERANCE`` only supersedes once the
+        pending alert is older than the re-alert cooldown — live prices
+        wobble every tick, and expire-and-replace churn on every size
+        recompute buried the operator in "Expired" spam. Intents under an
+        active cooldown (operator declined, or a fill just booked) are
+        skipped outright; cooldowns are pruned in ``_resolve_pending``.
         """
         assert self._confirmer is not None
-        declined_keys = {(declined.ticker, declined.direction) for declined in self._state.declined_intents}
+        cooled_keys = {(cooldown.ticker, cooldown.direction) for cooldown in self._state.intent_cooldowns}
         remaining_cash = pre_fill_cash
         for order in orders:
-            if order.shares <= 0 or (order.ticker, order.direction) in declined_keys:
+            if order.shares <= 0 or (order.ticker, order.direction) in cooled_keys:
                 continue
             keep_pending: list[PendingOrder] = []
             suppressed = False
@@ -624,19 +638,22 @@ class LiveEngine:
                 if pending.ticker != order.ticker:
                     keep_pending.append(pending)
                     continue
-                same_intent = (
+                resized = (
                     pending.direction == order.direction
-                    and abs(order.shares - pending.shares) <= PENDING_RESIZE_TOLERANCE * pending.shares
+                    and abs(order.shares - pending.shares) > PENDING_RESIZE_TOLERANCE * pending.shares
                 )
-                if same_intent:
-                    suppressed = True
-                    keep_pending.append(pending)
-                else:
+                replace = pending.direction != order.direction or (
+                    resized and now - pending.created_at >= self._realert_cooldown
+                )
+                if replace:
                     print_status(
                         f"Superseded pending {pending.direction.value} {pending.ticker}: "
                         f"recomputed as {order.direction.value} {order.shares} shares"
                     )
                     self._confirmer.mark_expired(pending.message_id)
+                else:
+                    suppressed = True
+                    keep_pending.append(pending)
             self._state.pending_orders = keep_pending
             if suppressed:
                 continue

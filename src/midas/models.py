@@ -291,6 +291,7 @@ class AlertsConfig:
     discord_channel_id: str = ""
     timeout_seconds: float = 5.0
     pending_ttl_hours: float = 8.0
+    realert_hours: float = 1.0
 
     def __post_init__(self) -> None:
         # Inverted comparisons so NaN is rejected rather than slipping through.
@@ -299,4 +300,7 @@ class AlertsConfig:
             raise ValueError(msg)
         if not self.pending_ttl_hours > 0:
             msg = f"pending_ttl_hours must be > 0, got {self.pending_ttl_hours}"
+            raise ValueError(msg)
+        if not self.realert_hours > 0:
+            msg = f"realert_hours must be > 0, got {self.realert_hours}"
             raise ValueError(msg)

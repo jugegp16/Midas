@@ -679,16 +679,28 @@ def test_pending_suppresses_same_intent(tmp_path: Path, make_provider: ProviderF
         assert len(engine._state.pending_orders) == 1
 
 
-def test_material_resize_replaces_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
+def test_material_resize_replaces_pending_only_after_cooldown(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Size wobble within the cooldown must NOT churn expire-and-replace.
+
+    Live prices move every tick, so recomputed share counts routinely
+    cross the resize tolerance; replacing on every recompute buried the
+    operator in "Expired" spam minutes apart.
+    """
     confirmer = FakeConfirmer()
     with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
         engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
-        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW, 10_000.0)
 
+        # Materially different size, but the pending alert is minutes old:
+        # keep the original alert, no churn.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(minutes=5), 10_000.0)
+        assert confirmer.expired == []
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-1"]
+
+        # Past the re-alert cooldown (1h default): now supersede.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW + timedelta(hours=2), 10_000.0)
         assert confirmer.expired == ["msg-1"]
-        assert len(engine._state.pending_orders) == 1
+        assert [p.message_id for p in engine._state.pending_orders] == ["msg-2"]
         assert engine._state.pending_orders[0].shares == 9.0
-        assert engine._state.pending_orders[0].message_id == "msg-2"
 
 
 def test_direction_flip_replaces_pending(tmp_path: Path, make_provider: ProviderFactory) -> None:
@@ -878,4 +890,34 @@ def test_declined_intent_survives_restart(tmp_path: Path, make_provider: Provide
         engine._resolve_pending(TODAY, NOW)
 
     on_disk = load_state(tmp_path / "state.yaml")
-    assert [(d.ticker, d.direction) for d in on_disk.declined_intents] == [("AAPL", Direction.BUY)]
+    assert [(c.ticker, c.direction) for c in on_disk.intent_cooldowns] == [("AAPL", Direction.BUY)]
+
+
+def test_confirmed_fill_cools_down_realerts(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """After a ✅, the same intent must not fire again on the next tick."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0, price=100.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "confirmed"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Allocator still wants more AAPL a tick later: suppressed.
+        engine._resolve_pending(TODAY, NOW + timedelta(minutes=1))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 3.0)], NOW + timedelta(minutes=1), 9_500.0)
+        assert len(confirmer.posted) == 1
+
+        # After the cooldown (1h default), a genuine scale-in may re-alert.
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=2))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 3.0)], NOW + timedelta(hours=2), 9_500.0)
+        assert len(confirmer.posted) == 2
+
+
+def test_direction_flip_supersedes_within_cooldown(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An exit signal replaces a fresh pending BUY immediately — no waiting."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW + timedelta(minutes=1), 10_000.0)
+
+        assert confirmer.expired == ["msg-1"]
+        assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]

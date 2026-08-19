@@ -89,10 +89,13 @@ message:
 - **No reaction** — the alert expires after `pending_ttl_hours`
   (default 8) and nothing is booked.
 
-While an order awaits confirmation, the same intent is not re-alerted;
-if the engine recomputes a materially different order (>10% share
-change or a direction flip), the stale alert is marked expired and
-replaced. Terminal output is unchanged and remains the channel of
+While an order awaits confirmation, the same intent is not re-alerted.
+Re-alerts are rate-limited by `realert_hours` (default 1): a >10% share
+resize only supersedes a pending alert once it is at least that old
+(prices wobble every tick — without this, alerts churned minutes
+apart), and after a ✅ the same trade won't be proposed again within
+the window. Direction flips supersede immediately — an exit signal
+never waits. Terminal output is unchanged and remains the channel of
 record; Discord/network failures never interrupt polling — a pending
 order just waits for the next poll.
 
@@ -113,6 +116,7 @@ alerts:
   discord_channel_id: 1400000000000000001
   timeout_seconds: 5      # optional, per-request timeout
   pending_ttl_hours: 8    # optional, confirmation window
+  realert_hours: 1        # optional, min gap between re-alerts of one intent
 ```
 
 The bot token IS a secret — it goes in the environment, never in YAML:

@@ -95,17 +95,19 @@ class PendingOrder:
 
 
 @dataclass(frozen=True)
-class DeclinedIntent:
-    """A (ticker, direction) the operator declined (issue #81).
+class IntentCooldown:
+    """A (ticker, direction) that must not be re-alerted before ``until``.
 
-    Suppresses re-alerting the same intent until the decline ages past
-    the confirmation TTL — a declined trade must not come back on the
-    very next poll.
+    Written when the operator resolves an alert: a decline suppresses the
+    intent for the rest of the confirmation window (a declined trade must
+    not come back on the very next poll), a confirmed fill suppresses it
+    for the shorter re-alert cooldown (scale-ins at most hourly, not
+    every tick).
     """
 
     ticker: str
     direction: Direction
-    declined_at: datetime
+    until: datetime
 
 
 @dataclass
@@ -118,7 +120,7 @@ class LiveState:
     peak_equity: float | None = None
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     pending_orders: list[PendingOrder] = field(default_factory=list)
-    declined_intents: list[DeclinedIntent] = field(default_factory=list)
+    intent_cooldowns: list[IntentCooldown] = field(default_factory=list)
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -156,13 +158,13 @@ def save_atomic(state: LiveState, path: Path) -> None:
             }
             for pending in state.pending_orders
         ],
-        "declined_intents": [
+        "intent_cooldowns": [
             {
-                "ticker": declined.ticker,
-                "direction": declined.direction.value,
-                "declined_at": declined.declined_at.isoformat(),
+                "ticker": cooldown.ticker,
+                "direction": cooldown.direction.value,
+                "until": cooldown.until.isoformat(),
             }
-            for declined in state.declined_intents
+            for cooldown in state.intent_cooldowns
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +234,7 @@ def load_state(path: Path) -> LiveState:
         ]
 
     pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
-    declined_intents = [_parse_declined_intent(entry, path) for entry in raw.get("declined_intents") or []]
+    intent_cooldowns = [_parse_intent_cooldown(entry, path) for entry in raw.get("intent_cooldowns") or []]
 
     return LiveState(
         available_cash=float(raw["available_cash"]),
@@ -241,7 +243,7 @@ def load_state(path: Path) -> LiveState:
         peak_equity=raw.get("peak_equity"),
         lots=lots,
         pending_orders=pending_orders,
-        declined_intents=declined_intents,
+        intent_cooldowns=intent_cooldowns,
     )
 
 
@@ -258,16 +260,16 @@ def _parse_utc_datetime(raw_value: Any, field_name: str) -> datetime:
     return value
 
 
-def _parse_declined_intent(entry: Any, path: Path) -> DeclinedIntent:
-    """Deserialize one ``declined_intents`` entry, tolerating hand-edits."""
+def _parse_intent_cooldown(entry: Any, path: Path) -> IntentCooldown:
+    """Deserialize one ``intent_cooldowns`` entry, tolerating hand-edits."""
     try:
-        return DeclinedIntent(
+        return IntentCooldown(
             ticker=str(entry["ticker"]),
             direction=Direction(entry["direction"]),
-            declined_at=_parse_utc_datetime(entry["declined_at"], "declined_at"),
+            until=_parse_utc_datetime(entry["until"], "until"),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        msg = f"invalid declined_intents entry in {path}: {exc}"
+        msg = f"invalid intent_cooldowns entry in {path}: {exc}"
         raise StateFileError(msg) from exc
 
 

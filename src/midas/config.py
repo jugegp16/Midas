@@ -114,7 +114,7 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
             "(see docs/cli.md, Discord push notifications)"
         )
         raise ValueError(msg)
-    known_keys = {"discord_channel_id", "timeout_seconds", "pending_ttl_hours"}
+    known_keys = {"discord_channel_id", "timeout_seconds", "pending_ttl_hours", "realert_hours"}
     unknown_keys = set(alerts_raw) - known_keys
     if unknown_keys:
         # A typo'd key would otherwise silently disable push notifications.
@@ -133,6 +133,7 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         discord_channel_id=channel_id,
         timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", 5.0),
         pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", 8.0),
+        realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", 1.0),
     )
 
 
