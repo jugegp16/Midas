@@ -79,7 +79,7 @@ class OrderConfirmer(Protocol):
 def order_embed(order: Order, timestamp: datetime, *, dry_run: bool = False) -> dict[str, Any]:
     """Build one Discord embed for a sized order."""
     prefix = "[DRY RUN] " if dry_run else ""
-    title = f"{prefix}{order.direction.value} {order.ticker} — {order.shares:.4f} sh @ ${order.price:,.2f}"
+    title = f"{prefix}{order.direction.value} {order.ticker} — {order.shares:g} sh @ ${order.price:,.2f}"
     ctx = order.context
     return {
         "title": title,

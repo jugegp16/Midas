@@ -95,13 +95,19 @@ class TestEmbedFormat:
     def test_buy_embed(self) -> None:
         embed = order_embed(make_order(), NOW)
 
-        assert embed["title"] == "BUY AAPL — 10.5000 sh @ $30.12"
+        assert embed["title"] == "BUY AAPL — 10.5 sh @ $30.12"
         assert embed["color"] == alerts.COLOR_BUY
         assert embed["timestamp"] == NOW.isoformat()
         fields = {field["name"]: field["value"] for field in embed["fields"]}
         assert fields["Strategy"] == "Momentum"
         assert fields["Reason"] == "momentum crossover"
         assert fields["Estimated value"] == "$316.26"
+
+    def test_whole_share_orders_print_as_integers(self) -> None:
+        """The sizer floors to whole shares — no '23.0000 sh' noise."""
+        embed = order_embed(make_order(shares=23.0, price=100.0), NOW)
+
+        assert embed["title"] == "BUY AAPL — 23 sh @ $100.00"
 
     def test_sell_embed_is_red(self) -> None:
         embed = order_embed(make_order(direction=Direction.SELL), NOW)

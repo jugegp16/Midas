@@ -476,7 +476,7 @@ class LiveEngine:
 
             self._state.pending_orders = [p for p in self._state.pending_orders if p is not pending]
             booked: SellBreakdown | None | Literal["buy", "nothing-held"] = None
-            note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
+            note = f"{pending.shares:g} sh @ ${pending.price:,.2f} on {today.isoformat()}"
             # Cooldowns are recorded in the same durable transition as the
             # removal, so suppression survives a crash/restart like a fill.
             # A decline silences the intent for the rest of the confirmation
@@ -501,11 +501,11 @@ class LiveEngine:
             if decision == "confirmed":
                 self._finish_confirmed_fill(pending, booked, note, today)
             elif decision == "declined":
-                print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares} shares)")
+                print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)")
                 self._confirmer.mark_declined(pending.message_id)
             else:
                 print_status(
-                    f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares} shares)"
+                    f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)"
                 )
                 self._confirmer.mark_expired(pending.message_id)
 
@@ -544,7 +544,7 @@ class LiveEngine:
                 pending.shares,
                 shares,
             )
-            note = f"{shares} sh @ ${pending.price:,.2f} on {today.isoformat()} (clamped from {pending.shares})"
+            note = f"{shares:g} sh @ ${pending.price:,.2f} on {today.isoformat()} (clamped from {pending.shares:g})"
         return apply_sell(self._state, pending.ticker, shares, pending.price, today), note
 
     def _finish_confirmed_fill(
