@@ -94,6 +94,20 @@ class PendingOrder:
     message_id: str
 
 
+@dataclass(frozen=True)
+class DeclinedIntent:
+    """A (ticker, direction) the operator declined (issue #81).
+
+    Suppresses re-alerting the same intent until the decline ages past
+    the confirmation TTL — a declined trade must not come back on the
+    very next poll.
+    """
+
+    ticker: str
+    direction: Direction
+    declined_at: datetime
+
+
 @dataclass
 class LiveState:
     """Mutable runtime state persisted between live ticks."""
@@ -104,6 +118,7 @@ class LiveState:
     peak_equity: float | None = None
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     pending_orders: list[PendingOrder] = field(default_factory=list)
+    declined_intents: list[DeclinedIntent] = field(default_factory=list)
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -140,6 +155,14 @@ def save_atomic(state: LiveState, path: Path) -> None:
                 "message_id": pending.message_id,
             }
             for pending in state.pending_orders
+        ],
+        "declined_intents": [
+            {
+                "ticker": declined.ticker,
+                "direction": declined.direction.value,
+                "declined_at": declined.declined_at.isoformat(),
+            }
+            for declined in state.declined_intents
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -209,6 +232,7 @@ def load_state(path: Path) -> LiveState:
         ]
 
     pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
+    declined_intents = [_parse_declined_intent(entry, path) for entry in raw.get("declined_intents") or []]
 
     return LiveState(
         available_cash=float(raw["available_cash"]),
@@ -217,21 +241,39 @@ def load_state(path: Path) -> LiveState:
         peak_equity=raw.get("peak_equity"),
         lots=lots,
         pending_orders=pending_orders,
+        declined_intents=declined_intents,
     )
+
+
+def _parse_utc_datetime(raw_value: Any, field_name: str) -> datetime:
+    """Coerce an ISO string or YAML-parsed datetime, defaulting naive to UTC."""
+    value = datetime.fromisoformat(raw_value) if isinstance(raw_value, str) else raw_value
+    if not isinstance(value, datetime):
+        msg = f"{field_name} must be a timestamp, got {raw_value!r}"
+        raise TypeError(msg)
+    if value.tzinfo is None:
+        # Hand-edited timestamps without an offset are taken as UTC —
+        # the engine writes offset-aware ISO strings.
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
+def _parse_declined_intent(entry: Any, path: Path) -> DeclinedIntent:
+    """Deserialize one ``declined_intents`` entry, tolerating hand-edits."""
+    try:
+        return DeclinedIntent(
+            ticker=str(entry["ticker"]),
+            direction=Direction(entry["direction"]),
+            declined_at=_parse_utc_datetime(entry["declined_at"], "declined_at"),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        msg = f"invalid declined_intents entry in {path}: {exc}"
+        raise StateFileError(msg) from exc
 
 
 def _parse_pending_order(entry: Any, path: Path) -> PendingOrder:
     """Deserialize one ``pending_orders`` entry, tolerating hand-edits."""
     try:
-        created_raw = entry["created_at"]
-        created_at = datetime.fromisoformat(created_raw) if isinstance(created_raw, str) else created_raw
-        if not isinstance(created_at, datetime):
-            msg = f"created_at must be a timestamp, got {created_raw!r}"
-            raise TypeError(msg)
-        if created_at.tzinfo is None:
-            # Hand-edited timestamps without an offset are taken as UTC —
-            # the engine writes offset-aware ISO strings.
-            created_at = created_at.replace(tzinfo=UTC)
         return PendingOrder(
             ticker=str(entry["ticker"]),
             direction=Direction(entry["direction"]),
@@ -239,7 +281,7 @@ def _parse_pending_order(entry: Any, path: Path) -> PendingOrder:
             price=float(entry["price"]),
             strategy_name=str(entry.get("strategy_name", "")),
             reason=str(entry.get("reason", "")),
-            created_at=created_at,
+            created_at=_parse_utc_datetime(entry["created_at"], "created_at"),
             message_id=str(entry["message_id"]),
         )
     except (KeyError, TypeError, ValueError) as exc:

@@ -22,6 +22,7 @@ from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
+    DeclinedIntent,
     LiveState,
     PendingOrder,
     PurchaseDate,
@@ -460,6 +461,11 @@ class LiveEngine:
         would replay the confirmation and double-book the fill.
         """
         assert self._confirmer is not None
+        # Age out decline memory: a decline suppresses its intent for one
+        # confirmation window (~a trading day), not forever.
+        self._state.declined_intents = [
+            declined for declined in self._state.declined_intents if now - declined.declined_at <= self._pending_ttl
+        ]
         for pending in list(self._state.pending_orders):
             decision = self._confirmer.poll_decision(pending.message_id)
             expired = decision is None and now - pending.created_at > self._pending_ttl
@@ -471,6 +477,12 @@ class LiveEngine:
             note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
             if decision == "confirmed":
                 booked, note = self._book_confirmed_fill(pending, today, note)
+            elif decision == "declined":
+                # Recorded in the same durable transition as the removal, so
+                # the suppression survives a crash/restart just like a fill.
+                self._state.declined_intents.append(
+                    DeclinedIntent(ticker=pending.ticker, direction=pending.direction, declined_at=now)
+                )
             save_atomic(self._state, self._state_path)
 
             # State is durable — everything below is replay-safe salvage.
@@ -595,12 +607,16 @@ class LiveEngine:
         A live pending order suppresses re-alerts for the same
         (ticker, direction) unless the recomputed shares moved beyond
         ``PENDING_RESIZE_TOLERANCE`` or the direction flipped — then the
-        stale alert is expired and replaced.
+        stale alert is expired and replaced. A decline suppresses its
+        (ticker, direction) outright — regardless of size — until the
+        decline ages past the confirmation TTL (pruned in
+        ``_resolve_pending``); the operator said no for today.
         """
         assert self._confirmer is not None
+        declined_keys = {(declined.ticker, declined.direction) for declined in self._state.declined_intents}
         remaining_cash = pre_fill_cash
         for order in orders:
-            if order.shares <= 0:
+            if order.shares <= 0 or (order.ticker, order.direction) in declined_keys:
                 continue
             keep_pending: list[PendingOrder] = []
             suppressed = False

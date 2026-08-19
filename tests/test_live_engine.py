@@ -820,3 +820,62 @@ def test_sticky_reaction_is_not_replayed(tmp_path: Path, make_provider: Provider
 
         assert engine._state.available_cash == 10_000.0 - 500.0
         assert len(confirmer.booked) == 1
+
+
+def test_declined_intent_suppresses_reposting(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A declined trade must not come back on the next poll."""
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Same intent recomputed on later ticks — even at a different size.
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 9.0)], NOW, 10_000.0)
+
+        assert len(confirmer.posted) == 1
+        assert engine._state.pending_orders == []
+
+
+def test_declined_intent_expires_after_ttl(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer, pending_ttl_hours=2.0) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        # Within the window: suppressed. Past it: re-alerted.
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=1))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW + timedelta(hours=1), 10_000.0)
+        assert len(confirmer.posted) == 1
+
+        engine._resolve_pending(TODAY, NOW + timedelta(hours=3))
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW + timedelta(hours=3), 10_000.0)
+        assert len(confirmer.posted) == 2
+
+
+def test_declined_buy_does_not_suppress_sell(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.SELL, 5.0)], NOW, 10_000.0)
+
+        assert len(confirmer.posted) == 2
+        assert [p.direction for p in engine._state.pending_orders] == [Direction.SELL]
+
+
+def test_declined_intent_survives_restart(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert [(d.ticker, d.direction) for d in on_disk.declined_intents] == [("AAPL", Direction.BUY)]
