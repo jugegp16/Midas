@@ -276,19 +276,27 @@ class TaxConfig:
 
 @dataclass(frozen=True)
 class AlertsConfig:
-    """Optional push-notification policy for live alerts.
+    """Optional Discord alert-delivery policy for live mode.
 
-    The webhook URL is a write-capability secret: anyone holding it can post
-    to the channel. Prefer the ``MIDAS_DISCORD_WEBHOOK`` env var over the
-    YAML field if the portfolio file is ever committed or shared. The URL
-    may be empty here when the operator relies solely on the env var.
+    Delivery is bot-based: the channel id lives here (an identifier, not
+    a secret), while the bot token comes exclusively from the
+    ``MIDAS_DISCORD_BOT_TOKEN`` env var. Both present enables confirm
+    mode (pending orders, fills applied only on operator ✅).
+
+    pending_ttl_hours: how long a posted alert stays confirmable before
+        it expires. A crude stand-in for "end of the trading day" until
+        the #68 session clock exists.
     """
 
-    discord_webhook_url: str = ""
+    discord_channel_id: str = ""
     timeout_seconds: float = 5.0
+    pending_ttl_hours: float = 8.0
 
     def __post_init__(self) -> None:
-        # Inverted comparison so NaN is rejected rather than slipping through.
+        # Inverted comparisons so NaN is rejected rather than slipping through.
         if not self.timeout_seconds > 0:
             msg = f"timeout_seconds must be > 0, got {self.timeout_seconds}"
+            raise ValueError(msg)
+        if not self.pending_ttl_hours > 0:
+            msg = f"pending_ttl_hours must be > 0, got {self.pending_ttl_hours}"
             raise ValueError(msg)

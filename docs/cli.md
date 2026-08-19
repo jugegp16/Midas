@@ -69,32 +69,60 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `--interval` | 60 | Poll interval in seconds |
 | `--dry-run` | off | Log signals without emitting alerts |
 
-### Discord push notifications
+### Discord push notifications + fill confirmation
 
-Live alerts can additionally be pushed to a Discord channel via an
-incoming webhook (terminal output is unchanged and remains the channel
-of record). One-time setup, outside Midas: create a channel (e.g.
-`#midas-alerts`), then Channel Settings → Integrations → Webhooks → New
-Webhook → copy the URL.
+Live alerts can be pushed to a Discord channel, and — this is the
+important part — **orders only fill when you confirm them there**.
+Without Discord configured, live runs terminal-only and assumes every
+alert is executed immediately (the historical behavior).
 
-Configure in the portfolio YAML:
+In confirm mode, each BUY/SELL alert becomes one embed (green/red) with
+the strategy, reason, and estimated value, pre-seeded with ✅/❌
+reactions:
+
+- **React ✅** — you executed the trade. Midas books the fill at the
+  alert price: position lots, cash, the trade log, and the round-trip
+  restriction clock all update at confirmation time, not alert time.
+- **React ❌** — you skipped it. Nothing is booked.
+- **No reaction** — the alert expires after `pending_ttl_hours`
+  (default 8) and nothing is booked.
+
+While an order awaits confirmation, the same intent is not re-alerted;
+if the engine recomputes a materially different order (>10% share
+change or a direction flip), the stale alert is marked expired and
+replaced. Terminal output is unchanged and remains the channel of
+record; Discord/network failures never interrupt polling — a pending
+order just waits for the next poll.
+
+One-time setup (~5 minutes):
+
+1. [discord.com/developers](https://discord.com/developers/applications)
+   → New Application → **Bot** tab → Reset Token → copy the token.
+2. OAuth2 → URL Generator → scope `bot` → permissions **Send Messages**,
+   **Read Message History**, **Add Reactions** → open the generated URL
+   to invite the bot to your server.
+3. Discord settings → Advanced → Developer Mode on → right-click your
+   alerts channel → Copy Channel ID.
+
+Configure the channel in the portfolio YAML (the id is not a secret):
 
 ```yaml
 alerts:
-  discord_webhook_url: https://discord.com/api/webhooks/...
-  timeout_seconds: 5      # optional, per-POST timeout
+  discord_channel_id: 1400000000000000001
+  timeout_seconds: 5      # optional, per-request timeout
+  pending_ttl_hours: 8    # optional, confirmation window
 ```
 
-The webhook URL is a secret — anyone holding it can post to your
-channel. If your portfolio file is committed or shared, leave
-`discord_webhook_url` out (or keep `alerts: {}`) and supply the URL via
-the environment instead:
+The bot token IS a secret — it goes in the environment, never in YAML:
 
 ```bash
-MIDAS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/... uv run midas live -p portfolio.yaml
+MIDAS_DISCORD_BOT_TOKEN=... uv run midas live -p portfolio.yaml
 ```
 
-The env var always wins over the YAML value. Each BUY/SELL alert
-becomes one embed (green/red) with the strategy, reason, and estimated
-value. Delivery failures never interrupt polling — errors are logged
-and the alert still appears in the terminal.
+Both the token and the channel id are required for confirm mode;
+setting only one is a startup error. `--dry-run` disables confirm mode
+(terminal-only, assumed fills, alerts labeled).
+
+> Migration note: the `discord_webhook_url` key from the earlier
+> webhook-based delivery was removed and is rejected at config load —
+> delete the webhook in Discord and switch to the bot setup above.

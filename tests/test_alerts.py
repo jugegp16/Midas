@@ -1,27 +1,29 @@
-"""Tests for Discord alert delivery (midas.alerts)."""
+"""Tests for Discord bot delivery and confirmation (midas.alerts)."""
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from email.message import Message
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from midas import alerts
 from midas.alerts import (
-    DISCORD_WEBHOOK_ENV_VAR,
-    MAX_EMBEDS_PER_POST,
-    DiscordAlertSink,
-    build_alert_sinks,
+    CONFIRM_EMOJI,
+    DISCORD_BOT_TOKEN_ENV_VAR,
+    DiscordBotClient,
+    DiscordConfirmer,
+    build_confirmer,
+    order_embed,
 )
 from midas.models import AlertsConfig, Direction, Order, OrderContext
 
-WEBHOOK = "https://discord.com/api/webhooks/123/abc"
-NOW = datetime(2026, 8, 18, 14, 30, 0, tzinfo=UTC)
+CHANNEL = "1400000000000000001"
+NOW = datetime(2026, 8, 19, 14, 30, 0, tzinfo=UTC)
 
 
 def make_order(
@@ -47,41 +49,52 @@ def make_order(
     )
 
 
-def http_429(retry_after: str | None) -> urllib.error.HTTPError:
+def http_error(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
     headers = Message()
     if retry_after is not None:
         headers["Retry-After"] = retry_after
-    return urllib.error.HTTPError(WEBHOOK, 429, "Too Many Requests", headers, None)
+    return urllib.error.HTTPError("https://discord.com/api/v10/x", code, "err", headers, None)
+
+
+class FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
 
 
 @pytest.fixture
-def captured_posts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Capture every webhook POST payload instead of hitting the network."""
-    import json
+def captured(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Capture every Discord REST request; respond with a message object."""
+    requests: list[dict[str, Any]] = []
 
-    posts: list[dict[str, Any]] = []
-
-    def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-        posts.append(
+    def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+        requests.append(
             {
-                "payload": json.loads(request.data),
-                "timeout": timeout,
+                "method": request.get_method(),
                 "url": request.full_url,
+                "payload": json.loads(request.data) if request.data else None,
                 "headers": dict(request.header_items()),
+                "timeout": timeout,
             }
         )
-        return MagicMock()
+        return FakeResponse(b'{"id": "999888777"}')
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    return posts
+    return requests
 
 
 class TestEmbedFormat:
-    def test_buy_embed(self, captured_posts: list[dict[str, Any]]) -> None:
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+    def test_buy_embed(self) -> None:
+        embed = order_embed(make_order(), NOW)
 
-        assert len(captured_posts) == 1
-        embed = captured_posts[0]["payload"]["embeds"][0]
         assert embed["title"] == "BUY AAPL — 10.5000 sh @ $30.12"
         assert embed["color"] == alerts.COLOR_BUY
         assert embed["timestamp"] == NOW.isoformat()
@@ -90,180 +103,211 @@ class TestEmbedFormat:
         assert fields["Reason"] == "momentum crossover"
         assert fields["Estimated value"] == "$316.26"
 
-    def test_sell_embed_is_red(self, captured_posts: list[dict[str, Any]]) -> None:
-        DiscordAlertSink(WEBHOOK).send_orders([make_order(direction=Direction.SELL)], NOW)
+    def test_sell_embed_is_red(self) -> None:
+        embed = order_embed(make_order(direction=Direction.SELL), NOW)
 
-        embed = captured_posts[0]["payload"]["embeds"][0]
         assert embed["title"].startswith("SELL AAPL")
         assert embed["color"] == alerts.COLOR_SELL
 
-    def test_dry_run_prefix(self, captured_posts: list[dict[str, Any]]) -> None:
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW, dry_run=True)
+    def test_dry_run_prefix(self) -> None:
+        embed = order_embed(make_order(), NOW, dry_run=True)
 
-        embed = captured_posts[0]["payload"]["embeds"][0]
         assert embed["title"].startswith("[DRY RUN] BUY AAPL")
 
-    def test_timeout_and_url_are_used(self, captured_posts: list[dict[str, Any]]) -> None:
-        DiscordAlertSink(WEBHOOK, timeout_seconds=2.5).send_orders([make_order()], NOW)
 
-        assert captured_posts[0]["url"] == WEBHOOK
-        assert captured_posts[0]["timeout"] == 2.5
+class TestBotClient:
+    def test_create_message_request_shape(self, captured: list[dict[str, Any]]) -> None:
+        client = DiscordBotClient("tok-123", timeout_seconds=2.5)
 
-    def test_explicit_user_agent_is_sent(self, captured_posts: list[dict[str, Any]]) -> None:
-        """Cloudflare 403s urllib's default UA (error 1010) — pin the override."""
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+        message_id = client.create_message(CHANNEL, {"content": "hi"})
 
-        headers = captured_posts[0]["headers"]
-        assert headers.get("User-agent") == alerts.USER_AGENT
+        assert message_id == "999888777"
+        req = captured[0]
+        assert req["method"] == "POST"
+        assert req["url"] == f"{alerts.DISCORD_API_BASE}/channels/{CHANNEL}/messages"
+        assert req["payload"] == {"content": "hi"}
+        assert req["headers"]["Authorization"] == "Bot tok-123"
+        assert req["headers"]["User-agent"] == alerts.USER_AGENT
+        assert req["timeout"] == 2.5
 
+    def test_add_reaction_urlencodes_emoji(self, captured: list[dict[str, Any]]) -> None:
+        DiscordBotClient("tok").add_reaction(CHANNEL, "42", CONFIRM_EMOJI)
 
-class TestBatching:
-    def test_orders_batch_at_discord_cap(self, captured_posts: list[dict[str, Any]]) -> None:
-        orders = [make_order(ticker=f"T{i:02d}") for i in range(25)]
+        req = captured[0]
+        assert req["method"] == "PUT"
+        assert req["url"].endswith("/messages/42/reactions/%E2%9C%85/@me")
+        assert req["payload"] is None
 
-        DiscordAlertSink(WEBHOOK).send_orders(orders, NOW)
+    def test_edit_message_patches_content(self, captured: list[dict[str, Any]]) -> None:
+        DiscordBotClient("tok").edit_message(CHANNEL, "42", {"content": "done"})
 
-        sizes = [len(post["payload"]["embeds"]) for post in captured_posts]
-        assert sizes == [MAX_EMBEDS_PER_POST, MAX_EMBEDS_PER_POST, 5]
+        req = captured[0]
+        assert req["method"] == "PATCH"
+        assert req["url"].endswith(f"/channels/{CHANNEL}/messages/42")
+        assert req["payload"] == {"content": "done"}
 
-    def test_no_orders_no_post(self, captured_posts: list[dict[str, Any]]) -> None:
-        DiscordAlertSink(WEBHOOK).send_orders([], NOW)
+    def test_get_reaction_users_parses_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        body = json.dumps([{"id": "1", "bot": True}, {"id": "2"}]).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(body))
 
-        assert captured_posts == []
+        users = DiscordBotClient("tok").get_reaction_users(CHANNEL, "42", CONFIRM_EMOJI)
 
-
-class TestFailureSemantics:
-    def test_network_error_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            raise urllib.error.URLError("connection refused")
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)  # must not raise
-
-    def test_non_429_http_error_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            raise urllib.error.HTTPError(WEBHOOK, 404, "Not Found", Message(), None)
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)  # must not raise
+        assert users == [{"id": "1", "bot": True}, {"id": "2"}]
 
     def test_429_with_short_retry_after_retries_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         sleeps: list[float] = []
 
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            calls.append("post")
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            calls.append("req")
             if len(calls) == 1:
-                raise http_429("0.7")
-            return MagicMock()
+                raise http_error(429, "0.7")
+            return FakeResponse(b'{"id": "1"}')
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         monkeypatch.setattr(alerts.time, "sleep", sleeps.append)
 
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+        DiscordBotClient("tok").create_message(CHANNEL, {"content": "hi"})
 
-        assert calls == ["post", "post"]
+        assert calls == ["req", "req"]
         assert sleeps == [0.7]
 
-    def test_429_with_long_retry_after_drops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_429_with_long_retry_after_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise http_error(429, "30")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(urllib.error.HTTPError):
+            DiscordBotClient("tok").create_message(CHANNEL, {"content": "hi"})
+
+
+class TestConfirmer:
+    def make(self, monkeypatch: pytest.MonkeyPatch, responder: Any) -> DiscordConfirmer:
+        monkeypatch.setattr(urllib.request, "urlopen", responder)
+        return DiscordConfirmer(DiscordBotClient("tok"), CHANNEL)
+
+    def test_post_order_posts_embed_and_seeds_reactions(self, captured: list[dict[str, Any]]) -> None:
+        confirmer = DiscordConfirmer(DiscordBotClient("tok"), CHANNEL)
+
+        message_id = confirmer.post_order(make_order(), NOW)
+
+        assert message_id == "999888777"
+        assert [req["method"] for req in captured] == ["POST", "PUT", "PUT"]
+        assert captured[0]["payload"]["embeds"][0]["title"].startswith("BUY AAPL")
+        assert "%E2%9C%85" in captured[1]["url"]
+        assert "%E2%9D%8C" in captured[2]["url"]
+
+    def test_post_order_failure_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise urllib.error.URLError("down")
+
+        confirmer = self.make(monkeypatch, fake_urlopen)
+
+        assert confirmer.post_order(make_order(), NOW) is None
+
+    def test_post_order_survives_seed_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A failed reaction seed must not orphan the already-posted message."""
         calls: list[str] = []
 
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            calls.append("post")
-            raise http_429("30")
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            calls.append(request.get_method())
+            if request.get_method() == "PUT":
+                raise http_error(403)
+            return FakeResponse(b'{"id": "77"}')
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        confirmer = self.make(monkeypatch, fake_urlopen)
 
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+        assert confirmer.post_order(make_order(), NOW) == "77"
+        assert calls == ["POST", "PUT", "PUT"]
 
-        assert calls == ["post"]
+    def _reaction_responder(self, confirm_users: list[dict[str, Any]], decline_users: list[dict[str, Any]]) -> Any:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            if "%E2%9C%85" in request.full_url:
+                return FakeResponse(json.dumps(confirm_users).encode())
+            return FakeResponse(json.dumps(decline_users).encode())
 
-    def test_429_without_retry_after_drops(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: list[str] = []
+        return fake_urlopen
 
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            calls.append("post")
-            raise http_429(None)
+    def test_poll_ignores_bot_seed_reactions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        bot_only = [{"id": "1", "bot": True}]
+        confirmer = self.make(monkeypatch, self._reaction_responder(bot_only, bot_only))
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert confirmer.poll_decision("42") is None
 
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+    def test_poll_human_confirm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(
+            monkeypatch,
+            self._reaction_responder([{"id": "1", "bot": True}, {"id": "2"}], [{"id": "1", "bot": True}]),
+        )
 
-        assert calls == ["post"]
+        assert confirmer.poll_decision("42") == "confirmed"
 
-    def test_429_retry_failure_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-            raise http_429("0.1")
+    def test_poll_human_decline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        confirmer = self.make(
+            monkeypatch,
+            self._reaction_responder([{"id": "1", "bot": True}], [{"id": "1", "bot": True}, {"id": "2"}]),
+        )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-        monkeypatch.setattr(alerts.time, "sleep", lambda _s: None)
+        assert confirmer.poll_decision("42") == "declined"
 
-        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)  # must not raise
+    def test_poll_confirm_wins_over_decline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both tapped: an executed trade must be booked."""
+        both = [{"id": "2"}]
+        confirmer = self.make(monkeypatch, self._reaction_responder(both, both))
+
+        assert confirmer.poll_decision("42") == "confirmed"
+
+    def test_poll_failure_means_no_decision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise urllib.error.URLError("down")
+
+        confirmer = self.make(monkeypatch, fake_urlopen)
+
+        assert confirmer.poll_decision("42") is None
+
+    def test_mark_booked_edits_content_and_swallows_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise http_error(404)
+
+        confirmer = self.make(monkeypatch, fake_urlopen)
+
+        confirmer.mark_booked("42", "note")  # must not raise
+        confirmer.mark_declined("42")
+        confirmer.mark_expired("42")
 
 
-class TestBuildAlertSinks:
-    def test_no_config_no_env_no_sinks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(DISCORD_WEBHOOK_ENV_VAR, raising=False)
+class TestBuildConfirmer:
+    def test_neither_configured_is_terminal_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
 
-        assert build_alert_sinks(None) == []
+        assert build_confirmer(None) is None
+        assert build_confirmer(AlertsConfig()) is None
 
-    def test_config_without_url_no_sinks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(DISCORD_WEBHOOK_ENV_VAR, raising=False)
+    def test_channel_without_token_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
 
-        assert build_alert_sinks(AlertsConfig()) == []
+        with pytest.raises(ValueError, match=DISCORD_BOT_TOKEN_ENV_VAR):
+            build_confirmer(AlertsConfig(discord_channel_id=CHANNEL))
 
-    def test_yaml_url_builds_discord_sink(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(DISCORD_WEBHOOK_ENV_VAR, raising=False)
+    def test_token_without_channel_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
 
-        sinks = build_alert_sinks(AlertsConfig(discord_webhook_url=WEBHOOK, timeout_seconds=3.0))
+        with pytest.raises(ValueError, match="discord_channel_id"):
+            build_confirmer(AlertsConfig())
+        with pytest.raises(ValueError, match="discord_channel_id"):
+            build_confirmer(None)
 
-        assert len(sinks) == 1
-        sink = sinks[0]
-        assert isinstance(sink, DiscordAlertSink)
-        assert sink._webhook_url == WEBHOOK
-        assert sink._timeout_seconds == 3.0
+    def test_both_configured_builds_confirmer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
 
-    def test_env_var_overrides_yaml_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        env_url = "https://discord.com/api/webhooks/999/env"
-        monkeypatch.setenv(DISCORD_WEBHOOK_ENV_VAR, env_url)
+        confirmer = build_confirmer(AlertsConfig(discord_channel_id=CHANNEL, timeout_seconds=3.0))
 
-        sinks = build_alert_sinks(AlertsConfig(discord_webhook_url=WEBHOOK))
+        assert isinstance(confirmer, DiscordConfirmer)
+        assert confirmer._channel_id == CHANNEL
+        assert confirmer._client._timeout_seconds == 3.0
 
-        assert isinstance(sinks[0], DiscordAlertSink)
-        assert sinks[0]._webhook_url == env_url
+    def test_blank_token_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "   ")
 
-    def test_env_var_alone_enables_sink_with_default_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_WEBHOOK_ENV_VAR, WEBHOOK)
-
-        sinks = build_alert_sinks(None)
-
-        assert len(sinks) == 1
-        assert isinstance(sinks[0], DiscordAlertSink)
-        assert sinks[0]._timeout_seconds == 5.0
-
-    def test_blank_env_var_falls_back_to_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_WEBHOOK_ENV_VAR, "   ")
-
-        sinks = build_alert_sinks(AlertsConfig(discord_webhook_url=WEBHOOK))
-
-        assert isinstance(sinks[0], DiscordAlertSink)
-        assert sinks[0]._webhook_url == WEBHOOK
-
-    def test_schemeless_yaml_url_raises_without_leaking_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A scheme-less URL must fail at startup, and the secret token must not appear in the error."""
-        monkeypatch.delenv(DISCORD_WEBHOOK_ENV_VAR, raising=False)
-
-        with pytest.raises(ValueError, match="https://") as excinfo:
-            build_alert_sinks(AlertsConfig(discord_webhook_url="discord.com/api/webhooks/1/secrettoken"))
-
-        assert "secrettoken" not in str(excinfo.value)
-
-    def test_schemeless_env_url_raises_without_leaking_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_WEBHOOK_ENV_VAR, "discord.com/api/webhooks/1/secrettoken")
-
-        with pytest.raises(ValueError, match="https://") as excinfo:
-            build_alert_sinks(None)
-
-        assert "secrettoken" not in str(excinfo.value)
+        assert build_confirmer(AlertsConfig()) is None

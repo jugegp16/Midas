@@ -16,12 +16,13 @@ try:
 except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
-from midas.alerts import AlertSink
+from midas.alerts import OrderConfirmer
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
     LiveState,
+    PendingOrder,
     PurchaseDate,
     SellBreakdown,
     aggregate_cost_basis,
@@ -46,6 +47,11 @@ from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_
 from midas.trade_log import append_trade
 
 logger = logging.getLogger(__name__)
+
+# A pending order suppresses re-alerts for the same (ticker, direction)
+# unless the recomputed share count moves by more than this fraction —
+# then the stale alert is expired and replaced.
+PENDING_RESIZE_TOLERANCE = 0.10
 
 
 def _acquire_state_lock(lock_path: Path) -> int:
@@ -103,7 +109,8 @@ class LiveEngine:
         poll_interval: int = 60,
         dry_run: bool = False,
         history_days: int | None = None,
-        alert_sinks: list[AlertSink] | None = None,
+        confirmer: OrderConfirmer | None = None,
+        pending_ttl_hours: float = 8.0,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -116,11 +123,14 @@ class LiveEngine:
             exit_rules: Optional exit rules that clamp targets downward.
             constraints: Allocation constraints; defaults to no constraints.
             poll_interval: Seconds between ticks.
-            dry_run: When True, alerts are labeled as dry-run.
+            dry_run: When True, alerts are labeled as dry-run and confirm
+                mode is disabled (assumed fills, no Discord posts).
             history_days: Explicit history window override (tests); derived
                 from strategy warmups when None.
-            alert_sinks: Push-notification transports invoked alongside the
-                terminal output. Terminal alerts are unaffected by sinks.
+            confirmer: When set (and not dry-run), enables confirm mode:
+                orders become pending at alert time and fill only on
+                operator confirmation. None keeps assumed-fill behavior.
+            pending_ttl_hours: Hours a pending order stays confirmable.
 
         Raises:
             RuntimeError: If file locking is unavailable on this platform or
@@ -154,7 +164,11 @@ class LiveEngine:
             self._provider = provider
             self._poll_interval = poll_interval
             self._dry_run = dry_run
-            self._alert_sinks = alert_sinks or []
+            if dry_run and confirmer is not None:
+                logger.info("dry run: confirm mode disabled, alerts stay terminal-only with assumed fills")
+                confirmer = None
+            self._confirmer = confirmer
+            self._pending_ttl = timedelta(hours=pending_ttl_hours)
             # Derive the history window from the largest warmup required across
             # configured strategies (plus slack for weekends/holidays). An explicit
             # ``history_days`` override is still honored for tests.
@@ -421,7 +435,6 @@ class LiveEngine:
 
         now = datetime.now(tz=UTC)
         remaining_cash = pre_fill_cash
-        alerted: list[Order] = []
         for order in orders:
             if order.shares <= 0:
                 continue
@@ -430,19 +443,173 @@ class LiveEngine:
             else:
                 remaining_cash += order.estimated_value
             print_alert(order, remaining_cash, now, dry_run=self._dry_run)
-            alerted.append(order)
 
-        if not alerted:
-            return
-        for sink in self._alert_sinks:
-            # Sinks contractually swallow delivery failures, but a sink bug
-            # must not kill the poll loop either — the terminal alert above
-            # already went out and is the channel of record. Same
-            # crash-proofing rationale as _fetch_histories.
-            try:
-                sink.send_orders(alerted, now, dry_run=self._dry_run)
-            except Exception:
-                logger.exception("alert sink %s raised; terminal alert already emitted", type(sink).__name__)
+    def _resolve_pending(self, today: date, now: datetime) -> None:
+        """Poll operator decisions on pending orders; apply, decline, or expire.
+
+        Runs at the top of the tick so a confirmed fill updates positions
+        and cash BEFORE this tick's allocation decisions.
+        """
+        assert self._confirmer is not None
+        still_pending: list[PendingOrder] = []
+        for pending in self._state.pending_orders:
+            decision = self._confirmer.poll_decision(pending.message_id)
+            if decision == "confirmed":
+                self._confirm_fill(pending, today)
+            elif decision == "declined":
+                print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares} shares)")
+                self._confirmer.mark_declined(pending.message_id)
+            elif now - pending.created_at > self._pending_ttl:
+                print_status(
+                    f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares} shares)"
+                )
+                self._confirmer.mark_expired(pending.message_id)
+            else:
+                still_pending.append(pending)
+        self._state.pending_orders = still_pending
+
+    def _confirm_fill(self, pending: PendingOrder, today: date) -> None:
+        """Book a confirmed pending order into state and the trade log.
+
+        Fills at the alert price — the same price assumption the legacy
+        path made; confirmation changes only the WHETHER (#74 will later
+        correct the at-what from broker truth).
+        """
+        assert self._confirmer is not None
+        note = f"{pending.shares} sh @ ${pending.price:,.2f} on {today.isoformat()}"
+        if pending.direction == Direction.BUY:
+            apply_buy(self._state, pending.ticker, pending.shares, pending.price, today)
+            record = TradeRecord(
+                date=today,
+                ticker=pending.ticker,
+                direction=Direction.BUY,
+                shares=pending.shares,
+                price=pending.price,
+                strategy_name=pending.strategy_name,
+                purchase_date=today,
+            )
+            self._append_log_row(record, cost_basis=None, purchase_date=today)
+        else:
+            held = sum(lot.shares for lot in self._state.lots.get(pending.ticker, []))
+            # Position may have shrunk since the alert (e.g. another sell
+            # confirmed first). Clamp rather than let apply_sell's oversell
+            # assertion kill the poll loop.
+            shares = min(pending.shares, held)
+            if shares <= 0:
+                logger.error(
+                    "confirmed SELL %s for %s shares but none are held in state; nothing booked",
+                    pending.ticker,
+                    pending.shares,
+                )
+                self._confirmer.mark_booked(pending.message_id, f"{note} — WARNING: no shares held, nothing booked")
+                return
+            if shares < pending.shares:
+                logger.warning(
+                    "confirmed SELL %s clamped from %s to %s shares (position shrank since alert)",
+                    pending.ticker,
+                    pending.shares,
+                    shares,
+                )
+                note = f"{shares} sh @ ${pending.price:,.2f} on {today.isoformat()} (clamped from {pending.shares})"
+            breakdown = apply_sell(self._state, pending.ticker, shares, pending.price, today)
+            self._log_sell_buckets(pending.ticker, pending.price, pending.strategy_name, breakdown, today)
+        if self._restriction_tracker is not None:
+            # Round-trip clocks start at real execution, not at alert time.
+            self._restriction_tracker.record_trade(pending.ticker, pending.direction, today)
+        print_status(f"Booked: {pending.direction.value} {pending.ticker} — {note}")
+        self._confirmer.mark_booked(pending.message_id, note)
+
+    def _log_sell_buckets(
+        self,
+        ticker: str,
+        price: float,
+        strategy_name: str,
+        breakdown: SellBreakdown,
+        today: date,
+    ) -> None:
+        """Append one trade-log row per non-empty ST/LT bucket of a sell."""
+        buckets = (
+            (HoldingPeriod.SHORT_TERM, breakdown.st_shares, breakdown.st_basis, breakdown.st_purchase_dates),
+            (HoldingPeriod.LONG_TERM, breakdown.lt_shares, breakdown.lt_basis, breakdown.lt_purchase_dates),
+        )
+        for period, shares, basis, dates in buckets:
+            if shares <= 0:
+                continue
+            purchase = resolve_purchase_date(dates)
+            record = TradeRecord(
+                date=today,
+                ticker=ticker,
+                direction=Direction.SELL,
+                shares=shares,
+                price=price,
+                strategy_name=strategy_name,
+                holding_period=period,
+                purchase_date=purchase,
+            )
+            self._append_log_row(record, cost_basis=basis, purchase_date=purchase)
+
+    def _post_pending_alerts(self, orders: list[Order], now: datetime, pre_fill_cash: float) -> None:
+        """Post new orders for confirmation, honoring the pending gate.
+
+        A live pending order suppresses re-alerts for the same
+        (ticker, direction) unless the recomputed shares moved beyond
+        ``PENDING_RESIZE_TOLERANCE`` or the direction flipped — then the
+        stale alert is expired and replaced.
+        """
+        assert self._confirmer is not None
+        remaining_cash = pre_fill_cash
+        for order in orders:
+            if order.shares <= 0:
+                continue
+            keep_pending: list[PendingOrder] = []
+            suppressed = False
+            for pending in self._state.pending_orders:
+                if pending.ticker != order.ticker:
+                    keep_pending.append(pending)
+                    continue
+                same_intent = (
+                    pending.direction == order.direction
+                    and abs(order.shares - pending.shares) <= PENDING_RESIZE_TOLERANCE * pending.shares
+                )
+                if same_intent:
+                    suppressed = True
+                    keep_pending.append(pending)
+                else:
+                    print_status(
+                        f"Superseded pending {pending.direction.value} {pending.ticker}: "
+                        f"recomputed as {order.direction.value} {order.shares} shares"
+                    )
+                    self._confirmer.mark_expired(pending.message_id)
+            self._state.pending_orders = keep_pending
+            if suppressed:
+                continue
+
+            # Terminal stays the channel of record; the projected-cash
+            # subtotal mirrors _emit_alerts.
+            if order.direction == Direction.BUY:
+                remaining_cash -= order.estimated_value
+            else:
+                remaining_cash += order.estimated_value
+            print_alert(order, remaining_cash, now, dry_run=self._dry_run)
+            print_status("Awaiting confirmation in Discord (react ✅ executed / ❌ skipped)")
+
+            message_id = self._confirmer.post_order(order, now)
+            if message_id is None:
+                # Not persisted as pending: the order is re-proposed and the
+                # post retried on a later tick.
+                continue
+            self._state.pending_orders.append(
+                PendingOrder(
+                    ticker=order.ticker,
+                    direction=order.direction,
+                    shares=order.shares,
+                    price=order.price,
+                    strategy_name=order.context.source,
+                    reason=order.context.reason,
+                    created_at=now,
+                    message_id=message_id,
+                )
+            )
 
     def _tick(self, tickers: list[str]) -> None:
         """Run one poll cycle: fetch, allocate, size, fill, persist, alert."""
@@ -473,6 +640,12 @@ class LiveEngine:
 
         self._advance_high_water_marks(active_tickers, current_prices)
         self._advance_cash_infusion(today)
+
+        now = datetime.now(tz=UTC)
+        if self._confirmer is not None:
+            # Resolve operator decisions FIRST so a confirmed fill updates
+            # positions and cash before this tick's allocation decisions.
+            self._resolve_pending(today, now)
 
         # Current positions + weights (weights feed Option A: neutral=hold).
         positions = self._positions(active_tickers)
@@ -541,6 +714,17 @@ class LiveEngine:
         # apply_buy/apply_sell mutate state.available_cash, so seeding the
         # running subtotal from state after fills would double-count.
         pre_fill_cash = self._state.available_cash
+
+        if self._confirmer is not None:
+            # Confirm mode: nothing fills at alert time. New orders are
+            # posted for confirmation; fills happened in _resolve_pending
+            # (already reflected in positions/cash above).
+            self._post_pending_alerts(filtered, now, pre_fill_cash)
+            current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
+            self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
+            # Persist pending-order transitions along with HWM/peak/infusion.
+            save_atomic(self._state, self._state_path)
+            return
 
         sell_breakdowns = self._apply_fills(filtered, today)
 

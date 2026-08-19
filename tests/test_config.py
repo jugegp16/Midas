@@ -286,22 +286,36 @@ def test_load_portfolio_with_alerts_block(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        "alerts:\n  discord_webhook_url: https://discord.com/api/webhooks/1/x\n  timeout_seconds: 2.5\n"
+        "alerts:\n  discord_channel_id: 1400000000000000001\n  timeout_seconds: 2.5\n  pending_ttl_hours: 4\n"
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_webhook_url == "https://discord.com/api/webhooks/1/x"
+    # YAML parses the snowflake as int; config normalizes to a string.
+    assert alerts.discord_channel_id == "1400000000000000001"
     assert alerts.timeout_seconds == 2.5
+    assert alerts.pending_ttl_hours == 4.0
+
+
+def test_load_portfolio_alerts_quoted_channel_id(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        'alerts:\n  discord_channel_id: "1400000000000000001"\n'
+    )
+    alerts = load_portfolio(path).alerts_config
+    assert alerts is not None
+    assert alerts.discord_channel_id == "1400000000000000001"
 
 
 def test_load_portfolio_alerts_defaults(tmp_path: Path) -> None:
-    """An empty alerts: block gets defaults (URL supplied via env var later)."""
+    """An empty alerts: block gets defaults (channel id may come later)."""
     path = tmp_path / "portfolio.yaml"
     path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts: {}\n")
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_webhook_url == ""
+    assert alerts.discord_channel_id == ""
     assert alerts.timeout_seconds == 5.0
+    assert alerts.pending_ttl_hours == 8.0
 
 
 def test_load_portfolio_without_alerts_block(tmp_path: Path) -> None:
@@ -310,14 +324,25 @@ def test_load_portfolio_without_alerts_block(tmp_path: Path) -> None:
     assert load_portfolio(path).alerts_config is None
 
 
+def test_load_portfolio_alerts_removed_webhook_key_raises_migration_error(tmp_path: Path) -> None:
+    """The #73 webhook key must fail loudly, not be silently ignored."""
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_webhook_url: https://discord.com/api/webhooks/1/x\n"
+    )
+    with pytest.raises(ValueError, match="replaced by bot delivery"):
+        load_portfolio(path)
+
+
 def test_load_portfolio_alerts_unknown_key_raises(tmp_path: Path) -> None:
     """A typo'd key must not silently disable push notifications."""
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        "alerts:\n  discord_webhook: https://discord.com/api/webhooks/1/x\n"
+        "alerts:\n  discord_channel: 1400000000000000001\n"
     )
-    with pytest.raises(ValueError, match="discord_webhook"):
+    with pytest.raises(ValueError, match="discord_channel"):
         load_portfolio(path)
 
 
@@ -328,23 +353,24 @@ def test_load_portfolio_alerts_non_mapping_raises(tmp_path: Path) -> None:
         load_portfolio(path)
 
 
-def test_load_portfolio_alerts_null_url_parses_as_empty(tmp_path: Path) -> None:
-    """A bare `discord_webhook_url:` key means "use the env var", not the string 'None'."""
+def test_load_portfolio_alerts_null_channel_parses_as_empty(tmp_path: Path) -> None:
+    """A bare `discord_channel_id:` key means "fill in later", not the string 'None'."""
     path = tmp_path / "portfolio.yaml"
     path.write_text(
-        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_webhook_url:\n"
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_channel_id:\n"
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_webhook_url == ""
+    assert alerts.discord_channel_id == ""
 
 
-def test_load_portfolio_alerts_non_string_url_raises(tmp_path: Path) -> None:
+def test_load_portfolio_alerts_non_numeric_channel_raises(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
-        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_webhook_url: 123\n"
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_channel_id: midas-alerts\n"
     )
-    with pytest.raises(ValueError, match="alerts: discord_webhook_url"):
+    with pytest.raises(ValueError, match="discord_channel_id"):
         load_portfolio(path)
 
 
@@ -357,10 +383,10 @@ def test_load_portfolio_alerts_null_timeout_raises(tmp_path: Path) -> None:
         load_portfolio(path)
 
 
-def test_load_portfolio_alerts_non_numeric_timeout_raises(tmp_path: Path) -> None:
+def test_load_portfolio_alerts_non_numeric_ttl_raises(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
-        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  timeout_seconds: fast\n"
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  pending_ttl_hours: soon\n"
     )
-    with pytest.raises(ValueError, match="alerts: timeout_seconds"):
+    with pytest.raises(ValueError, match="alerts: pending_ttl_hours"):
         load_portfolio(path)

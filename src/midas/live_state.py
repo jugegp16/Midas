@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 import yaml
 
-from midas.models import PortfolioConfig, PositionLot
+from midas.models import Direction, PortfolioConfig, PositionLot
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,25 @@ class StateFileError(ValueError):
     """Raised on schema version mismatch, parse failure, or invalid state."""
 
 
+@dataclass(frozen=True)
+class PendingOrder:
+    """An alerted order awaiting operator confirmation (issue #81).
+
+    Created when the confirm-mode engine posts an alert to Discord;
+    resolved when the operator reacts (✅ fill at ``price``, ❌ cancel)
+    or the TTL expires. Nothing else in state mutates at alert time.
+    """
+
+    ticker: str
+    direction: Direction
+    shares: float
+    price: float
+    strategy_name: str
+    reason: str
+    created_at: datetime
+    message_id: str
+
+
 @dataclass
 class LiveState:
     """Mutable runtime state persisted between live ticks."""
@@ -84,6 +103,7 @@ class LiveState:
     high_water_marks: dict[str, float] = field(default_factory=dict)
     peak_equity: float | None = None
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
+    pending_orders: list[PendingOrder] = field(default_factory=list)
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -108,6 +128,19 @@ def save_atomic(state: LiveState, path: Path) -> None:
             ]
             for ticker, lots in state.lots.items()
         },
+        "pending_orders": [
+            {
+                "ticker": pending.ticker,
+                "direction": pending.direction.value,
+                "shares": pending.shares,
+                "price": pending.price,
+                "strategy_name": pending.strategy_name,
+                "reason": pending.reason,
+                "created_at": pending.created_at.isoformat(),
+                "message_id": pending.message_id,
+            }
+            for pending in state.pending_orders
+        ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
@@ -175,13 +208,43 @@ def load_state(path: Path) -> LiveState:
             for entry in entries
         ]
 
+    pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
+
     return LiveState(
         available_cash=float(raw["available_cash"]),
         cash_infusion_next_date=next_date,
         high_water_marks={k: float(v) for k, v in (raw.get("high_water_marks") or {}).items()},
         peak_equity=raw.get("peak_equity"),
         lots=lots,
+        pending_orders=pending_orders,
     )
+
+
+def _parse_pending_order(entry: Any, path: Path) -> PendingOrder:
+    """Deserialize one ``pending_orders`` entry, tolerating hand-edits."""
+    try:
+        created_raw = entry["created_at"]
+        created_at = datetime.fromisoformat(created_raw) if isinstance(created_raw, str) else created_raw
+        if not isinstance(created_at, datetime):
+            msg = f"created_at must be a timestamp, got {created_raw!r}"
+            raise TypeError(msg)
+        if created_at.tzinfo is None:
+            # Hand-edited timestamps without an offset are taken as UTC —
+            # the engine writes offset-aware ISO strings.
+            created_at = created_at.replace(tzinfo=UTC)
+        return PendingOrder(
+            ticker=str(entry["ticker"]),
+            direction=Direction(entry["direction"]),
+            shares=float(entry["shares"]),
+            price=float(entry["price"]),
+            strategy_name=str(entry.get("strategy_name", "")),
+            reason=str(entry.get("reason", "")),
+            created_at=created_at,
+            message_id=str(entry["message_id"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        msg = f"invalid pending_orders entry in {path}: {exc}"
+        raise StateFileError(msg) from exc
 
 
 def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
