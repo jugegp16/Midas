@@ -62,7 +62,14 @@ def captured_posts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     posts: list[dict[str, Any]] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> MagicMock:
-        posts.append({"payload": json.loads(request.data), "timeout": timeout, "url": request.full_url})
+        posts.append(
+            {
+                "payload": json.loads(request.data),
+                "timeout": timeout,
+                "url": request.full_url,
+                "headers": dict(request.header_items()),
+            }
+        )
         return MagicMock()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -101,6 +108,13 @@ class TestEmbedFormat:
 
         assert captured_posts[0]["url"] == WEBHOOK
         assert captured_posts[0]["timeout"] == 2.5
+
+    def test_explicit_user_agent_is_sent(self, captured_posts: list[dict[str, Any]]) -> None:
+        """Cloudflare 403s urllib's default UA (error 1010) — pin the override."""
+        DiscordAlertSink(WEBHOOK).send_orders([make_order()], NOW)
+
+        headers = captured_posts[0]["headers"]
+        assert headers.get("User-agent") == alerts.USER_AGENT
 
 
 class TestBatching:

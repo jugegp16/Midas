@@ -33,6 +33,9 @@ MAX_EMBEDS_PER_POST = 10
 MAX_RETRY_AFTER_SECONDS = 5.0
 COLOR_BUY = 0x57F287  # Discord green
 COLOR_SELL = 0xED4245  # Discord red
+# Cloudflare fronts Discord and rejects urllib's default Python-urllib/x.y
+# User-Agent with HTTP 403 (error code 1010), so send an explicit one.
+USER_AGENT = "midas-alerts/0.1"
 
 
 class AlertSink(Protocol):
@@ -110,7 +113,7 @@ class DiscordAlertSink:
         request = urllib.request.Request(
             self._webhook_url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=self._timeout_seconds):
