@@ -68,3 +68,33 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `-s`, `--strategies` | all strategies | Path to strategies YAML |
 | `--interval` | 60 | Poll interval in seconds |
 | `--dry-run` | off | Log signals without emitting alerts |
+
+### Discord push notifications
+
+Live alerts can additionally be pushed to a Discord channel via an
+incoming webhook (terminal output is unchanged and remains the channel
+of record). One-time setup, outside Midas: create a channel (e.g.
+`#midas-alerts`), then Channel Settings → Integrations → Webhooks → New
+Webhook → copy the URL.
+
+Configure in the portfolio YAML:
+
+```yaml
+alerts:
+  discord_webhook_url: https://discord.com/api/webhooks/...
+  timeout_seconds: 5      # optional, per-POST timeout
+```
+
+The webhook URL is a secret — anyone holding it can post to your
+channel. If your portfolio file is committed or shared, leave
+`discord_webhook_url` out (or keep `alerts: {}`) and supply the URL via
+the environment instead:
+
+```bash
+MIDAS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/... uv run midas live -p portfolio.yaml
+```
+
+The env var always wins over the YAML value. Each BUY/SELL alert
+becomes one embed (green/red) with the strategy, reason, and estimated
+value. Delivery failures never interrupt polling — errors are logged
+and the alert still appears in the terminal.

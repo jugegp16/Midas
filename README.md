@@ -4,7 +4,7 @@ Target-weight allocation engine for your portfolio. Define your holdings and pic
 
 - **Optimize** strategy parameters with Bayesian search and walk-forward validation
 - **Backtest** against years of historical data with train/test splits
-- **Live** poll real-time prices and get trade alerts
+- **Live** poll real-time prices and get trade alerts -- in the terminal, and optionally pushed to Discord ([setup](docs/cli.md#discord-push-notifications))
 
 ## Quick Start
 

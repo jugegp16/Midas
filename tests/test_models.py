@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from midas.models import (
+    AlertsConfig,
     AllocationConstraints,
     CashInfusion,
     Direction,
@@ -203,3 +204,22 @@ class TestTaxConfig:
             TaxConfig(long_term_rate=float("nan"))
         with pytest.raises(ValueError, match="deductible_loss_cap"):
             TaxConfig(deductible_loss_cap=float("nan"))
+
+
+class TestAlertsConfig:
+    def test_defaults(self) -> None:
+        cfg = AlertsConfig()
+        assert cfg.discord_webhook_url == ""
+        assert cfg.timeout_seconds == 5.0
+
+    def test_timeout_zero_invalid(self) -> None:
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            AlertsConfig(timeout_seconds=0.0)
+
+    def test_timeout_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            AlertsConfig(timeout_seconds=-1.0)
+
+    def test_timeout_nan_invalid(self) -> None:
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            AlertsConfig(timeout_seconds=float("nan"))

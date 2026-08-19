@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date
+from collections.abc import Callable, Sequence
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from midas.alerts import AlertSink
 from midas.allocator import Allocator
 from midas.live import LiveEngine
 from midas.live_state import LiveState, StateFileError, aggregate_cost_basis, load_state, save_atomic
@@ -560,3 +561,97 @@ def test_drawdown_overlay_produces_smaller_exposure_under_real_drawdown() -> Non
 
     # Confirm the chain: deeper drawdown produces smaller-or-equal exposure.
     assert deep <= moderate <= no_dd
+
+
+class RecordingSink:
+    """AlertSink test double capturing every send_orders call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[Order], bool]] = []
+
+    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
+        self.calls.append((list(orders), dry_run))
+
+
+class RaisingSink:
+    """AlertSink test double whose delivery always blows up."""
+
+    def send_orders(self, orders: Sequence[Order], timestamp: datetime, *, dry_run: bool = False) -> None:
+        raise RuntimeError("sink bug")
+
+
+def _sized_order(ticker: str, direction: Direction, shares: float) -> Order:
+    return Order(
+        ticker=ticker,
+        direction=direction,
+        shares=shares,
+        price=100.0,
+        estimated_value=shares * 100.0,
+        context=OrderContext(
+            contributions={},
+            blended_score=0.5,
+            target_weight=0.2,
+            current_weight=0.1,
+            reason="test",
+            source="Momentum",
+        ),
+    )
+
+
+def _make_engine_with_sinks(tmp_path: Path, make_provider: ProviderFactory, sinks: list[AlertSink]) -> LiveEngine:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1000.0,
+    )
+    allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    return LiveEngine(
+        portfolio=portfolio,
+        allocator=allocator,
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        alert_sinks=sinks,
+    )
+
+
+def test_emit_alerts_dispatches_to_sinks(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    sink = RecordingSink()
+    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
+        orders = [_sized_order("AAPL", Direction.BUY, 2.0), _sized_order("AAPL", Direction.SELL, 0.0)]
+        engine._emit_alerts(orders, pre_fill_cash=1000.0)
+
+    assert len(sink.calls) == 1
+    sent, dry_run = sink.calls[0]
+    # Zero-share orders are excluded, matching the terminal output.
+    assert [(o.ticker, o.direction, o.shares) for o in sent] == [("AAPL", Direction.BUY, 2.0)]
+    assert dry_run is False
+
+
+def test_emit_alerts_suppresses_duplicate_tick_for_sinks(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    sink = RecordingSink()
+    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
+        orders = [_sized_order("AAPL", Direction.BUY, 2.0)]
+        engine._emit_alerts(orders, pre_fill_cash=1000.0)
+        engine._emit_alerts(orders, pre_fill_cash=1000.0)
+
+    assert len(sink.calls) == 1
+
+
+def test_emit_alerts_survives_sink_exception(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A buggy sink must not break the tick, and later sinks still fire."""
+    healthy = RecordingSink()
+    with _make_engine_with_sinks(tmp_path, make_provider, [RaisingSink(), healthy]) as engine:
+        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 2.0)], pre_fill_cash=1000.0)
+
+    assert len(healthy.calls) == 1
+
+
+def test_emit_alerts_no_sink_call_when_all_orders_zero(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An order set collapsing to zero shares changes keys but sends nothing."""
+    sink = RecordingSink()
+    with _make_engine_with_sinks(tmp_path, make_provider, [sink]) as engine:
+        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 2.0)], pre_fill_cash=1000.0)
+        engine._emit_alerts([_sized_order("AAPL", Direction.BUY, 0.0)], pre_fill_cash=1000.0)
+
+    assert len(sink.calls) == 1

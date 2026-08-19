@@ -13,6 +13,7 @@ from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     DEFAULT_SOFTMAX_TEMPERATURE,
     DEFAULT_VOL_LOOKBACK_DAYS,
+    AlertsConfig,
     AllocationConstraints,
     CashInfusion,
     Holding,
@@ -82,6 +83,29 @@ def _parse_tax_config(tax_raw: Any) -> TaxConfig | None:
     return None
 
 
+def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
+    """Build the optional ``alerts:`` block.
+
+    Raises:
+        ValueError: If the block has unrecognized keys or is not a mapping.
+    """
+    if alerts_raw is None:
+        return None
+    if not isinstance(alerts_raw, dict):
+        msg = f"alerts: must be a mapping, got {alerts_raw!r}"
+        raise ValueError(msg)
+    known_keys = {"discord_webhook_url", "timeout_seconds"}
+    unknown_keys = set(alerts_raw) - known_keys
+    if unknown_keys:
+        # A typo'd key would otherwise silently disable push notifications.
+        msg = f"alerts: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
+        raise ValueError(msg)
+    return AlertsConfig(
+        discord_webhook_url=str(alerts_raw.get("discord_webhook_url", "")),
+        timeout_seconds=float(alerts_raw.get("timeout_seconds", 5.0)),
+    )
+
+
 def load_portfolio(path: Path) -> PortfolioConfig:
     """Load portfolio config from YAML."""
     raw = _load_yaml(path)
@@ -106,6 +130,7 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
     state_file_raw = raw.get("state_file")
     tax = _parse_tax_config(raw.get("tax"))
+    alerts = _parse_alerts_config(raw.get("alerts"))
 
     return PortfolioConfig(
         holdings=holdings,
@@ -115,6 +140,7 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         state_file=Path(state_file_raw) if state_file_raw is not None else None,
         tax_config=tax,
         tax_declared="tax" in raw,
+        alerts_config=alerts,
     )
 
 
