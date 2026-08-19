@@ -152,6 +152,9 @@ def _compare_outputs(actual_dir: Path) -> list[str]:
         if not expected_path.exists():
             mismatches.append(f"{filename}: no golden file — run UPDATE_GOLDEN=1 to bless")
             continue
+        if not actual_path.exists():
+            mismatches.append(f"{filename}: not produced by this run")
+            continue
         if filename.endswith(".json"):
             mismatches.extend(_compare_json(expected_path, actual_path))
         else:
@@ -164,12 +167,21 @@ def test_golden_backtest(tmp_path: Path) -> None:
 
     # Guard against the scenario silently degrading into "no activity":
     # the goldens are only meaningful if the run exercises the full surface.
+    # (Carryforward is deliberately NOT exercised here — the 2024 loss sits
+    # under the deductible cap; the tax unit tests own that branch.)
     sells = [t for t in result.trades if t.direction == Direction.SELL]
     assert len(result.trades) > 10, "scenario produced too few trades to pin anything"
     periods = {t.holding_period for t in sells}
     assert HoldingPeriod.SHORT_TERM in periods, "no short-term sells — scenario too quiet"
+    assert HoldingPeriod.LONG_TERM in periods, "no long-term sells — scenario too quiet"
     assert result.tax_summary, "tax summary empty — after-tax path not exercised"
-    assert result.risk_metrics is not None or result.risk_history is not None
+    assert result.risk_history is not None
+    assert any(s != 1.0 for s in result.risk_history.cppi_scale), "CPPI overlay never engaged"
+    # Every file the writer emits must be pinned — a fifth output file added
+    # later has to show up in OUTPUT_FILES (and get a golden) to pass.
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(OUTPUT_FILES), (
+        "write_backtest_results emitted different files than OUTPUT_FILES pins"
+    )
 
     if os.environ.get("UPDATE_GOLDEN"):
         EXPECTED_DIR.mkdir(parents=True, exist_ok=True)

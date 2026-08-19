@@ -38,7 +38,7 @@ def _business_days(start: date, end: date) -> list[date]:
     return days
 
 
-def _daily_drifts(n_days: int, ticker: str, rng: np.random.Generator) -> np.ndarray:
+def _daily_drifts(n_days: int, ticker: str) -> np.ndarray:
     """Per-day deterministic drift component encoding the ticker personality."""
     drift = np.zeros(n_days)
     if ticker == "AAA":
@@ -56,7 +56,6 @@ def _daily_drifts(n_days: int, ticker: str, rng: np.random.Generator) -> np.ndar
         third = n_days // 3
         drift[:third] = -0.0009  # grinding down-year
         drift[third:] = 0.0011  # strong sustained uptrend
-    _ = rng  # personality is deterministic; noise is added by the caller
     return drift
 
 
@@ -66,7 +65,7 @@ def generate() -> None:
     n_days = len(days)
 
     for ticker, base in (("AAA", 80.0), ("BBB", 45.0), ("CCC", 120.0)):
-        drift = _daily_drifts(n_days, ticker, rng)
+        drift = _daily_drifts(n_days, ticker)
         noise = rng.normal(0.0, 0.011, n_days)
         close = base * np.cumprod(1.0 + drift + noise)
 
