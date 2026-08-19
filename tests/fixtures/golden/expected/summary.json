@@ -1,0 +1,62 @@
+{
+  "starting_value": 17256.86,
+  "final_value": 72502.75,
+  "total_return": 3.201387,
+  "total_return_annualized": 1.054787,
+  "cagr": 1.0548,
+  "twr": 0.0451,
+  "twr_annualized": 0.0224,
+  "buy_and_hold_value": 17800.37,
+  "buy_and_hold_return": 0.031495,
+  "buy_and_hold_return_annualized": 0.01568,
+  "total_trades": 61,
+  "max_drawdown": 0.0259,
+  "sharpe_ratio": 4.3729,
+  "sortino_ratio": 14.6058,
+  "win_rate": 0.5714,
+  "profit_factor": 1.1671,
+  "avg_win": 1199.27,
+  "avg_loss": -1370.05,
+  "unrealized_pnl": 2558.9,
+  "efficiency_ratio": 2.8014,
+  "split": {
+    "date": "2025-05-26",
+    "train_return": 0.0204,
+    "train_return_annualized": 0.0146,
+    "test_return": 0.0242,
+    "test_return_annualized": 0.0409,
+    "train_bh_return": 0.0069,
+    "train_bh_return_annualized": 0.0049,
+    "test_bh_return": 0.0244,
+    "test_bh_return_annualized": 0.0412,
+    "train_trades": 46,
+    "test_trades": 15
+  },
+  "after_tax_final_value": 72513.88,
+  "after_tax_total_return": 3.202,
+  "after_tax_cagr": 1.0549,
+  "after_tax_twr": 0.0453,
+  "tax_cost_ratio": -0.00015,
+  "tax_summary": [
+    {
+      "year": 2024,
+      "st_realized": -671.5627,
+      "lt_realized": 0.0,
+      "net_after_cross": -671.5627,
+      "deductible_loss": 671.5627,
+      "carry_forward": 0.0,
+      "tax_owed": -214.9001,
+      "payment_date": "2025-04-15"
+    },
+    {
+      "year": 2025,
+      "st_realized": -1467.5196,
+      "lt_realized": 2826.0074,
+      "net_after_cross": 1358.4878,
+      "deductible_loss": 0.0,
+      "carry_forward": 0.0,
+      "tax_owed": 203.7732,
+      "payment_date": "2025-12-30"
+    }
+  ]
+}
