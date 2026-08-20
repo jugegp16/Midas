@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -319,6 +320,13 @@ class BacktestEngine:
             A BacktestResult containing trades, metrics, and the
             equity curve.
         """
+        # Simulate against a private copy: the engine advances
+        # cash_infusion.next_date in place as infusions are credited, and
+        # mutating the caller's object makes run() non-idempotent — in the
+        # optimizer, only each worker's FIRST trial saw infusions and every
+        # later trial silently ran without them, so trials were scored on
+        # different problems and the final refit didn't match the search.
+        portfolio = copy.deepcopy(portfolio)
         trading_days = self._collect_trading_days(price_data, start, end)
         split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
