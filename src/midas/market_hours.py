@@ -52,7 +52,7 @@ MARKET_HOLIDAYS: frozenset[date] = frozenset(
 )
 HOLIDAY_TABLE_YEARS = frozenset(day.year for day in MARKET_HOLIDAYS)
 
-_stale_table_years_warned: set[int] = set()
+STALE_TABLE_YEARS_WARNED: set[int] = set()
 
 
 def is_trading_day(day: date) -> bool:
@@ -64,8 +64,8 @@ def is_trading_day(day: date) -> bool:
     """
     if day.weekday() >= 5:
         return False
-    if day.year not in HOLIDAY_TABLE_YEARS and day.year not in _stale_table_years_warned:
-        _stale_table_years_warned.add(day.year)
+    if day.year not in HOLIDAY_TABLE_YEARS and day.year not in STALE_TABLE_YEARS_WARNED:
+        STALE_TABLE_YEARS_WARNED.add(day.year)
         logger.warning(
             "market holiday table has no entries for %d — update MARKET_HOLIDAYS in "
             "midas/market_hours.py; treating all weekdays as trading days until then",

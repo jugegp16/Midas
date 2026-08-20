@@ -97,6 +97,8 @@ def _parse_alerts_number(alerts_raw: dict[str, Any], key: str, default: float) -
         raise ValueError(msg)
     try:
         return float(raw_value)
+    # Unparenthesized multi-exception syntax is valid on Python 3.14+
+    # (PEP 758) and is the form ruff-format enforces here.
     except TypeError, ValueError:
         msg = f"alerts: {key} must be a number, got {raw_value!r}"
         raise ValueError(msg) from None
