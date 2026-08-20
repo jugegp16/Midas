@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from midas.market_hours import MARKET_TZ, is_market_open, next_session_open, session_close
+from midas.market_hours import MARKET_TZ, is_market_open, market_holidays, next_session_open, session_close
 
 ET = ZoneInfo("America/New_York")
 
@@ -47,9 +47,10 @@ class TestIsMarketOpen:
         assert is_market_open(datetime(2026, 7, 20, 13, 30, tzinfo=UTC))
         assert not is_market_open(datetime(2026, 7, 20, 12, 30, tzinfo=UTC))
 
-    def test_unlisted_year_fails_open(self) -> None:
-        """A stale holiday table must poll through, never sleep through."""
-        assert is_market_open(et(2031, 1, 1, 12, 0))  # New Year's, but 2031 unlisted (Wednesday)
+    def test_future_years_need_no_maintenance(self) -> None:
+        """The rule-based calendar closes holidays in any year."""
+        assert not is_market_open(et(2031, 1, 1, 12, 0))  # New Year's 2031 (Wednesday)
+        assert not is_market_open(et(2030, 11, 28, 12, 0))  # Thanksgiving 2030
 
 
 class TestNextSessionOpen:
@@ -77,3 +78,49 @@ class TestSessionClose:
         close = session_close(et(2026, 8, 18, 12, 0)).astimezone(MARKET_TZ)
         assert (close.hour, close.minute) == (16, 0)
         assert close.date() == date(2026, 8, 18)
+
+
+class TestMarketHolidays:
+    def test_matches_hand_verified_2026_2027_calendar(self) -> None:
+        """Ground truth: the independently hand-checked NYSE closure lists."""
+        assert market_holidays(2026) == frozenset(
+            {
+                date(2026, 1, 1),  # New Year's Day
+                date(2026, 1, 19),  # Martin Luther King Jr. Day
+                date(2026, 2, 16),  # Washington's Birthday
+                date(2026, 4, 3),  # Good Friday
+                date(2026, 5, 25),  # Memorial Day
+                date(2026, 6, 19),  # Juneteenth
+                date(2026, 7, 3),  # Independence Day (observed; Jul 4 is a Saturday)
+                date(2026, 9, 7),  # Labor Day
+                date(2026, 11, 26),  # Thanksgiving
+                date(2026, 12, 25),  # Christmas
+            }
+        )
+        assert market_holidays(2027) == frozenset(
+            {
+                date(2027, 1, 1),
+                date(2027, 1, 18),
+                date(2027, 2, 15),
+                date(2027, 3, 26),  # Good Friday (Easter 2027 is Mar 28)
+                date(2027, 5, 31),
+                date(2027, 6, 18),  # Juneteenth observed (Jun 19 is a Saturday)
+                date(2027, 7, 5),  # Independence Day observed (Jul 4 is a Sunday)
+                date(2027, 9, 6),
+                date(2027, 11, 25),
+                date(2027, 12, 24),  # Christmas observed (Dec 25 is a Saturday)
+            }
+        )
+
+    def test_saturday_new_year_is_not_observed_early(self) -> None:
+        """Jan 1 2022 fell on a Saturday: NYSE did NOT close Dec 31 2021."""
+        assert date(2021, 12, 31) not in market_holidays(2021)
+        assert date(2022, 1, 1) not in market_holidays(2022)
+
+    def test_juneteenth_only_from_2022(self) -> None:
+        assert date(2021, 6, 18) not in market_holidays(2021)  # Jun 19 2021 Sat, not yet a holiday
+        assert date(2023, 6, 19) in market_holidays(2023)
+
+    def test_good_friday_tracks_easter(self) -> None:
+        assert date(2025, 4, 18) in market_holidays(2025)  # Easter 2025 is Apr 20
+        assert date(2024, 3, 29) in market_holidays(2024)  # Easter 2024 is Mar 31

@@ -76,10 +76,11 @@ Live polls only during regular US equity sessions (9:30-16:00 ET,
 weekdays, minus full-closure market holidays) — outside the session it
 sleeps until the next open instead of burning API calls on prices that
 cannot move. The session clock is DST-correct regardless of the host
-timezone. The static holiday table in `midas/market_hours.py` covers the
-current and next year and needs a yearly refresh (like the tax
-brackets); if it ages out, the engine fails open — it polls through
-unlisted holidays rather than risk sleeping through a real session.
+timezone, and holidays are computed from the exchange's calendar rules
+(fixed dates with weekend observation, nth-weekday floaters, Good
+Friday via computus) — valid for any year, no maintenance. One-off
+special closures (e.g. mourning days) are unknowable in advance; the
+engine polls harmlessly through them.
 
 ### Close-of-day report
 

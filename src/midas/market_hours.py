@@ -1,9 +1,12 @@
 """US equity market-session clock for live-mode gating.
 
 Regular sessions only: 9:30-16:00 ET, weekdays, minus full-closure
-market holidays. Early closes (day after Thanksgiving, Christmas Eve)
-are treated as full sessions for now — the cost is a couple of hours of
-harmless polling on a handful of days per year.
+market holidays computed from the exchange's calendar rules (fixed
+dates with weekend observation, nth-weekday floaters, Good Friday via
+computus). Early closes (day after Thanksgiving, Christmas Eve) are
+treated as full sessions — the cost is a couple of hours of harmless
+polling on a handful of days per year. One-off special closures
+(mourning days) are unknowable in advance and also poll harmlessly.
 
 All decisions are made in America/New_York wall-clock time via zoneinfo,
 so DST transitions are handled regardless of the host timezone.
@@ -11,67 +14,87 @@ so DST transitions are handled regardless of the host timezone.
 
 from __future__ import annotations
 
-import logging
+import functools
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
-
-logger = logging.getLogger(__name__)
 
 MARKET_TZ = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
 
-# Full-closure NYSE/Nasdaq holidays. Update yearly, like the tax brackets.
-# Observed dates: a Saturday holiday closes the preceding Friday, a Sunday
-# holiday the following Monday.
-MARKET_HOLIDAYS: frozenset[date] = frozenset(
-    {
-        # 2026
-        date(2026, 1, 1),  # New Year's Day
-        date(2026, 1, 19),  # Martin Luther King Jr. Day
-        date(2026, 2, 16),  # Washington's Birthday
-        date(2026, 4, 3),  # Good Friday
-        date(2026, 5, 25),  # Memorial Day
-        date(2026, 6, 19),  # Juneteenth
-        date(2026, 7, 3),  # Independence Day (observed; Jul 4 is a Saturday)
-        date(2026, 9, 7),  # Labor Day
-        date(2026, 11, 26),  # Thanksgiving
-        date(2026, 12, 25),  # Christmas
-        # 2027
-        date(2027, 1, 1),  # New Year's Day
-        date(2027, 1, 18),  # Martin Luther King Jr. Day
-        date(2027, 2, 15),  # Washington's Birthday
-        date(2027, 3, 26),  # Good Friday
-        date(2027, 5, 31),  # Memorial Day
-        date(2027, 6, 18),  # Juneteenth (observed; Jun 19 is a Saturday)
-        date(2027, 7, 5),  # Independence Day (observed; Jul 4 is a Sunday)
-        date(2027, 9, 6),  # Labor Day
-        date(2027, 11, 25),  # Thanksgiving
-        date(2027, 12, 24),  # Christmas (observed; Dec 25 is a Saturday)
-    }
-)
-HOLIDAY_TABLE_YEARS = frozenset(day.year for day in MARKET_HOLIDAYS)
 
-STALE_TABLE_YEARS_WARNED: set[int] = set()
+@functools.cache
+def market_holidays(year: int) -> frozenset[date]:
+    """Full-closure NYSE/Nasdaq holidays for *year*, computed from the rules.
+
+    Fixed-date holidays observe weekend shifts (Saturday -> preceding
+    Friday, Sunday -> following Monday), except New Year's Day, which the
+    exchange does not observe early across the year boundary — a
+    Saturday Jan 1 simply is not a market holiday. One-off special
+    closures (e.g. presidential mourning days) cannot be computed and
+    are absent; the engine polls harmlessly through them.
+    """
+    holidays = {
+        _observed(date(year, 1, 1), friday_shift=False),  # New Year's Day
+        _nth_weekday(year, 1, MONDAY, 3),  # Martin Luther King Jr. Day
+        _nth_weekday(year, 2, MONDAY, 3),  # Washington's Birthday
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday(year, 5, MONDAY),  # Memorial Day
+        _observed(date(year, 7, 4)),  # Independence Day
+        _nth_weekday(year, 9, MONDAY, 1),  # Labor Day
+        _nth_weekday(year, 11, THURSDAY, 4),  # Thanksgiving
+        _observed(date(year, 12, 25)),  # Christmas
+    }
+    if year >= 2022:  # market holiday since 2022
+        holidays.add(_observed(date(year, 6, 19)))  # Juneteenth
+    return frozenset(day for day in holidays if day is not None and day.year == year)
+
+
+def _observed(holiday: date, friday_shift: bool = True) -> date | None:
+    """Weekend-observation shift: Saturday -> Friday, Sunday -> Monday."""
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1) if friday_shift else None
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+MONDAY = 0
+THURSDAY = 3
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """The n-th *weekday* of *month* (n is 1-based)."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """The last *weekday* of *month*."""
+    next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _easter_sunday(year: int) -> date:
+    """Gregorian Easter Sunday via the anonymous computus algorithm."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    ell = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * ell) // 451
+    month, day = divmod(h + ell - 7 * m + 114, 31)
+    return date(year, month, day + 1)
 
 
 def is_trading_day(day: date) -> bool:
-    """Weekday and not a listed full-closure holiday.
-
-    Fails OPEN when the holiday table has aged past *day*'s year: polling
-    through an unlisted holiday is harmless (prices simply don't move),
-    while failing closed would silently sleep through real sessions.
-    """
-    if day.weekday() >= 5:
-        return False
-    if day.year not in HOLIDAY_TABLE_YEARS and day.year not in STALE_TABLE_YEARS_WARNED:
-        STALE_TABLE_YEARS_WARNED.add(day.year)
-        logger.warning(
-            "market holiday table has no entries for %d — update MARKET_HOLIDAYS in "
-            "midas/market_hours.py; treating all weekdays as trading days until then",
-            day.year,
-        )
-    return day not in MARKET_HOLIDAYS
+    """Weekday and not a computed full-closure holiday."""
+    return day.weekday() < 5 and day not in market_holidays(day.year)
 
 
 def is_market_open(now: datetime) -> bool:
