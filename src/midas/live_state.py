@@ -125,6 +125,15 @@ class LiveState:
     # report's day-over-day delta survives engine restarts.
     last_report_date: date | None = None
     last_report_equity: float | None = None
+    # Alert tally since the last report, persisted so an intra-day restart
+    # doesn't zero the day's counts. Incremented in the same durable
+    # transitions that record the underlying pending-order lifecycle;
+    # reset when a report goes out. (In 24/7 debug mode no report ever
+    # fires, so these accumulate meaninglessly — harmless.)
+    tally_posted: int = 0
+    tally_confirmed: int = 0
+    tally_declined: int = 0
+    tally_expired: int = 0
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -162,6 +171,12 @@ def save_atomic(state: LiveState, path: Path) -> None:
             }
             for pending in state.pending_orders
         ],
+        "alert_tally": {
+            "posted": state.tally_posted,
+            "confirmed": state.tally_confirmed,
+            "declined": state.tally_declined,
+            "expired": state.tally_expired,
+        },
         "last_report": (
             {"date": state.last_report_date, "equity": state.last_report_equity}
             if state.last_report_date is not None
@@ -245,6 +260,8 @@ def load_state(path: Path) -> LiveState:
     pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
     intent_cooldowns = [_parse_intent_cooldown(entry, path) for entry in raw.get("intent_cooldowns") or []]
 
+    tally = raw.get("alert_tally") or {}
+
     last_report = raw.get("last_report")
     last_report_date: date | None = None
     last_report_equity: float | None = None
@@ -264,6 +281,10 @@ def load_state(path: Path) -> LiveState:
         intent_cooldowns=intent_cooldowns,
         last_report_date=last_report_date,
         last_report_equity=last_report_equity,
+        tally_posted=int(tally.get("posted", 0)),
+        tally_confirmed=int(tally.get("confirmed", 0)),
+        tally_declined=int(tally.get("declined", 0)),
+        tally_expired=int(tally.get("expired", 0)),
     )
 
 

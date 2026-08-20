@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -1193,6 +1194,7 @@ def test_report_fires_once_near_close(tmp_path: Path, make_provider: ProviderFac
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
 
         engine._maybe_send_report(MID_DAY)
         assert reporter.reports == []  # too early in the session
@@ -1211,11 +1213,13 @@ def test_report_day_delta_uses_previous_anchor(tmp_path: Path, make_provider: Pr
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
         engine._maybe_send_report(NEAR_CLOSE)
         first = reporter.reports[0]
         assert first.previous_equity is None  # type: ignore[attr-defined]
 
         engine._last_equity = 2_100.0
+        engine._last_equity_session = date(2026, 8, 19)
         engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1))
         second = reporter.reports[1]
         assert second.previous_equity == 2_000.0  # type: ignore[attr-defined]
@@ -1229,6 +1233,7 @@ def test_report_anchor_persists_before_delivery_failure(tmp_path: Path, make_pro
     reporter = FakeReporter(deliver=False)
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
         engine._maybe_send_report(NEAR_CLOSE)
 
         assert len(reporter.reports) == 1
@@ -1244,14 +1249,15 @@ def test_report_counters_reset_after_send(tmp_path: Path, make_provider: Provide
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
-        engine._alerts_posted = 3
-        engine._alerts_confirmed = 2
-        engine._alerts_declined = 1
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._state.tally_posted = 3
+        engine._state.tally_confirmed = 2
+        engine._state.tally_declined = 1
         engine._maybe_send_report(NEAR_CLOSE)
 
         report = reporter.reports[0]
         assert (report.alerts_posted, report.confirmed, report.declined) == (3, 2, 1)  # type: ignore[attr-defined]
-        assert engine._alerts_posted == engine._alerts_confirmed == engine._alerts_declined == 0
+        assert engine._state.tally_posted == engine._state.tally_confirmed == engine._state.tally_declined == 0
 
 
 def test_no_report_when_market_hours_disabled(tmp_path: Path, make_provider: ProviderFactory) -> None:
@@ -1280,6 +1286,7 @@ def test_report_catches_up_after_close(tmp_path: Path, make_provider: ProviderFa
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
         after_close = datetime(2026, 8, 18, 20, 3, tzinfo=UTC)  # 16:03 ET
 
         engine._maybe_send_report(after_close)
@@ -1301,6 +1308,81 @@ def test_no_report_on_weekend(tmp_path: Path, make_provider: ProviderFactory) ->
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 22)
         engine._maybe_send_report(datetime(2026, 8, 22, 19, 56, tzinfo=UTC))  # Saturday
 
         assert reporter.reports == []
+
+
+def test_no_report_from_another_sessions_equity(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A machine suspended since Monday must not stamp Monday's equity onto
+    Wednesday's close-of-day report."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 17)  # Monday's observation
+
+        engine._maybe_send_report(datetime(2026, 8, 19, 20, 30, tzinfo=UTC))  # Wednesday evening
+
+        assert reporter.reports == []
+        assert engine._state.last_report_date is None
+
+
+def test_pre_close_report_requires_equity_observation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An engine started at 15:56 whose fetches all failed must not report
+    cash-only equity — and must not poison the persisted anchor with it."""
+    from midas.live_state import load_state
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        assert engine._last_equity is None
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        assert reporter.reports == []
+        assert engine._state.last_report_equity is None
+    assert load_state(tmp_path / "state.yaml").last_report_equity is None
+
+
+def test_alert_tally_survives_restart(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The day's counts are durable state, not an in-memory counter."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.tally_posted == 1
+    assert on_disk.tally_declined == 1
+
+
+def test_run_loop_sleeps_weekend_to_monday_open(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Saturday startup sleeps to Monday 9:30 ET, then ticks — driven
+    through the clock seams in virtual time."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        clock = {"now": datetime(2026, 8, 22, 16, 0, tzinfo=UTC)}  # Saturday noon ET
+        slept: list[float] = []
+        ticks: list[datetime] = []
+
+        def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+            clock["now"] += timedelta(seconds=seconds)
+
+        def fake_tick(tickers: list[str]) -> None:
+            ticks.append(clock["now"])
+            raise KeyboardInterrupt  # stop the loop after the first tick
+
+        engine._now = lambda: clock["now"]
+        engine._sleep = fake_sleep
+        engine._tick = fake_tick  # type: ignore[method-assign]
+
+        engine.run()
+
+        assert len(ticks) == 1
+        first_tick_et = ticks[0].astimezone(ZoneInfo("America/New_York"))
+        assert first_tick_et.date() == date(2026, 8, 24)  # Monday
+        assert (first_tick_et.hour, first_tick_et.minute) == (9, 30)
+        assert all(chunk <= 3600.0 for chunk in slept)  # chunked, never one giant sleep

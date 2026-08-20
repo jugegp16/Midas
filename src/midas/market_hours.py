@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo
 MARKET_TZ = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
+MONDAY = 0
+THURSDAY = 3
 
 
 @functools.cache
@@ -57,10 +59,6 @@ def _observed(holiday: date, friday_shift: bool = True) -> date | None:
     if holiday.weekday() == 6:
         return holiday + timedelta(days=1)
     return holiday
-
-
-MONDAY = 0
-THURSDAY = 3
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:

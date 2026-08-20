@@ -104,6 +104,27 @@ def _parse_alerts_number(alerts_raw: dict[str, Any], key: str, default: float) -
         raise ValueError(msg) from None
 
 
+def _parse_channel_id(alerts_raw: dict[str, Any], key: str) -> str:
+    """Normalize a Discord channel id to a digits-only string.
+
+    Channel ids are snowflakes — huge integers that YAML happily parses
+    as int. Accept int or str; a bare/absent key means "unset".
+
+    Raises:
+        ValueError: If the value is neither an integer nor a digits-only
+            string.
+    """
+    channel_raw = alerts_raw.get(key)
+    if channel_raw is None:
+        return ""
+    if isinstance(channel_raw, int | str):
+        channel_id = str(channel_raw).strip()
+        if not channel_id or channel_id.isdigit():
+            return channel_id
+    msg = f"alerts: {key} must be a numeric Discord channel id, got {channel_raw!r}"
+    raise ValueError(msg)
+
+
 def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
     """Build the optional ``alerts:`` block.
 
@@ -192,23 +213,6 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         tax_declared="tax" in raw,
         alerts_config=alerts,
     )
-
-
-def _parse_channel_id(alerts_raw: dict[str, Any], key: str) -> str:
-    """Normalize a Discord channel id to a digits-only string.
-
-    Channel ids are snowflakes — huge integers that YAML happily parses
-    as int. Accept int or str; a bare/absent key means "unset".
-    """
-    channel_raw = alerts_raw.get(key)
-    if channel_raw is None:
-        return ""
-    if isinstance(channel_raw, int | str):
-        channel_id = str(channel_raw).strip()
-        if not channel_id or channel_id.isdigit():
-            return channel_id
-    msg = f"alerts: {key} must be a numeric Discord channel id, got {channel_raw!r}"
-    raise ValueError(msg)
 
 
 def _parse_forecast_scaling(raw_value: Any) -> ForecastScaling:

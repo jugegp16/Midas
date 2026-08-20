@@ -6,6 +6,7 @@ import errno
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -215,15 +216,17 @@ class LiveEngine:
             self._realert_cooldown = timedelta(hours=realert_hours)
             self._reporter = reporter
             self._market_hours_only = market_hours_only
+            # Equity observation and the ET session it belongs to: a report
+            # must never be built from another session's equity (a machine
+            # suspended Monday and woken Wednesday evening knows nothing
+            # about Wednesday's session).
             self._last_equity: float | None = None
+            self._last_equity_session: date | None = None
             self._last_risk_telemetry: tuple[float, float] = (1.0, 1.0)
-            # In-memory per-session alert counters for the report. Reset
-            # after each report; an intra-day restart undercounts, which
-            # the report tolerates (state-derived figures do not).
-            self._alerts_posted = 0
-            self._alerts_confirmed = 0
-            self._alerts_declined = 0
-            self._alerts_expired = 0
+            # Clock seams: tests override these attributes to drive the
+            # run() gating loop through virtual time.
+            self._now: Callable[[], datetime] = lambda: datetime.now(tz=UTC)
+            self._sleep: Callable[[float], None] = time.sleep
             # Derive the history window from the largest warmup required across
             # configured strategies (plus slack for weekends/holidays). An explicit
             # ``history_days`` override is still honored for tests.
@@ -277,7 +280,7 @@ class LiveEngine:
 
         try:
             while True:
-                now = datetime.now(tz=UTC)
+                now = self._now()
                 if self._market_hours_only and not is_market_open(now):
                     try:
                         # Catch-up: with a poll interval longer than the
@@ -292,19 +295,18 @@ class LiveEngine:
                     continue
                 try:
                     self._tick(tickers)
-                    self._maybe_send_report(datetime.now(tz=UTC))
+                    self._maybe_send_report(self._now())
                 except Exception:
                     # A live process watching real money must not die
                     # overnight on a one-tick bug — state transitions are
                     # individually durable, so skipping a tick is safe.
                     # Same crash-proofing rationale as _fetch_histories.
                     logger.exception("tick failed; continuing next poll")
-                time.sleep(self._poll_interval)
+                self._sleep(self._poll_interval)
         except KeyboardInterrupt:
             print_status("Stopped.")
 
-    @staticmethod
-    def _sleep_until_open(now: datetime) -> None:
+    def _sleep_until_open(self, now: datetime) -> None:
         """Sleep (in chunks) until the next session open.
 
         Chunked so a laptop suspend or clock jump re-evaluates the target
@@ -315,10 +317,10 @@ class LiveEngine:
         local = next_open.astimezone(MARKET_TZ)
         print_status(f"Market closed — sleeping until {local:%Y-%m-%d %H:%M} ET")
         while True:
-            remaining = (next_open - datetime.now(tz=UTC)).total_seconds()
+            remaining = (next_open - self._now()).total_seconds()
             if remaining <= 0:
                 return
-            time.sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
+            self._sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
 
     def _maybe_send_report(self, now: datetime) -> None:
         """Emit the close-of-day report once per session, near (or after) the close.
@@ -337,13 +339,16 @@ class LiveEngine:
         seconds_to_close = (session_close(now) - now).total_seconds()
         if seconds_to_close > REPORT_MINUTES_BEFORE_CLOSE * 60:
             return
-        if seconds_to_close < 0 and self._last_equity is None:
+        # Every path requires an equity observation FROM THIS SESSION: an
+        # engine started at 15:56 whose fetches all failed must not report
+        # (and persist!) cash-only equity, and a machine suspended since
+        # Monday must not stamp Monday's equity onto Wednesday's report.
+        if self._last_equity is None or self._last_equity_session != session_date:
             return
-        self._send_report(session_date)
+        self._send_report(session_date, self._last_equity)
 
-    def _send_report(self, session_date: date) -> None:
+    def _send_report(self, session_date: date, equity: float) -> None:
         """Assemble and deliver the report; persist the equity anchor."""
-        equity = self._last_equity if self._last_equity is not None else self._state.available_cash
         report = DailyReport(
             session_date=session_date,
             equity=equity,
@@ -351,10 +356,10 @@ class LiveEngine:
             cash=self._state.available_cash,
             positions=sum(1 for lots in self._state.lots.values() if sum(lot.shares for lot in lots) > 0),
             pending=len(self._state.pending_orders),
-            alerts_posted=self._alerts_posted,
-            confirmed=self._alerts_confirmed,
-            declined=self._alerts_declined,
-            expired=self._alerts_expired,
+            alerts_posted=self._state.tally_posted,
+            confirmed=self._state.tally_confirmed,
+            declined=self._state.tally_declined,
+            expired=self._state.tally_expired,
             cppi_scale=self._last_risk_telemetry[0],
             vol_target_scale=self._last_risk_telemetry[1],
         )
@@ -363,6 +368,10 @@ class LiveEngine:
         # day-over-day delta must survive restarts.
         self._state.last_report_date = session_date
         self._state.last_report_equity = equity
+        self._state.tally_posted = 0
+        self._state.tally_confirmed = 0
+        self._state.tally_declined = 0
+        self._state.tally_expired = 0
         save_atomic(self._state, self._state_path)
 
         embed = report_embed(report)
@@ -371,10 +380,6 @@ class LiveEngine:
             print_status(f"  {field_entry['name']}: {field_entry['value']}")
         if self._reporter is not None:
             self._reporter.post_report(report)
-        self._alerts_posted = 0
-        self._alerts_confirmed = 0
-        self._alerts_declined = 0
-        self._alerts_expired = 0
 
     def _append_log_row(
         self,
@@ -623,18 +628,21 @@ class LiveEngine:
                 self._state.intent_cooldowns.append(
                     IntentCooldown(ticker=pending.ticker, direction=pending.direction, until=now + self._pending_ttl)
                 )
+            if decision == "confirmed":
+                self._state.tally_confirmed += 1
+            elif decision == "declined":
+                self._state.tally_declined += 1
+            else:
+                self._state.tally_expired += 1
             save_atomic(self._state, self._state_path)
 
             # State is durable — everything below is replay-safe salvage.
             if decision == "confirmed":
-                self._alerts_confirmed += 1
                 self._finish_confirmed_fill(pending, booked, note, today)
             elif decision == "declined":
-                self._alerts_declined += 1
                 print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)")
                 self._confirmer.mark_declined(pending.message_id)
             else:
-                self._alerts_expired += 1
                 print_status(
                     f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)"
                 )
@@ -829,7 +837,7 @@ class LiveEngine:
                 # Not persisted as pending: the order is re-proposed and the
                 # post retried on a later tick.
                 continue
-            self._alerts_posted += 1
+            self._state.tally_posted += 1
             self._state.pending_orders.append(
                 PendingOrder(
                     ticker=order.ticker,
@@ -973,6 +981,7 @@ class LiveEngine:
             self._post_pending_alerts(filtered, now, pre_fill_cash)
             current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
             self._last_equity = current_equity
+            self._last_equity_session = self._now().astimezone(MARKET_TZ).date()
             self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
             # Persist pending-order transitions along with HWM/peak/infusion.
             save_atomic(self._state, self._state_path)
@@ -983,6 +992,7 @@ class LiveEngine:
         # Update peak equity from the current portfolio value (post-fills).
         current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
         self._last_equity = current_equity
+        self._last_equity_session = self._now().astimezone(MARKET_TZ).date()
         self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,
