@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
 
@@ -26,6 +26,7 @@ from midas.models import (
     StrategyConfig,
     TaxConfig,
     TradingRestrictions,
+    forecast_scaling_error,
 )
 
 
@@ -188,9 +189,8 @@ def _parse_forecast_scaling(raw_value: Any) -> ForecastScaling:
     """Coerce the optional ``forecast_scaling`` key; a bare key means the default."""
     if raw_value is None:
         return "none"
-    if raw_value not in ("none", "quantile"):
-        msg = f"forecast_scaling must be 'none' or 'quantile', got {raw_value!r}"
-        raise ValueError(msg)
+    if raw_value not in get_args(ForecastScaling.__value__):
+        raise ValueError(forecast_scaling_error(raw_value))
     return "quantile" if raw_value == "quantile" else "none"
 
 

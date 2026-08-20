@@ -7,7 +7,19 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
+
+type ForecastScaling = Literal["none", "quantile"]
+
+
+def forecast_scaling_error(value: object) -> str:
+    """One error message for every layer that validates ``forecast_scaling``."""
+    allowed = ", ".join(repr(v) for v in get_args(ForecastScaling.__value__))
+    return (
+        f"forecast_scaling must be one of {allowed}, got {value!r} "
+        "(zscore was considered and deferred until quantile proves insufficient)"
+    )
+
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
@@ -191,11 +203,8 @@ class AllocationConstraints:
     forecast_scaling: ForecastScaling = "none"
 
     def __post_init__(self) -> None:
-        if self.forecast_scaling not in ("none", "quantile"):
-            msg = (
-                f"forecast_scaling must be 'none' or 'quantile', got {self.forecast_scaling!r} "
-                "(zscore was considered and deferred until quantile proves insufficient)"
-            )
+        if self.forecast_scaling not in get_args(ForecastScaling.__value__):
+            msg = forecast_scaling_error(self.forecast_scaling)
             raise ValueError(msg)
 
 
@@ -285,8 +294,6 @@ class TaxConfig:
             )
             raise ValueError(msg)
 
-
-type ForecastScaling = Literal["none", "quantile"]
 
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_PENDING_TTL_HOURS = 8.0
