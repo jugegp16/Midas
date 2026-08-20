@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from conftest import ph
 
-from midas.allocator import Allocator
+from midas.allocator import Allocator, quantile_rank
 from midas.data.price_history import PriceHistory
 from midas.models import AllocationConstraints, RiskConfig
 from midas.strategies.mean_reversion import MeanReversion
@@ -273,8 +273,6 @@ def _fixed_prices(keys: list[float]) -> dict[str, PriceHistory]:
 
 class TestQuantileRank:
     def test_ranks_positives_and_keeps_zeros(self):
-        from midas.allocator import quantile_rank
-
         normalized = quantile_rank({"A": 0.9, "B": 0.05, "C": 0.0, "D": 0.4})
 
         assert normalized["A"] == pytest.approx(3 / 3)
@@ -283,21 +281,15 @@ class TestQuantileRank:
         assert normalized["C"] == 0.0  # no opinion stays no opinion
 
     def test_ties_share_average_rank(self):
-        from midas.allocator import quantile_rank
-
         normalized = quantile_rank({"A": 0.5, "B": 0.5, "C": 0.9})
 
         assert normalized["A"] == normalized["B"] == pytest.approx(1.5 / 3)
         assert normalized["C"] == pytest.approx(1.0)
 
     def test_single_positive_is_top_rank(self):
-        from midas.allocator import quantile_rank
-
         assert quantile_rank({"A": 0.03, "B": 0.0}) == {"A": 1.0, "B": 0.0}
 
     def test_empty_and_all_zero(self):
-        from midas.allocator import quantile_rank
-
         assert quantile_rank({}) == {}
         assert quantile_rank({"A": 0.0}) == {"A": 0.0}
 
@@ -352,3 +344,11 @@ class TestForecastScaling:
         assert result.contributions["T1"] == {}
         assert result.contributions["T0"]["Rule"] == pytest.approx(0.5)
         assert result.contributions["T2"]["Rule"] == pytest.approx(1.0)
+
+
+def test_quantile_rank_nan_drops_out_as_abstention():
+    """A NaN score fails both sign comparisons and vanishes from the result."""
+    normalized = quantile_rank({"A": float("nan"), "B": 0.4})
+
+    assert "A" not in normalized
+    assert normalized["B"] == 1.0

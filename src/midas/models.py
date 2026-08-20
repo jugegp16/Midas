@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
@@ -187,7 +188,7 @@ class AllocationConstraints:
     softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
     # "quantile" rank-transforms each rule's scores across the cross-section
     # before blending; "none" blends raw scores as before.
-    forecast_scaling: str = "none"
+    forecast_scaling: ForecastScaling = "none"
 
     def __post_init__(self) -> None:
         if self.forecast_scaling not in ("none", "quantile"):
@@ -284,6 +285,8 @@ class TaxConfig:
             )
             raise ValueError(msg)
 
+
+type ForecastScaling = Literal["none", "quantile"]
 
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_PENDING_TTL_HOURS = 8.0

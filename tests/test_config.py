@@ -418,3 +418,10 @@ def test_load_strategies_invalid_forecast_scaling_raises(tmp_path: Path) -> None
     path = _write_strategies(tmp_path, "forecast_scaling: softmax\nstrategies:\n  - name: Momentum\n")
     with pytest.raises(ValueError, match="forecast_scaling"):
         load_strategies(path)
+
+
+def test_load_strategies_bare_forecast_scaling_key_is_default(tmp_path: Path) -> None:
+    """A bare `forecast_scaling:` key means the default, not the string 'None'."""
+    path = _write_strategies(tmp_path, "forecast_scaling:\nstrategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "none"

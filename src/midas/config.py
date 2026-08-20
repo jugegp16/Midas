@@ -19,6 +19,7 @@ from midas.models import (
     AlertsConfig,
     AllocationConstraints,
     CashInfusion,
+    ForecastScaling,
     Holding,
     PortfolioConfig,
     RiskConfig,
@@ -183,6 +184,16 @@ def load_portfolio(path: Path) -> PortfolioConfig:
     )
 
 
+def _parse_forecast_scaling(raw_value: Any) -> ForecastScaling:
+    """Coerce the optional ``forecast_scaling`` key; a bare key means the default."""
+    if raw_value is None:
+        return "none"
+    if raw_value not in ("none", "quantile"):
+        msg = f"forecast_scaling must be 'none' or 'quantile', got {raw_value!r}"
+        raise ValueError(msg)
+    return "quantile" if raw_value == "quantile" else "none"
+
+
 def load_strategies(
     path: Path,
 ) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
@@ -213,7 +224,7 @@ def load_strategies(
         min_buy_delta=float(
             raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
-        forecast_scaling=str(raw.get("forecast_scaling", "none")),
+        forecast_scaling=_parse_forecast_scaling(raw.get("forecast_scaling")),
     )
 
     risk_raw = raw.get("risk") or {}

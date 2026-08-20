@@ -65,7 +65,10 @@ def quantile_rank(scores: dict[str, float]) -> dict[str, float]:
         scores: Ticker -> raw score in [0, 1] for a single rule instance.
 
     Returns:
-        Ticker -> normalized score, same keys as *scores*.
+        Ticker -> normalized score. NaN inputs (a contract-violating
+        live ``score()``) fail both sign comparisons and drop out of the
+        result entirely — downstream treats a missing key as abstention,
+        which is the safe reading of an undefined score.
     """
     positives = sorted((score, ticker) for ticker, score in scores.items() if score > 0)
     normalized = {ticker: 0.0 for ticker, score in scores.items() if score <= 0}

@@ -23,6 +23,7 @@ from midas.metrics import DAYS_PER_YEAR, compute_annualized_return
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
     AllocationConstraints,
+    ForecastScaling,
     PortfolioConfig,
     RiskConfig,
 )
@@ -285,7 +286,7 @@ def _run_trial(
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> tuple[float, float, float, float, float, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
@@ -336,7 +337,7 @@ def _init_worker(
     train_pct: float,
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> None:
     """Initialise standard-optimizer workers with the full trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
@@ -370,7 +371,7 @@ def _wf_init_worker(
     price_data: dict[str, pd.DataFrame],
     min_cash_pct: float,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -476,7 +477,7 @@ def optimize(
     train_pct: float = DEFAULT_TRAIN_PCT,
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -712,7 +713,7 @@ def walk_forward_optimize(
     min_test_days: int = WF_MIN_TEST_DAYS,
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -838,7 +839,7 @@ def write_strategies_yaml(
     path: str,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     risk_config: RiskConfig | None = None,
-    forecast_scaling: str = "none",
+    forecast_scaling: ForecastScaling = "none",
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
