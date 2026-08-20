@@ -82,7 +82,7 @@ Friday via computus) — valid for any year, no maintenance. One-off
 special closures (e.g. mourning days) are unknowable in advance; the
 engine polls harmlessly through them.
 
-### Close-of-day report
+### End-of-day report
 
 Near the close of each session (~15:55 ET), live emits a one-embed
 summary: equity and day-over-day change, cash, position count, the
@@ -148,7 +148,7 @@ Configure the channel in the portfolio YAML (the id is not a secret):
 ```yaml
 alerts:
   discord_intra_day_channel_id: 1400000000000000001  # optional, order alerts + confirmation
-  discord_end_of_day_channel_id: 1400000000000000002  # optional, close-of-day reports
+  discord_end_of_day_channel_id: 1400000000000000002  # optional, end-of-day reports
   timeout_seconds: 5      # optional, per-request timeout
   pending_ttl_hours: 8    # optional, confirmation window
   realert_hours: 1        # optional, min gap between re-alerts of one intent

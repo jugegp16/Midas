@@ -315,7 +315,7 @@ class AlertsConfig:
     """
 
     discord_intra_day_channel_id: str = ""
-    # Close-of-day reports post here; empty falls back to the alerts
+    # End-of-day reports post here; empty falls back to the alerts
     # channel. Separate so the alerts channel stays action-only (every
     # message there wants a reaction) and per-channel notification
     # settings can keep alerts loud and reports quiet.

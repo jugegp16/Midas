@@ -1276,7 +1276,7 @@ def test_no_report_when_market_hours_disabled(tmp_path: Path, make_provider: Pro
         engine._last_equity = 2_000.0
         engine._maybe_send_report(NEAR_CLOSE)
 
-    # 24/7 mode has no session concept — no close-of-day report.
+    # 24/7 mode has no session concept — no end-of-day report.
     assert reporter.reports == []
 
 
@@ -1316,7 +1316,7 @@ def test_no_report_on_weekend(tmp_path: Path, make_provider: ProviderFactory) ->
 
 def test_no_report_from_another_sessions_equity(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """A machine suspended since Monday must not stamp Monday's equity onto
-    Wednesday's close-of-day report."""
+    Wednesday's end-of-day report."""
     reporter = FakeReporter()
     with _make_report_engine(tmp_path, make_provider, reporter) as engine:
         engine._last_equity = 2_000.0

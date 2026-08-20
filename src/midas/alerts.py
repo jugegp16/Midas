@@ -307,7 +307,7 @@ COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
 
 @dataclass(frozen=True)
 class DailyReport:
-    """Close-of-day summary assembled by the live engine."""
+    """End-of-day summary assembled by the live engine."""
 
     session_date: date
     equity: float
@@ -324,7 +324,7 @@ class DailyReport:
 
 
 def report_embed(report: DailyReport) -> dict[str, Any]:
-    """Build the close-of-day report embed (plain: no reactions, never polled)."""
+    """Build the end-of-day report embed (plain: no reactions, never polled)."""
     if report.previous_equity is not None and report.previous_equity > 0:
         delta = report.equity - report.previous_equity
         pct = delta / report.previous_equity
@@ -351,7 +351,7 @@ def report_embed(report: DailyReport) -> dict[str, Any]:
             }
         )
     return {
-        "title": f"Close of day — {report.session_date.isoformat()}",
+        "title": f"End of day — {report.session_date.isoformat()}",
         "color": COLOR_REPORT,
         "fields": fields,
         "timestamp": datetime.now(tz=UTC).isoformat(),
@@ -359,7 +359,7 @@ def report_embed(report: DailyReport) -> dict[str, Any]:
 
 
 class DiscordReporter:
-    """Posts informational embeds (close-of-day report) to a channel.
+    """Posts informational embeds (end-of-day report) to a channel.
 
     Plain messages: no reactions, never polled, and — as everywhere in
     this module — a delivery failure is logged and swallowed, never
@@ -387,7 +387,7 @@ def build_discord(alerts_config: AlertsConfig | None) -> tuple[DiscordConfirmer 
 
     - ``discord_intra_day_channel_id`` -> confirm mode (order alerts fill
       only on operator reaction there).
-    - ``discord_end_of_day_channel_id`` -> close-of-day reports, falling
+    - ``discord_end_of_day_channel_id`` -> end-of-day reports, falling
       back to the intra-day channel when only that one is configured.
     - Neither channel and no token -> terminal-only, ``(None, None)``.
 

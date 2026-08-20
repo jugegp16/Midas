@@ -386,7 +386,7 @@ def live(
     else:
         click.echo("Terminal-only mode: alerts assume immediate execution.")
     if reporter is not None and not ignore_market_hours:
-        click.echo("Close-of-day report: Discord.")
+        click.echo("End-of-day report: Discord.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)

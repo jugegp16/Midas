@@ -412,7 +412,7 @@ class TestReportEmbed:
 
         embed = report_embed(self._report())
 
-        assert embed["title"] == "Close of day — 2026-08-18"
+        assert embed["title"] == "End of day — 2026-08-18"
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert fields["Equity"] == "$10,500.00"
         assert fields["Day"] == "+$500.00 (+5.00%)"

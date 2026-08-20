@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 # alert is expired and replaced. (Direction flips replace immediately.)
 PENDING_RESIZE_TOLERANCE = 0.10
 
-# The close-of-day report fires on the first tick at or after this many
+# The end-of-day report fires on the first tick at or after this many
 # minutes before the session close (~15:55 ET with the default 5).
 REPORT_MINUTES_BEFORE_CLOSE = 5.0
 # Off-hours sleep is chunked so a suspended laptop or clock jump can't
@@ -151,7 +151,7 @@ class LiveEngine:
             realert_hours: Minimum hours before the same (ticker,
                 direction) is re-alerted after a confirmed fill or a
                 resize of a still-pending alert.
-            reporter: Discord destination for the close-of-day report;
+            reporter: Discord destination for the end-of-day report;
                 None keeps the report terminal-only.
             market_hours_only: When True (default), tick only during
                 regular US equity sessions and sleep until the next open
@@ -290,7 +290,7 @@ class LiveEngine:
                         # overnight sleep.
                         self._maybe_send_report(now)
                     except Exception:
-                        logger.exception("close-of-day report failed; continuing")
+                        logger.exception("end-of-day report failed; continuing")
                     self._sleep_until_open(now)
                     continue
                 try:
@@ -323,7 +323,7 @@ class LiveEngine:
             self._sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
 
     def _maybe_send_report(self, now: datetime) -> None:
-        """Emit the close-of-day report once per session, near (or after) the close.
+        """Emit the end-of-day report once per session, near (or after) the close.
 
         Fires in the report window before the close, or after the close as
         a catch-up (long poll intervals can step straight from 15:5x to
@@ -375,7 +375,7 @@ class LiveEngine:
         save_atomic(self._state, self._state_path)
 
         embed = report_embed(report)
-        print_status(f"Close of day — {session_date.isoformat()}")
+        print_status(f"End of day — {session_date.isoformat()}")
         for field_entry in embed["fields"]:
             print_status(f"  {field_entry['name']}: {field_entry['value']}")
         if self._reporter is not None:

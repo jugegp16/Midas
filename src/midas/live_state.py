@@ -121,7 +121,7 @@ class LiveState:
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     pending_orders: list[PendingOrder] = field(default_factory=list)
     intent_cooldowns: list[IntentCooldown] = field(default_factory=list)
-    # Close-of-day report anchor: equity at the last report, so the next
+    # End-of-day report anchor: equity at the last report, so the next
     # report's day-over-day delta survives engine restarts.
     last_report_date: date | None = None
     last_report_equity: float | None = None
