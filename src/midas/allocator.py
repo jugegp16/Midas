@@ -57,7 +57,9 @@ def quantile_rank(scores: dict[str, float]) -> dict[str, float]:
     Zeros stay exactly zero and never join the ranking: the entry-signal
     contract says 0 means "no opinion", and rank-inflating a near-zero
     score to mid-pack would manufacture conviction the rule never
-    expressed.
+    expressed. Negative scores violate the [0, 1] contract and are
+    coerced to 0.0 the same way rather than entering the blend (under
+    raw blending they would pull the average down instead).
 
     Args:
         scores: Ticker -> raw score in [0, 1] for a single rule instance.

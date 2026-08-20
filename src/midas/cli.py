@@ -698,11 +698,13 @@ def optimize(
 
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
+    forecast_scaling = AllocationConstraints().forecast_scaling
     risk_config: RiskConfig = RiskConfig()
     if strategies:
         strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
+        forecast_scaling = strat_constraints.forecast_scaling
 
     start_d, end_d = _to_date(start), _to_date(end)
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
@@ -721,12 +723,14 @@ def optimize(
             min_test_days=wf_min_test_days or WF_MIN_TEST_DAYS,
             log_fn=print_status,
             risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
         )
         write_strategies_yaml(
             wf_result.best_params,
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
         )
         _print_walk_forward_report(wf_result, output)
     else:
@@ -741,12 +745,14 @@ def optimize(
             train_pct=train_pct,
             log_fn=print_status,
             risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
         )
         write_strategies_yaml(
             result.best_params,
             output,
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
         )
         _print_optimize_report(result, train_pct, output)
 

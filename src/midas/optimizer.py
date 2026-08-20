@@ -285,6 +285,7 @@ def _run_trial(
     train_pct: float = DEFAULT_TRAIN_PCT,
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> tuple[float, float, float, float, float, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
@@ -299,6 +300,7 @@ def _run_trial(
         min_cash_pct=min_cash_pct,
         softmax_temperature=global_params.get("softmax_temperature", 0.5),
         min_buy_delta=global_params.get("min_buy_delta", 0.02),
+        forecast_scaling=forecast_scaling,
     )
 
     allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
@@ -334,6 +336,7 @@ def _init_worker(
     train_pct: float,
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> None:
     """Initialise standard-optimizer workers with the full trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
@@ -352,6 +355,7 @@ def _init_worker(
         train_pct=train_pct,
         enable_split=enable_split,
         risk_config=risk_config,
+        forecast_scaling=forecast_scaling,
     )
 
 
@@ -366,6 +370,7 @@ def _wf_init_worker(
     price_data: dict[str, pd.DataFrame],
     min_cash_pct: float,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -374,6 +379,7 @@ def _wf_init_worker(
         price_data=price_data,
         min_cash_pct=min_cash_pct,
         risk_config=risk_config,
+        forecast_scaling=forecast_scaling,
     )
 
 
@@ -392,6 +398,7 @@ def _wf_trial_worker(
         worker_state["min_cash_pct"],
         enable_split=False,
         risk_config=worker_state.get("risk_config"),
+        forecast_scaling=worker_state.get("forecast_scaling", "none"),
     )
     return total_ret, bh_ret, train_ret, test_ret, twr
 
@@ -469,6 +476,7 @@ def optimize(
     train_pct: float = DEFAULT_TRAIN_PCT,
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -499,7 +507,7 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct, True, risk_config),
+        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct, True, risk_config, forecast_scaling),
     )
 
     trials_done = 0
@@ -550,6 +558,7 @@ def optimize(
         min_cash_pct=min_cash_pct,
         train_pct=train_pct,
         risk_config=risk_config,
+        forecast_scaling=forecast_scaling,
     )
 
     log(
@@ -703,6 +712,7 @@ def walk_forward_optimize(
     min_test_days: int = WF_MIN_TEST_DAYS,
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -742,7 +752,7 @@ def walk_forward_optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_wf_init_worker,
-        initargs=(portfolio, price_data, min_cash_pct, risk_config),
+        initargs=(portfolio, price_data, min_cash_pct, risk_config, forecast_scaling),
     )
 
     try:
@@ -788,6 +798,7 @@ def walk_forward_optimize(
                 min_cash_pct,
                 enable_split=False,
                 risk_config=risk_config,
+                forecast_scaling=forecast_scaling,
             )
 
             train_days = (fold_train_end - fold_train_start).days
@@ -827,13 +838,15 @@ def write_strategies_yaml(
     path: str,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     risk_config: RiskConfig | None = None,
+    forecast_scaling: str = "none",
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
     The optimizer does not search risk knobs (policy, not tunables). When the
     user supplied a ``risk:`` block in the input, it must round-trip to the
     optimized output unchanged so the next run honors the same policy;
-    otherwise the optimized YAML silently drops the user's config.
+    otherwise the optimized YAML silently drops the user's config. The same
+    holds for ``forecast_scaling``.
 
     Args:
         params: Per-strategy parameter dict from the optimizer (also includes
@@ -843,6 +856,8 @@ def write_strategies_yaml(
         risk_config: Preserved from the user's input config. When present and
             differing from defaults, emitted as a ``risk:`` block. ``None`` or
             an all-default ``RiskConfig`` is omitted.
+        forecast_scaling: Preserved from the user's input config; the default
+            ``"none"`` is omitted from the output.
     """
     output: dict[str, object] = {}
 
@@ -853,6 +868,11 @@ def write_strategies_yaml(
 
     # min_cash_pct is not optimized — preserve the user's configured value
     output["min_cash_pct"] = round(min_cash_pct, 4)
+
+    # forecast_scaling is policy, not a tunable — round-trip it like the
+    # risk: block, omitting the default.
+    if forecast_scaling != "none":
+        output["forecast_scaling"] = forecast_scaling
 
     risk_block = _risk_block_for_yaml(risk_config)
     if risk_block:
