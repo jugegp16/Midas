@@ -180,7 +180,7 @@ class LiveEngine:
         # ``BaseException`` is intentional — keyboard interrupts during
         # ``load_or_seed`` should also release the lock.
         try:
-            self._state: LiveState = load_or_seed(portfolio, state_path)
+            self._state: LiveState = load_or_seed(portfolio, state_path, persist_seed=not dry_run)
             self._portfolio = portfolio
             self._allocator = allocator
             self._order_sizer = order_sizer
@@ -253,6 +253,16 @@ class LiveEngine:
         except BaseException:
             self.close()
             raise
+
+    def _save_state(self) -> None:
+        """Persist state — a no-op in dry-run, which must leave no footprint.
+
+        Dry runs read real state for a realistic starting book but every
+        fill, cooldown, and report anchor stays in memory only.
+        """
+        if self._dry_run:
+            return
+        save_atomic(self._state, self._state_path)
 
     def close(self) -> None:
         """Release the state lockfile.
@@ -390,7 +400,7 @@ class LiveEngine:
         self._state.tally_confirmed = 0
         self._state.tally_declined = 0
         self._state.tally_expired = 0
-        save_atomic(self._state, self._state_path)
+        self._save_state()
 
         embed = report_embed(report)
         print_status(f"End of day — {session_date.isoformat()}")
@@ -424,8 +434,11 @@ class LiveEngine:
 
         State is already durable when this runs, so a failed append is never
         retried by a later tick — print the row instead so the operator can
-        hand-add it to the (hand-editable) log.
+        hand-add it to the (hand-editable) log. Dry runs write nothing:
+        phantom rows would flow straight into tax-report.
         """
+        if self._dry_run:
+            return
         try:
             append_trade(self._trade_log_path, record, cost_basis=cost_basis, purchase_date=purchase_date)
         except OSError as exc:
@@ -666,7 +679,7 @@ class LiveEngine:
                 self._state.tally_declined += 1
             else:
                 self._state.tally_expired += 1
-            save_atomic(self._state, self._state_path)
+            self._save_state()
 
             # State is durable — everything below is replay-safe salvage.
             if decision == "confirmed":
@@ -845,7 +858,7 @@ class LiveEngine:
             if superseded:
                 # Persist the removal BEFORE annotating Discord — the same
                 # persist-before-side-effects rule as _resolve_pending.
-                save_atomic(self._state, self._state_path)
+                self._save_state()
                 for stale, replacement in superseded:
                     print_status(
                         f"Superseded pending {stale.direction.value} {stale.ticker}: "
@@ -893,7 +906,7 @@ class LiveEngine:
             # restart knows about would be silently ignored, and the next
             # tick would post a duplicate. Same reasoning as the
             # persist-before-side-effects rule in _resolve_pending.
-            save_atomic(self._state, self._state_path)
+            self._save_state()
 
     def _tick(self, tickers: list[str]) -> None:
         """Run one poll cycle: fetch, allocate, size, fill, persist, alert."""
@@ -1021,7 +1034,7 @@ class LiveEngine:
             self._last_equity_session = self._now().astimezone(MARKET_TZ).date()
             self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
             # Persist pending-order transitions along with HWM/peak/infusion.
-            save_atomic(self._state, self._state_path)
+            self._save_state()
             return
 
         sell_breakdowns = self._apply_fills(filtered, today)
@@ -1034,7 +1047,7 @@ class LiveEngine:
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,
         # even on no-change ticks where alert printing is suppressed below).
-        save_atomic(self._state, self._state_path)
+        self._save_state()
 
         self._log_fills(filtered, sell_breakdowns, today)
         self._emit_alerts(filtered, pre_fill_cash)

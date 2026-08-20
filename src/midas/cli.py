@@ -356,7 +356,11 @@ def backtest(
     help="Path to strategies YAML config. Defaults to all strategies.",
 )
 @click.option("--interval", default=60, help="Poll interval in seconds.")
-@click.option("--dry-run", is_flag=True, help="Log signals without alerts.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Observe signals with in-memory fills: no state file, trade log, or Discord writes.",
+)
 @click.option(
     "--ignore-market-hours",
     is_flag=True,

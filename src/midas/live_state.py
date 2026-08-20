@@ -332,7 +332,7 @@ def _parse_pending_order(entry: Any, path: Path) -> PendingOrder:
         raise StateFileError(msg) from exc
 
 
-def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
+def load_or_seed(portfolio: PortfolioConfig, state_path: Path, persist_seed: bool = True) -> LiveState:
     """Load state from *state_path*, or seed it from *portfolio* if missing.
 
     The seed branch creates one ``PositionLot`` per ticker with ``shares > 0``,
@@ -348,6 +348,8 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
     Args:
         portfolio: Portfolio configuration to seed from when no state exists.
         state_path: Filesystem path of the persisted state YAML.
+        persist_seed: Write a freshly-seeded state to disk. Dry runs pass
+            False so observing signals never creates a state file.
 
     Returns:
         The loaded or freshly-seeded ``LiveState``.
@@ -384,8 +386,9 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
         peak_equity=seed_equity if seed_equity > 0 else None,
         lots=lots,
     )
-    save_atomic(state, state_path)
-    logger.info("Seeded state at %s from portfolio config", state_path)
+    if persist_seed:
+        save_atomic(state, state_path)
+        logger.info("Seeded state at %s from portfolio config", state_path)
     return state
 
 

@@ -1453,3 +1453,81 @@ def test_run_loop_sleeps_weekend_to_monday_open(tmp_path: Path, make_provider: P
         assert first_tick_et.date() == date(2026, 8, 24)  # Monday
         assert (first_tick_et.hour, first_tick_et.minute) == (9, 30)
         assert all(chunk <= 3600.0 for chunk in slept)  # chunked, never one giant sleep
+
+
+def test_dry_run_leaves_no_footprint_on_fresh_start(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A dry run must never create a state file or trade log."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        dry_run=True,
+    ) as engine:
+        engine._tick(["AAPL"])
+        # In-memory simulation still works (HWM advanced this session).
+        assert engine._state.high_water_marks["AAPL"] == 150.0
+
+    assert not state_path.exists()
+    assert not (tmp_path / "state.yaml.trades.csv").exists()
+
+
+def test_dry_run_reads_but_never_writes_existing_state(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Dry runs rehearse from the real book without touching it."""
+    state_path = tmp_path / "state.yaml"
+    seeded = LiveState(
+        available_cash=5_000.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=100.0)]},
+    )
+    save_atomic(seeded, state_path)
+    before = state_path.read_bytes()
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=5_000.0,
+    )
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        dry_run=True,
+    ) as engine:
+        assert engine._state.available_cash == 5_000.0  # real book loaded
+        engine._tick(["AAPL"])
+
+    assert state_path.read_bytes() == before  # byte-identical after the run
+
+
+def test_dry_run_writes_no_trade_log_on_fills(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Assumed fills in dry run stay in memory — no rows reach tax-report."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        dry_run=True,
+    ) as engine:
+        # Drive a fill through the assumed-fill path directly.
+        order = _sized_order("AAPL", Direction.SELL, 5.0, price=100.0)
+        breakdowns = engine._apply_fills([order], date(2026, 8, 20))
+        engine._log_fills([order], breakdowns, date(2026, 8, 20))
+        assert engine._state.available_cash == 1_500.0  # in-memory fill applied
+
+    assert not (tmp_path / "state.yaml.trades.csv").exists()

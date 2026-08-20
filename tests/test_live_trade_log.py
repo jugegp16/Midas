@@ -394,6 +394,7 @@ def test_append_log_row_salvages_data_on_io_failure(
 
     engine = object.__new__(LiveEngine)
     engine._trade_log_path = tmp_path / "trades.csv"
+    engine._dry_run = False
 
     def boom(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")

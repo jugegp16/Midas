@@ -67,7 +67,7 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `-p`, `--portfolio` | required | Path to portfolio YAML |
 | `-s`, `--strategies` | all strategies | Path to strategies YAML |
 | `--interval` | 60 | Poll interval in seconds |
-| `--dry-run` | off | Log signals without emitting alerts |
+| `--dry-run` | off | Observe signals with in-memory fills — never writes state, trade log, or Discord |
 | `--ignore-market-hours` | off | Poll 24/7 instead of only during US equity sessions (debugging) |
 
 ### Market hours
@@ -167,11 +167,12 @@ MIDAS_DISCORD_BOT_TOKEN=... uv run midas live -p portfolio.yaml
 
 The token plus at least one channel id are required for any Discord
 delivery; a token with no channel, or a channel without the token, is a
-startup error. `--dry-run` disables all Discord delivery: confirm mode
-(terminal-only, assumed fills, alerts labeled) and the end-of-day
-report, which prints to the terminal only. A dry run still writes its
-report anchor to the state file it is pointed at, so point dry runs at
-a scratch state file — as their assumed fills already require.
+startup error. `--dry-run` is fully ephemeral: it reads existing state
+for a realistic starting book but writes nothing — no state file, no
+trade log rows, no Discord. Fills are simulated in memory, alerts print
+labeled to the terminal, and the end-of-day report prints terminal-only.
+(It still takes the state lock, so it can't run concurrently with a
+real session against the same state file.)
 
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —
