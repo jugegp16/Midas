@@ -1,10 +1,6 @@
 softmax_temperature: 0.5
 min_buy_delta: 0.02
 min_cash_pct: 0.05
-# Deliberate with selective dip rules: when only one ticker dips, that lone
-# signal ranks to full conviction (see docs/strategies.md). For a dip buyer
-# that IS the intent — buy the dip that exists; switch to none to preserve
-# raw dip-depth magnitudes instead.
 forecast_scaling: quantile
 
 strategies:
