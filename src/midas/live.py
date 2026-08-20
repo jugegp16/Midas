@@ -18,7 +18,7 @@ try:
 except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
-from midas.alerts import DailyReport, DiscordReporter, OrderConfirmer, report_embed
+from midas.alerts import DailyReport, DiscordReporter, OrderConfirmer, ReportPosition, report_embed
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
@@ -31,6 +31,7 @@ from midas.live_state import (
     aggregate_cost_basis,
     apply_buy,
     apply_sell,
+    held_positions,
     load_or_seed,
     resolve_purchase_date,
     save_atomic,
@@ -225,6 +226,9 @@ class LiveEngine:
             # about Wednesday's session).
             self._last_equity: float | None = None
             self._last_equity_session: date | None = None
+            # Last observed close per ticker, captured with the equity
+            # observation above — prices the report's position table.
+            self._last_prices: dict[str, float] = {}
             # A built report whose Discord delivery failed: retried on later
             # ticks so a transient outage at the close doesn't silently lose
             # the day's heartbeat. The anchor is already persisted, so a
@@ -382,7 +386,14 @@ class LiveEngine:
             equity=equity,
             previous_equity=self._state.last_report_equity,
             cash=self._state.available_cash,
-            positions=sum(1 for lots in self._state.lots.values() if sum(lot.shares for lot in lots) > 0),
+            positions=tuple(
+                ReportPosition(
+                    ticker=ticker,
+                    shares=shares,
+                    market_value=price * shares if (price := self._last_prices.get(ticker)) is not None else None,
+                )
+                for ticker, shares in held_positions(self._state)
+            ),
             pending=len(self._state.pending_orders),
             alerts_posted=self._state.tally_posted,
             confirmed=self._state.tally_confirmed,
@@ -405,7 +416,10 @@ class LiveEngine:
         embed = report_embed(report)
         print_status(f"End of day — {session_date.isoformat()}")
         for field_entry in embed["fields"]:
-            print_status(f"  {field_entry['name']}: {field_entry['value']}")
+            # Code fences are Discord markup; the terminal is already
+            # monospace. Multi-line values keep their alignment.
+            value = str(field_entry["value"]).replace("```", "").strip().replace("\n", "\n    ")
+            print_status(f"  {field_entry['name']}: {value}")
         if self._unsent_report is not None:
             # A heartbeat must never arrive after a newer one.
             logger.warning(
@@ -1032,6 +1046,7 @@ class LiveEngine:
             current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
             self._last_equity = current_equity
             self._last_equity_session = self._now().astimezone(MARKET_TZ).date()
+            self._last_prices = current_prices
             self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
             # Persist pending-order transitions along with HWM/peak/infusion.
             self._save_state()
@@ -1043,6 +1058,7 @@ class LiveEngine:
         current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
         self._last_equity = current_equity
         self._last_equity_session = self._now().astimezone(MARKET_TZ).date()
+        self._last_prices = current_prices
         self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,

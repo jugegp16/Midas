@@ -38,6 +38,7 @@ MAX_RETRY_AFTER_SECONDS = 5.0
 COLOR_BUY = 0x57F287  # Discord green
 COLOR_SELL = 0xED4245  # Discord red
 COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
+REPORT_MAX_POSITIONS = 20  # digest entries before "+N more" (1024-char field limit)
 # Cloudflare fronts Discord and rejects urllib's default Python-urllib/x.y
 # User-Agent with HTTP 403 (error code 1010), so send an explicit one.
 USER_AGENT = "midas-alerts/0.2"
@@ -320,6 +321,17 @@ def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
 
 
 @dataclass(frozen=True)
+class ReportPosition:
+    """One held position in the end-of-day report."""
+
+    ticker: str
+    shares: float
+    market_value: float | None
+    """Shares times the session's last observed price; None when the
+    last tick had no price for the ticker (e.g. dropped from the config)."""
+
+
+@dataclass(frozen=True)
 class DailyReport:
     """End-of-day summary assembled by the live engine."""
 
@@ -327,7 +339,8 @@ class DailyReport:
     equity: float
     previous_equity: float | None
     cash: float
-    positions: int
+    positions: tuple[ReportPosition, ...]
+    """Held positions sorted by ticker."""
     pending: int
     alerts_posted: int
     confirmed: int
@@ -335,6 +348,36 @@ class DailyReport:
     expired: int
     cppi_scale: float
     vol_target_scale: float
+
+
+def _positions_table(positions: tuple[ReportPosition, ...]) -> str:
+    """Render positions as an aligned Shares/Position/Value table.
+
+    Wrapped in a code block — embed text is proportional, so only a code
+    block keeps columns aligned. Capped at ``REPORT_MAX_POSITIONS`` rows
+    to stay under Discord's 1024-char field limit; the cap is visible
+    ("+N more"), never a silent truncation.
+    """
+    if not positions:
+        return "none"
+    shown = positions[:REPORT_MAX_POSITIONS]
+    rows = [
+        (
+            f"{position.shares:g}",
+            position.ticker,
+            f"${position.market_value:,.2f}" if position.market_value is not None else "n/a",
+        )
+        for position in shown
+    ]
+    headers = ("Shares", "Position", "Value")
+    widths = [max(len(header), *(len(row[column]) for row in rows)) for column, header in enumerate(headers)]
+    lines = [f"{headers[0]:>{widths[0]}}  {headers[1]:<{widths[1]}}  {headers[2]:>{widths[2]}}"]
+    lines.extend(
+        f"{shares:>{widths[0]}}  {ticker:<{widths[1]}}  {value:>{widths[2]}}" for shares, ticker, value in rows
+    )
+    if len(positions) > len(shown):
+        lines.append(f"+{len(positions) - len(shown)} more")
+    return "```\n" + "\n".join(lines) + "\n```"
 
 
 def report_embed(report: DailyReport) -> dict[str, Any]:
@@ -349,11 +392,12 @@ def report_embed(report: DailyReport) -> dict[str, Any]:
         f"{report.alerts_posted} posted · {report.confirmed} \u2705 · "
         f"{report.declined} \u274c · {report.expired} expired · {report.pending} pending"
     )
+    positions_line = _positions_table(report.positions)
     fields = [
         {"name": "Equity", "value": f"${report.equity:,.2f}", "inline": True},
         {"name": "Day", "value": day_change, "inline": True},
         {"name": "Cash", "value": f"${report.cash:,.2f}", "inline": True},
-        {"name": "Positions", "value": str(report.positions), "inline": True},
+        {"name": "Positions", "value": positions_line, "inline": False},
         {"name": "Alerts", "value": alerts_line, "inline": False},
     ]
     if report.cppi_scale != 1.0 or report.vol_target_scale != 1.0:

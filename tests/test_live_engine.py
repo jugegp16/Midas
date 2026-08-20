@@ -1287,6 +1287,37 @@ def test_stale_undelivered_report_dropped_at_next_session(tmp_path: Path, make_p
         assert sessions == [date(2026, 8, 18), date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 19)]
 
 
+def test_report_positions_digest_from_state_lots(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The report lists each held position with its market value at the
+    session's last observed price, not a bare count."""
+    from midas.alerts import ReportPosition
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._last_prices = {"AAPL": 100.0}
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert report.positions == (ReportPosition("AAPL", 10.0, 1_000.0),)  # type: ignore[attr-defined]
+
+
+def test_report_position_without_observed_price_has_no_value(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A held ticker absent from the last tick's prices (e.g. dropped from
+    the portfolio config) still lists, with an unknown market value."""
+    from midas.alerts import ReportPosition
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert report.positions == (ReportPosition("AAPL", 10.0, None),)  # type: ignore[attr-defined]
+
+
 def test_dry_run_report_stays_terminal_only(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """--dry-run must not post real reports to Discord, nor let a dry run's
     anchor suppress the real run's report (mirrors confirm-mode disarming)."""

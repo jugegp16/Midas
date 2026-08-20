@@ -468,6 +468,15 @@ class SellBreakdown:
     lt_purchase_dates: tuple[date | None, ...] = ()
 
 
+def held_positions(state: LiveState) -> tuple[tuple[str, float], ...]:
+    """Open positions as (ticker, total shares), sorted by ticker."""
+    return tuple(
+        (ticker, shares)
+        for ticker, lots in sorted(state.lots.items())
+        if (shares := sum(lot.shares for lot in lots)) > 0
+    )
+
+
 def aggregate_cost_basis(lots: Sequence[PositionLot]) -> float:
     """Share-weighted average cost basis across all open lots, or 0.0 if empty."""
     total_shares = sum(lot.shares for lot in lots)

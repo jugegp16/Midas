@@ -25,11 +25,12 @@ from midas.alerts import (
     DailyReport,
     DiscordApiError,
     DiscordBotClient,
+    ReportPosition,
     order_embed,
     report_embed,
 )
 from midas.data.provider import DataProvider
-from midas.live_state import load_state
+from midas.live_state import held_positions, load_state
 from midas.market_hours import MARKET_TZ
 from midas.models import AlertsConfig, Direction, Order, OrderContext
 
@@ -190,7 +191,14 @@ def _snapshot_report(state_path: Path, provider: DataProvider) -> tuple[DailyRep
             equity=equity,
             previous_equity=state.last_report_equity,
             cash=state.available_cash,
-            positions=sum(1 for lots in state.lots.values() if sum(lot.shares for lot in lots) > 0),
+            positions=tuple(
+                ReportPosition(
+                    ticker=ticker,
+                    shares=shares,
+                    market_value=price * shares if (price := prices.get(ticker)) is not None else None,
+                )
+                for ticker, shares in held_positions(state)
+            ),
             pending=len(state.pending_orders),
             alerts_posted=state.tally_posted,
             confirmed=state.tally_confirmed,
@@ -209,7 +217,12 @@ def _snapshot_report(state_path: Path, provider: DataProvider) -> tuple[DailyRep
             equity=100_000.0,
             previous_equity=99_000.0,
             cash=5_000.0,
-            positions=4,
+            positions=(
+                ReportPosition("AAPL", 10.0, 1_850.0),
+                ReportPosition("MSFT", 5.0, 2_500.0),
+                ReportPosition("NVDA", 2.0, 350.0),
+                ReportPosition("VOO", 8.0, 4_400.0),
+            ),
             pending=1,
             alerts_posted=3,
             confirmed=2,
