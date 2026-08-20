@@ -37,6 +37,7 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_RETRY_AFTER_SECONDS = 5.0
 COLOR_BUY = 0x57F287  # Discord green
 COLOR_SELL = 0xED4245  # Discord red
+COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
 # Cloudflare fronts Discord and rejects urllib's default Python-urllib/x.y
 # User-Agent with HTTP 403 (error code 1010), so send an explicit one.
 USER_AGENT = "midas-alerts/0.2"
@@ -316,9 +317,6 @@ def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
         return float(header)
     except ValueError:
         return None
-
-
-COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
 
 
 @dataclass(frozen=True)

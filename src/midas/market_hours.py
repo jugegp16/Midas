@@ -120,7 +120,13 @@ def next_session_open(now: datetime) -> datetime:
 
 
 def session_close(now: datetime) -> datetime:
-    """The close of *now*'s trading day in UTC (valid when a session is open)."""
+    """The 16:00 ET close of *now*'s calendar day (ET) in UTC.
+
+    Meaningful during a session and after the close on the same day (the
+    report catch-up relies on the latter — the result is then in the
+    past). On a non-trading day it is the hypothetical 16:00 ET point;
+    callers gate on ``is_trading_day`` first.
+    """
     local = now.astimezone(MARKET_TZ)
     close_local = datetime.combine(local.date(), SESSION_CLOSE, tzinfo=MARKET_TZ)
     return close_local.astimezone(UTC)

@@ -192,6 +192,9 @@ class LiveEngine:
             if dry_run and confirmer is not None:
                 logger.info("dry run: confirm mode disabled, alerts stay terminal-only with assumed fills")
                 confirmer = None
+            if dry_run and reporter is not None:
+                logger.info("dry run: end-of-day report stays terminal-only")
+                reporter = None
             self._confirmer = confirmer
             if self._confirmer is None and self._state.pending_orders:
                 # Stranded pendings are a double-book vector: this mode
@@ -222,6 +225,11 @@ class LiveEngine:
             # about Wednesday's session).
             self._last_equity: float | None = None
             self._last_equity_session: date | None = None
+            # A built report whose Discord delivery failed: retried on later
+            # ticks so a transient outage at the close doesn't silently lose
+            # the day's heartbeat. The anchor is already persisted, so a
+            # retry re-posts this exact report — never a rebuild.
+            self._unsent_report: DailyReport | None = None
             self._last_risk_telemetry: tuple[float, float] = (1.0, 1.0)
             # Clock seams: tests override these attributes to drive the
             # run() gating loop through virtual time.
@@ -295,13 +303,16 @@ class LiveEngine:
                     continue
                 try:
                     self._tick(tickers)
-                    self._maybe_send_report(self._now())
                 except Exception:
                     # A live process watching real money must not die
                     # overnight on a one-tick bug — state transitions are
                     # individually durable, so skipping a tick is safe.
                     # Same crash-proofing rationale as _fetch_histories.
                     logger.exception("tick failed; continuing next poll")
+                try:
+                    self._maybe_send_report(self._now())
+                except Exception:
+                    logger.exception("end-of-day report failed; continuing")
                 self._sleep(self._poll_interval)
         except KeyboardInterrupt:
             print_status("Stopped.")
@@ -330,9 +341,16 @@ class LiveEngine:
         past 16:00). The catch-up requires an equity observation, so an
         engine started in the evening reports nothing for a session it
         never saw.
+
+        Known limit: the catch-up keys off *now*'s ET date, so a host
+        suspended at 15:5x and woken after midnight ET drops that
+        session's report even though its equity observation is valid —
+        accepted, since the target host is always-on and the next close
+        re-establishes the heartbeat.
         """
         if not self._market_hours_only:
             return
+        self._retry_unsent_report()
         session_date = now.astimezone(MARKET_TZ).date()
         if self._state.last_report_date == session_date or not is_trading_day(session_date):
             return
@@ -378,8 +396,22 @@ class LiveEngine:
         print_status(f"End of day — {session_date.isoformat()}")
         for field_entry in embed["fields"]:
             print_status(f"  {field_entry['name']}: {field_entry['value']}")
-        if self._reporter is not None:
-            self._reporter.post_report(report)
+        if self._unsent_report is not None:
+            # A heartbeat must never arrive after a newer one.
+            logger.warning(
+                "dropping undelivered end-of-day report for %s",
+                self._unsent_report.session_date.isoformat(),
+            )
+            self._unsent_report = None
+        if self._reporter is not None and not self._reporter.post_report(report):
+            self._unsent_report = report
+
+    def _retry_unsent_report(self) -> None:
+        """Re-attempt delivery of a report whose earlier post failed."""
+        if self._unsent_report is None or self._reporter is None:
+            return
+        if self._reporter.post_report(self._unsent_report):
+            self._unsent_report = None
 
     def _append_log_row(
         self,
@@ -837,6 +869,11 @@ class LiveEngine:
                 # Not persisted as pending: the order is re-proposed and the
                 # post retried on a later tick.
                 continue
+            # Superseded alerts stay counted here without landing in any
+            # resolution tally, so the report's posted line can exceed the
+            # sum of ✅/❌/expired/pending — each replaced message really
+            # was posted. Alerts posted after the report window count
+            # toward the next session's tally.
             self._state.tally_posted += 1
             self._state.pending_orders.append(
                 PendingOrder(

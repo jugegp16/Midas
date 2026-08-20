@@ -385,7 +385,7 @@ def live(
         click.echo("Discord confirm mode: orders fill only on \u2705 reaction.")
     else:
         click.echo("Terminal-only mode: alerts assume immediate execution.")
-    if reporter is not None and not ignore_market_hours:
+    if reporter is not None and not ignore_market_hours and not dry_run:
         click.echo("End-of-day report: Discord.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)

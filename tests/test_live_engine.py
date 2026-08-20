@@ -1227,7 +1227,7 @@ def test_report_day_delta_uses_previous_anchor(tmp_path: Path, make_provider: Pr
 
 
 def test_report_anchor_persists_before_delivery_failure(tmp_path: Path, make_provider: ProviderFactory) -> None:
-    """A Discord failure must not re-arm the report (no double-post)."""
+    """A Discord failure must not re-arm the report build (no second anchor)."""
     from midas.live_state import load_state
 
     reporter = FakeReporter(deliver=False)
@@ -1237,12 +1237,79 @@ def test_report_anchor_persists_before_delivery_failure(tmp_path: Path, make_pro
         engine._maybe_send_report(NEAR_CLOSE)
 
         assert len(reporter.reports) == 1
-        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=2))
-        assert len(reporter.reports) == 1
 
     on_disk = load_state(tmp_path / "state.yaml")
     assert on_disk.last_report_date == date(2026, 8, 18)
     assert on_disk.last_report_equity == 2_000.0
+
+
+def test_failed_delivery_retries_until_success(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The heartbeat is the feature — a transient Discord failure at 15:55
+    must retry the built report on later ticks, not lose the day silently."""
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+        assert len(reporter.reports) == 1
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=1))
+        assert len(reporter.reports) == 2
+        # The retry re-posts the report built at 15:56 — never a rebuild,
+        # whose tallies were already zeroed by the anchor persistence.
+        assert reporter.reports[1] is reporter.reports[0]
+
+        reporter.deliver = True
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=2))
+        assert len(reporter.reports) == 3
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=3))
+        assert len(reporter.reports) == 3  # delivered — no further attempts
+
+
+def test_stale_undelivered_report_dropped_at_next_session(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """When a new session's report is built, an undelivered previous one is
+    dropped — a late heartbeat must never arrive after a newer one."""
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)  # day 1: fails
+
+        engine._last_equity = 2_100.0
+        engine._last_equity_session = date(2026, 8, 19)
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1))  # retry day 1 fails; day 2 fails
+
+        reporter.deliver = True
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1, minutes=1))
+
+        sessions = [r.session_date for r in reporter.reports]  # type: ignore[attr-defined]
+        assert sessions == [date(2026, 8, 18), date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 19)]
+
+
+def test_dry_run_report_stays_terminal_only(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """--dry-run must not post real reports to Discord, nor let a dry run's
+    anchor suppress the real run's report (mirrors confirm-mode disarming)."""
+    reporter = FakeReporter()
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        dry_run=True,
+        reporter=reporter,  # type: ignore[arg-type]
+    ) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+
+    assert reporter.reports == []
 
 
 def test_report_counters_reset_after_send(tmp_path: Path, make_provider: ProviderFactory) -> None:

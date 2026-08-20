@@ -167,8 +167,11 @@ MIDAS_DISCORD_BOT_TOKEN=... uv run midas live -p portfolio.yaml
 
 The token plus at least one channel id are required for any Discord
 delivery; a token with no channel, or a channel without the token, is a
-startup error. `--dry-run` disables confirm mode (terminal-only,
-assumed fills, alerts labeled).
+startup error. `--dry-run` disables all Discord delivery: confirm mode
+(terminal-only, assumed fills, alerts labeled) and the end-of-day
+report, which prints to the terminal only. A dry run still writes its
+report anchor to the state file it is pointed at, so point dry runs at
+a scratch state file — as their assumed fills already require.
 
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —
