@@ -336,7 +336,9 @@ class LiveEngine:
 
         Chunked so a laptop suspend or clock jump re-evaluates the target
         at most ``MAX_SLEEP_CHUNK_SECONDS`` late rather than oversleeping
-        into an entire missed session.
+        into an entire missed session. Each wake-up also re-attempts an
+        undelivered end-of-day report, so a delivery outage at the close
+        resolves within a chunk instead of waiting out the whole sleep.
         """
         next_open = next_session_open(now)
         local = next_open.astimezone(MARKET_TZ)
@@ -346,6 +348,14 @@ class LiveEngine:
             if remaining <= 0:
                 return
             self._sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
+            try:
+                # Without this, a Discord blip at Friday's close would
+                # delay the heartbeat until Monday's open.
+                self._retry_unsent_report()
+            except Exception:
+                # Same crash-proofing rationale as the run loop: an
+                # overnight delivery bug must not kill the engine.
+                logger.exception("report retry failed; continuing sleep")
 
     def _maybe_send_report(self, now: datetime) -> None:
         """Emit the end-of-day report once per session, near (or after) the close.
