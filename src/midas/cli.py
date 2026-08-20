@@ -370,7 +370,7 @@ def live(
     ignore_market_hours: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
-    from midas.alerts import build_confirmer, build_reporter
+    from midas.alerts import build_discord
     from midas.live import LiveEngine
 
     portfolio_path = Path(portfolio)
@@ -378,10 +378,9 @@ def live(
     state_path = _resolve_state_path(port, portfolio_path)
     alerts_cfg = port.alerts_config or AlertsConfig()
     try:
-        confirmer = build_confirmer(port.alerts_config)
+        confirmer, reporter = build_discord(port.alerts_config)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
-    reporter = build_reporter(port.alerts_config)
     if confirmer is not None and not dry_run:
         click.echo("Discord confirm mode: orders fill only on \u2705 reaction.")
     else:

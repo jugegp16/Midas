@@ -116,19 +116,28 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
     if not isinstance(alerts_raw, dict):
         msg = f"alerts: must be a mapping, got {alerts_raw!r}"
         raise ValueError(msg)
+    renamed_keys = {
+        "discord_intra_day_channel_id": ("discord_channel_id",),
+        "discord_end_of_day_channel_id": ("discord_report_channel_id",),
+    }
+    for new_key, old_keys in renamed_keys.items():
+        for old_key in old_keys:
+            if old_key in alerts_raw:
+                msg = f"alerts: {old_key} was renamed to {new_key} — update the key"
+                raise ValueError(msg)
     if "discord_webhook_url" in alerts_raw:
         # Removed when bot delivery replaced the webhook — silently ignoring
         # it would leave the operator believing alerts still flow through
         # the (dead) webhook.
         msg = (
             "alerts: discord_webhook_url was replaced by bot delivery — "
-            "set discord_channel_id here and export MIDAS_DISCORD_BOT_TOKEN instead "
+            "set discord_intra_day_channel_id here and export MIDAS_DISCORD_BOT_TOKEN instead "
             "(see docs/cli.md, Discord push notifications)"
         )
         raise ValueError(msg)
     known_keys = {
-        "discord_channel_id",
-        "discord_report_channel_id",
+        "discord_intra_day_channel_id",
+        "discord_end_of_day_channel_id",
         "timeout_seconds",
         "pending_ttl_hours",
         "realert_hours",
@@ -139,8 +148,8 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         msg = f"alerts: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
         raise ValueError(msg)
     return AlertsConfig(
-        discord_channel_id=_parse_channel_id(alerts_raw, "discord_channel_id"),
-        discord_report_channel_id=_parse_channel_id(alerts_raw, "discord_report_channel_id"),
+        discord_intra_day_channel_id=_parse_channel_id(alerts_raw, "discord_intra_day_channel_id"),
+        discord_end_of_day_channel_id=_parse_channel_id(alerts_raw, "discord_end_of_day_channel_id"),
         timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", DEFAULT_ALERT_TIMEOUT_SECONDS),
         pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", DEFAULT_PENDING_TTL_HOURS),
         realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", DEFAULT_REALERT_HOURS),

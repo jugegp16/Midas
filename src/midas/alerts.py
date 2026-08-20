@@ -380,52 +380,44 @@ class DiscordReporter:
         return True
 
 
-def build_reporter(alerts_config: AlertsConfig | None) -> DiscordReporter | None:
-    """Resolve the close-of-day reporter, or None for terminal-only.
+def build_discord(alerts_config: AlertsConfig | None) -> tuple[DiscordConfirmer | None, DiscordReporter | None]:
+    """Resolve Discord delivery for a live run: ``(confirmer, reporter)``.
 
-    Rides the same bot credentials as the confirmer. Reports go to
-    ``discord_report_channel_id`` when set, else fall back to the alerts
-    channel. No bot configured -> terminal-only reporting.
-    """
-    token = os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, "").strip()
-    if not token or alerts_config is None:
-        return None
-    channel_id = (alerts_config.discord_report_channel_id or alerts_config.discord_channel_id).strip()
-    if not channel_id:
-        return None
-    return DiscordReporter(
-        DiscordBotClient(token, timeout_seconds=alerts_config.timeout_seconds),
-        channel_id,
-    )
+    Both channels are independently optional:
 
+    - ``discord_intra_day_channel_id`` -> confirm mode (order alerts fill
+      only on operator reaction there).
+    - ``discord_end_of_day_channel_id`` -> close-of-day reports, falling
+      back to the intra-day channel when only that one is configured.
+    - Neither channel and no token -> terminal-only, ``(None, None)``.
 
-def build_confirmer(alerts_config: AlertsConfig | None) -> DiscordConfirmer | None:
-    """Resolve the Discord confirmer for a live run, or None for terminal-only.
-
-    Discord delivery requires BOTH the ``MIDAS_DISCORD_BOT_TOKEN`` env var
-    (the token is a secret — env only, never YAML) and ``discord_channel_id``
-    in the ``alerts:`` block. Neither → terminal-only with assumed fills,
-    behavior unchanged from before Discord existed.
+    The bot token comes exclusively from the ``MIDAS_DISCORD_BOT_TOKEN``
+    env var (a secret — never YAML).
 
     Raises:
-        ValueError: If exactly one of the two is configured — a half-wired
-            bot must be a loud startup error, not a silent fallback.
+        ValueError: On a half-wired bot — the token without any channel,
+            or a channel without the token. Misconfiguration must be a
+            loud startup error, never a silent fallback.
     """
     token = os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, "").strip()
-    channel_id = alerts_config.discord_channel_id.strip() if alerts_config is not None else ""
-    if not token and not channel_id:
-        return None
+    intra_day = alerts_config.discord_intra_day_channel_id.strip() if alerts_config is not None else ""
+    end_of_day = alerts_config.discord_end_of_day_channel_id.strip() if alerts_config is not None else ""
+    if not token and not intra_day and not end_of_day:
+        return None, None
     if not token:
         msg = (
-            f"alerts: discord_channel_id is set but {DISCORD_BOT_TOKEN_ENV_VAR} is not — "
-            "export the bot token or remove the channel id"
+            f"alerts: a Discord channel id is set but {DISCORD_BOT_TOKEN_ENV_VAR} is not — "
+            "export the bot token or remove the channel id(s)"
         )
         raise ValueError(msg)
-    if not channel_id:
+    if not intra_day and not end_of_day:
         msg = (
-            f"{DISCORD_BOT_TOKEN_ENV_VAR} is set but alerts: discord_channel_id is not — "
-            "add the channel id to the portfolio YAML or unset the token"
+            f"{DISCORD_BOT_TOKEN_ENV_VAR} is set but the alerts: block has no channel id — "
+            "add discord_intra_day_channel_id and/or discord_end_of_day_channel_id, or unset the token"
         )
         raise ValueError(msg)
-    timeout = alerts_config.timeout_seconds if alerts_config is not None else DEFAULT_ALERT_TIMEOUT_SECONDS
-    return DiscordConfirmer(DiscordBotClient(token, timeout_seconds=timeout), channel_id)
+    assert alerts_config is not None  # a channel id implies a config
+    client = DiscordBotClient(token, timeout_seconds=alerts_config.timeout_seconds)
+    confirmer = DiscordConfirmer(client, intra_day) if intra_day else None
+    reporter = DiscordReporter(client, end_of_day or intra_day)
+    return confirmer, reporter

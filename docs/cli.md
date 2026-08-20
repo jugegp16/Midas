@@ -91,7 +91,7 @@ risk-overlay scales when engaged. It doubles as a heartbeat — the day
 ends with a push notification even when no orders fired, so silence
 stops being ambiguous between "no signals" and "engine died".
 
-The report posts to `discord_report_channel_id` when set — keeping the
+The report posts to `discord_end_of_day_channel_id` when set — keeping the
 alerts channel action-only — and falls back to the alerts channel
 otherwise. Terminal always gets it. The day-over-day anchor persists in
 the state file, so the delta survives restarts.
@@ -147,12 +147,17 @@ Configure the channel in the portfolio YAML (the id is not a secret):
 
 ```yaml
 alerts:
-  discord_channel_id: 1400000000000000001
-  discord_report_channel_id: 1400000000000000002  # optional, close-of-day reports
+  discord_intra_day_channel_id: 1400000000000000001  # optional, order alerts + confirmation
+  discord_end_of_day_channel_id: 1400000000000000002  # optional, close-of-day reports
   timeout_seconds: 5      # optional, per-request timeout
   pending_ttl_hours: 8    # optional, confirmation window
   realert_hours: 1        # optional, min gap between re-alerts of one intent
 ```
+
+The two channels are independently optional: intra-day only gives
+confirm-mode alerts with reports falling back to the same channel;
+end-of-day only gives the daily report while alerts stay terminal-only
+with assumed fills; both gives the full split.
 
 The bot token IS a secret — it goes in the environment, never in YAML:
 
@@ -160,9 +165,10 @@ The bot token IS a secret — it goes in the environment, never in YAML:
 MIDAS_DISCORD_BOT_TOKEN=... uv run midas live -p portfolio.yaml
 ```
 
-Both the token and the channel id are required for confirm mode;
-setting only one is a startup error. `--dry-run` disables confirm mode
-(terminal-only, assumed fills, alerts labeled).
+The token plus at least one channel id are required for any Discord
+delivery; a token with no channel, or a channel without the token, is a
+startup error. `--dry-run` disables confirm mode (terminal-only,
+assumed fills, alerts labeled).
 
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —

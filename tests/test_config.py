@@ -286,12 +286,12 @@ def test_load_portfolio_with_alerts_block(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        "alerts:\n  discord_channel_id: 1400000000000000001\n  timeout_seconds: 2.5\n  pending_ttl_hours: 4\n"
+        "alerts:\n  discord_intra_day_channel_id: 1400000000000000001\n  timeout_seconds: 2.5\n  pending_ttl_hours: 4\n"
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
     # YAML parses the snowflake as int; config normalizes to a string.
-    assert alerts.discord_channel_id == "1400000000000000001"
+    assert alerts.discord_intra_day_channel_id == "1400000000000000001"
     assert alerts.timeout_seconds == 2.5
     assert alerts.pending_ttl_hours == 4.0
 
@@ -300,11 +300,11 @@ def test_load_portfolio_alerts_quoted_channel_id(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        'alerts:\n  discord_channel_id: "1400000000000000001"\n'
+        'alerts:\n  discord_intra_day_channel_id: "1400000000000000001"\n'
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_channel_id == "1400000000000000001"
+    assert alerts.discord_intra_day_channel_id == "1400000000000000001"
 
 
 def test_load_portfolio_alerts_defaults(tmp_path: Path) -> None:
@@ -313,7 +313,7 @@ def test_load_portfolio_alerts_defaults(tmp_path: Path) -> None:
     path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts: {}\n")
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_channel_id == ""
+    assert alerts.discord_intra_day_channel_id == ""
     assert alerts.timeout_seconds == 5.0
     assert alerts.pending_ttl_hours == 8.0
 
@@ -354,23 +354,24 @@ def test_load_portfolio_alerts_non_mapping_raises(tmp_path: Path) -> None:
 
 
 def test_load_portfolio_alerts_null_channel_parses_as_empty(tmp_path: Path) -> None:
-    """A bare `discord_channel_id:` key means "fill in later", not the string 'None'."""
+    """A bare `discord_intra_day_channel_id:` key means "fill in later", not the string 'None'."""
     path = tmp_path / "portfolio.yaml"
     path.write_text(
-        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\nalerts:\n  discord_channel_id:\n"
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_intra_day_channel_id:\n"
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_channel_id == ""
+    assert alerts.discord_intra_day_channel_id == ""
 
 
 def test_load_portfolio_alerts_non_numeric_channel_raises(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        "alerts:\n  discord_channel_id: midas-alerts\n"
+        "alerts:\n  discord_intra_day_channel_id: midas-alerts\n"
     )
-    with pytest.raises(ValueError, match="discord_channel_id"):
+    with pytest.raises(ValueError, match="discord_intra_day_channel_id"):
         load_portfolio(path)
 
 
@@ -431,8 +432,21 @@ def test_load_portfolio_alerts_report_channel(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
-        "alerts:\n  discord_channel_id: 111\n  discord_report_channel_id: 222\n"
+        "alerts:\n  discord_intra_day_channel_id: 111\n  discord_end_of_day_channel_id: 222\n"
     )
     alerts = load_portfolio(path).alerts_config
     assert alerts is not None
-    assert alerts.discord_report_channel_id == "222"
+    assert alerts.discord_end_of_day_channel_id == "222"
+
+
+def test_load_portfolio_alerts_renamed_channel_keys_raise(tmp_path: Path) -> None:
+    """The pre-rename channel keys must fail loudly with the new name."""
+    base = "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+    for old_key, new_key in (
+        ("discord_channel_id", "discord_intra_day_channel_id"),
+        ("discord_report_channel_id", "discord_end_of_day_channel_id"),
+    ):
+        path = tmp_path / "portfolio.yaml"
+        path.write_text(base + f"alerts:\n  {old_key}: 123\n")
+        with pytest.raises(ValueError, match=new_key):
+            load_portfolio(path)

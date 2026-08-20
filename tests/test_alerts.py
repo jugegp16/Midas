@@ -17,7 +17,7 @@ from midas.alerts import (
     DiscordApiError,
     DiscordBotClient,
     DiscordConfirmer,
-    build_confirmer,
+    build_discord,
     order_embed,
 )
 from midas.models import AlertsConfig, Direction, Order, OrderContext
@@ -325,40 +325,63 @@ class TestConfirmer:
         confirmer.mark_unfillable("42", "note")
 
 
-class TestBuildConfirmer:
-    def test_neither_configured_is_terminal_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestBuildDiscord:
+    def test_nothing_configured_is_terminal_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
 
-        assert build_confirmer(None) is None
-        assert build_confirmer(AlertsConfig()) is None
+        assert build_discord(None) == (None, None)
+        assert build_discord(AlertsConfig()) == (None, None)
 
-    def test_channel_without_token_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_any_channel_without_token_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
 
         with pytest.raises(ValueError, match=DISCORD_BOT_TOKEN_ENV_VAR):
-            build_confirmer(AlertsConfig(discord_channel_id=CHANNEL))
+            build_discord(AlertsConfig(discord_intra_day_channel_id=CHANNEL))
+        with pytest.raises(ValueError, match=DISCORD_BOT_TOKEN_ENV_VAR):
+            build_discord(AlertsConfig(discord_end_of_day_channel_id=CHANNEL))
 
-    def test_token_without_channel_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_token_without_any_channel_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
 
-        with pytest.raises(ValueError, match="discord_channel_id"):
-            build_confirmer(AlertsConfig())
-        with pytest.raises(ValueError, match="discord_channel_id"):
-            build_confirmer(None)
+        with pytest.raises(ValueError, match="channel id"):
+            build_discord(AlertsConfig())
+        with pytest.raises(ValueError, match="channel id"):
+            build_discord(None)
 
-    def test_both_configured_builds_confirmer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_both_channels(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
 
-        confirmer = build_confirmer(AlertsConfig(discord_channel_id=CHANNEL, timeout_seconds=3.0))
+        confirmer, reporter = build_discord(
+            AlertsConfig(discord_intra_day_channel_id="111", discord_end_of_day_channel_id="222", timeout_seconds=3.0)
+        )
 
         assert isinstance(confirmer, DiscordConfirmer)
-        assert confirmer._channel_id == CHANNEL
+        assert confirmer._channel_id == "111"
         assert confirmer._client._timeout_seconds == 3.0
+        assert reporter is not None
+        assert reporter._channel_id == "222"
+
+    def test_intra_day_only_reports_fall_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
+
+        confirmer, reporter = build_discord(AlertsConfig(discord_intra_day_channel_id="111"))
+
+        assert confirmer is not None and confirmer._channel_id == "111"
+        assert reporter is not None and reporter._channel_id == "111"
+
+    def test_end_of_day_only_is_report_mode_without_confirm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reports-only config: no confirm flow, assumed fills, Discord heartbeat."""
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
+
+        confirmer, reporter = build_discord(AlertsConfig(discord_end_of_day_channel_id="222"))
+
+        assert confirmer is None
+        assert reporter is not None and reporter._channel_id == "222"
 
     def test_blank_token_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "   ")
 
-        assert build_confirmer(AlertsConfig()) is None
+        assert build_discord(AlertsConfig()) == (None, None)
 
 
 class TestReportEmbed:
@@ -469,33 +492,3 @@ class TestDiscordReporter:
         )
 
         assert reporter.post_report(report) is False  # must not raise
-
-
-class TestBuildReporter:
-    def test_no_token_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
-        from midas.alerts import build_reporter
-
-        assert build_reporter(AlertsConfig(discord_report_channel_id=CHANNEL)) is None
-
-    def test_report_channel_preferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
-        from midas.alerts import build_reporter
-
-        reporter = build_reporter(AlertsConfig(discord_channel_id="111", discord_report_channel_id="222"))
-        assert reporter is not None
-        assert reporter._channel_id == "222"
-
-    def test_falls_back_to_alerts_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
-        from midas.alerts import build_reporter
-
-        reporter = build_reporter(AlertsConfig(discord_channel_id="111"))
-        assert reporter is not None
-        assert reporter._channel_id == "111"
-
-    def test_no_channels_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
-        from midas.alerts import build_reporter
-
-        assert build_reporter(AlertsConfig()) is None
