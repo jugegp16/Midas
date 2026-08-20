@@ -455,8 +455,8 @@ def doctor(portfolio: str, wait_reaction: bool) -> None:
         wait_reaction=wait_reaction,
     )
     click.echo(
-        f"{result.checks} checks, {result.failures} failed, {result.warnings} warning(s) — "
-        + ("healthy" if result.healthy else "NOT healthy")
+        ("healthy" if result.healthy else "NOT healthy")
+        + f" — {result.checks} checks, {result.failures} failed, {result.warnings} warning(s)"
     )
     if not result.healthy:
         raise SystemExit(1)
