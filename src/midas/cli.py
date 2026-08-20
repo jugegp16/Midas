@@ -418,6 +418,50 @@ def live(
         engine.run()
 
 
+@cli.command()
+@click.option(
+    "-p",
+    "--portfolio",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to portfolio YAML config.",
+)
+@click.option(
+    "--wait-reaction",
+    is_flag=True,
+    help="After posting the intra-day test message, wait for you to react to verify the confirm round trip.",
+)
+def doctor(portfolio: str, wait_reaction: bool) -> None:
+    """Check that configured integrations actually work, with fix hints.
+
+    Posts clearly-labeled test messages to the configured Discord
+    channels and verifies every capability live mode depends on: token,
+    channel visibility, posting, reading back (confirm-mode polling),
+    and editing. Never touches live state.
+    """
+    import os
+
+    from midas.alerts import DISCORD_BOT_TOKEN_ENV_VAR
+    from midas.doctor import run_discord_checks
+
+    portfolio_path = Path(portfolio)
+    port = load_portfolio(portfolio_path)
+    result = run_discord_checks(
+        port.alerts_config,
+        os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, ""),
+        _resolve_state_path(port, portfolio_path),
+        CachedYFinanceProvider(),
+        echo=click.echo,
+        wait_reaction=wait_reaction,
+    )
+    click.echo(
+        f"{result.checks} checks, {result.failures} failed, {result.warnings} warning(s) — "
+        + ("healthy" if result.healthy else "NOT healthy")
+    )
+    if not result.healthy:
+        raise SystemExit(1)
+
+
 def _resolve_report_period(
     year: int | None,
     start: datetime | None,

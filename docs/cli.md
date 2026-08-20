@@ -173,3 +173,24 @@ assumed fills, alerts labeled).
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —
 > delete the webhook in Discord and switch to the bot setup above.
+
+## doctor
+
+Check that configured integrations actually work, with a fix hint for
+every failure. Posts clearly-labeled 🧪 test messages to the configured
+Discord channels and verifies each capability live mode depends on:
+bot token, channel visibility, posting, reading messages back (what
+confirm-mode polling uses), and editing. The end-of-day test report is
+built from your real state file marked to market when possible, and
+falls back to labeled sample numbers otherwise. Never touches live
+state. Exits non-zero when any check fails.
+
+```bash
+uv run midas doctor -p portfolio.yaml
+uv run midas doctor -p portfolio.yaml --wait-reaction
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `--wait-reaction` | off | Wait up to 60s for you to react to the test alert, verifying the confirm round trip |

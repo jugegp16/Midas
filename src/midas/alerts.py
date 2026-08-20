@@ -155,6 +155,22 @@ class DiscordBotClient:
         """PATCH fields (e.g. ``content``) of an existing message."""
         self._request("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
 
+    def get_current_user(self) -> dict[str, Any]:
+        """GET the bot's own user object (validates the token)."""
+        response = self._request("GET", "/users/@me")
+        if not isinstance(response, dict):
+            msg = "Discord /users/@me returned a non-object body"
+            raise DiscordApiError(msg)
+        return response
+
+    def get_channel(self, channel_id: str) -> dict[str, Any]:
+        """GET a channel object (validates visibility and the id)."""
+        response = self._request("GET", f"/channels/{channel_id}")
+        if not isinstance(response, dict):
+            msg = "Discord channel fetch returned a non-object body"
+            raise DiscordApiError(msg)
+        return response
+
     def get_message(self, channel_id: str, message_id: str) -> dict[str, Any]:
         """GET one message (includes its ``reactions`` summary)."""
         response = self._request("GET", f"/channels/{channel_id}/messages/{message_id}")
