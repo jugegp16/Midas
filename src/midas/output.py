@@ -309,10 +309,16 @@ def _print_risk_engine_activity(result: BacktestResult) -> None:
 
 
 def _print_vol_contribution(result: BacktestResult) -> None:
-    """Render per-ticker vol contributions with inline concentration bars."""
+    """Render per-ticker vol contributions with inline concentration bars.
+
+    This is a SNAPSHOT of the final day's holdings, not attribution over
+    the whole run — tickers exited before the end don't appear, and the
+    title must say so or a multi-year backtest reads as if most of the
+    universe never carried risk.
+    """
     if result.risk_metrics is None or not result.risk_metrics.per_ticker_vol_contribution:
         return
-    contrib_table = make_metric_table("Per-Ticker Vol Contribution")
+    contrib_table = make_metric_table("Per-Ticker Vol Contribution (end-of-run positions)")
     items = sorted(
         result.risk_metrics.per_ticker_vol_contribution.items(),
         key=lambda kv: -abs(kv[1]),
