@@ -22,7 +22,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol
 
 from midas.models import DEFAULT_ALERT_TIMEOUT_SECONDS, AlertsConfig, Direction, Order
@@ -299,6 +300,103 @@ def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
         return float(header)
     except ValueError:
         return None
+
+
+COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
+
+
+@dataclass(frozen=True)
+class DailyReport:
+    """Close-of-day summary assembled by the live engine."""
+
+    session_date: date
+    equity: float
+    previous_equity: float | None
+    cash: float
+    positions: int
+    pending: int
+    alerts_posted: int
+    confirmed: int
+    declined: int
+    expired: int
+    cppi_scale: float
+    vol_target_scale: float
+
+
+def report_embed(report: DailyReport) -> dict[str, Any]:
+    """Build the close-of-day report embed (plain: no reactions, never polled)."""
+    if report.previous_equity is not None and report.previous_equity > 0:
+        delta = report.equity - report.previous_equity
+        pct = delta / report.previous_equity
+        day_change = f"{'+' if delta >= 0 else '-'}${abs(delta):,.2f} ({pct:+.2%})"
+    else:
+        day_change = "n/a (first report)"
+    alerts_line = (
+        f"{report.alerts_posted} posted · {report.confirmed} \u2705 · "
+        f"{report.declined} \u274c · {report.expired} expired · {report.pending} pending"
+    )
+    fields = [
+        {"name": "Equity", "value": f"${report.equity:,.2f}", "inline": True},
+        {"name": "Day", "value": day_change, "inline": True},
+        {"name": "Cash", "value": f"${report.cash:,.2f}", "inline": True},
+        {"name": "Positions", "value": str(report.positions), "inline": True},
+        {"name": "Alerts", "value": alerts_line, "inline": False},
+    ]
+    if report.cppi_scale != 1.0 or report.vol_target_scale != 1.0:
+        fields.append(
+            {
+                "name": "Risk overlays",
+                "value": f"CPPI \u00d7{report.cppi_scale:.2f} · vol target \u00d7{report.vol_target_scale:.2f}",
+                "inline": False,
+            }
+        )
+    return {
+        "title": f"Close of day — {report.session_date.isoformat()}",
+        "color": COLOR_REPORT,
+        "fields": fields,
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+class DiscordReporter:
+    """Posts informational embeds (close-of-day report) to a channel.
+
+    Plain messages: no reactions, never polled, and — as everywhere in
+    this module — a delivery failure is logged and swallowed, never
+    raised into the tick loop.
+    """
+
+    def __init__(self, client: DiscordBotClient, channel_id: str) -> None:
+        self._client = client
+        self._channel_id = channel_id
+
+    def post_report(self, report: DailyReport) -> bool:
+        """Post the report embed. Returns False on delivery failure."""
+        try:
+            self._client.create_message(self._channel_id, {"embeds": [report_embed(report)]})
+        except DiscordApiError as exc:
+            logger.error("Discord report delivery failed (%s)", exc)
+            return False
+        return True
+
+
+def build_reporter(alerts_config: AlertsConfig | None) -> DiscordReporter | None:
+    """Resolve the close-of-day reporter, or None for terminal-only.
+
+    Rides the same bot credentials as the confirmer. Reports go to
+    ``discord_report_channel_id`` when set, else fall back to the alerts
+    channel. No bot configured -> terminal-only reporting.
+    """
+    token = os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, "").strip()
+    if not token or alerts_config is None:
+        return None
+    channel_id = (alerts_config.discord_report_channel_id or alerts_config.discord_channel_id).strip()
+    if not channel_id:
+        return None
+    return DiscordReporter(
+        DiscordBotClient(token, timeout_seconds=alerts_config.timeout_seconds),
+        channel_id,
+    )
 
 
 def build_confirmer(alerts_config: AlertsConfig | None) -> DiscordConfirmer | None:

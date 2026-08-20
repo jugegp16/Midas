@@ -124,23 +124,21 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
             "(see docs/cli.md, Discord push notifications)"
         )
         raise ValueError(msg)
-    known_keys = {"discord_channel_id", "timeout_seconds", "pending_ttl_hours", "realert_hours"}
+    known_keys = {
+        "discord_channel_id",
+        "discord_report_channel_id",
+        "timeout_seconds",
+        "pending_ttl_hours",
+        "realert_hours",
+    }
     unknown_keys = set(alerts_raw) - known_keys
     if unknown_keys:
         # A typo'd key would otherwise silently disable push notifications.
         msg = f"alerts: has unrecognized keys {sorted(unknown_keys)}; known keys: {sorted(known_keys)}"
         raise ValueError(msg)
-    # Channel ids are snowflakes — huge integers that YAML happily parses
-    # as int. Accept int or str, normalize to a digits-only string.
-    channel_raw = alerts_raw.get("discord_channel_id")
-    channel_id = str(channel_raw).strip() if isinstance(channel_raw, int | str) else None
-    if channel_raw is None:
-        channel_id = ""
-    if channel_id is None or (channel_id and not channel_id.isdigit()):
-        msg = f"alerts: discord_channel_id must be a numeric Discord channel id, got {channel_raw!r}"
-        raise ValueError(msg)
     return AlertsConfig(
-        discord_channel_id=channel_id,
+        discord_channel_id=_parse_channel_id(alerts_raw, "discord_channel_id"),
+        discord_report_channel_id=_parse_channel_id(alerts_raw, "discord_report_channel_id"),
         timeout_seconds=_parse_alerts_number(alerts_raw, "timeout_seconds", DEFAULT_ALERT_TIMEOUT_SECONDS),
         pending_ttl_hours=_parse_alerts_number(alerts_raw, "pending_ttl_hours", DEFAULT_PENDING_TTL_HOURS),
         realert_hours=_parse_alerts_number(alerts_raw, "realert_hours", DEFAULT_REALERT_HOURS),
@@ -183,6 +181,23 @@ def load_portfolio(path: Path) -> PortfolioConfig:
         tax_declared="tax" in raw,
         alerts_config=alerts,
     )
+
+
+def _parse_channel_id(alerts_raw: dict[str, Any], key: str) -> str:
+    """Normalize a Discord channel id to a digits-only string.
+
+    Channel ids are snowflakes — huge integers that YAML happily parses
+    as int. Accept int or str; a bare/absent key means "unset".
+    """
+    channel_raw = alerts_raw.get(key)
+    if channel_raw is None:
+        return ""
+    if isinstance(channel_raw, int | str):
+        channel_id = str(channel_raw).strip()
+        if not channel_id or channel_id.isdigit():
+            return channel_id
+    msg = f"alerts: {key} must be a numeric Discord channel id, got {channel_raw!r}"
+    raise ValueError(msg)
 
 
 def _parse_forecast_scaling(raw_value: Any) -> ForecastScaling:

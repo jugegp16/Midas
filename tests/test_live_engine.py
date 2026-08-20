@@ -1154,3 +1154,121 @@ def test_superseded_removal_is_durable_before_annotation(tmp_path: Path, make_pr
         assert confirmer.superseded == ["msg-1"]
         # When mark_superseded ran, msg-1 was already gone from disk.
         assert on_disk_at_annotation == [[]]
+
+
+class FakeReporter:
+    """DiscordReporter test double recording posted reports."""
+
+    def __init__(self, deliver: bool = True) -> None:
+        self.reports: list[object] = []
+        self.deliver = deliver
+
+    def post_report(self, report: object) -> bool:
+        self.reports.append(report)
+        return self.deliver
+
+
+def _make_report_engine(tmp_path: Path, make_provider: ProviderFactory, reporter: FakeReporter) -> LiveEngine:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    return LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        reporter=reporter,  # type: ignore[arg-type]
+    )
+
+
+# Tue 2026-08-18: EDT, so 16:00 ET close == 20:00 UTC.
+NEAR_CLOSE = datetime(2026, 8, 18, 19, 56, tzinfo=UTC)
+MID_DAY = datetime(2026, 8, 18, 15, 0, tzinfo=UTC)
+
+
+def test_report_fires_once_near_close(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+
+        engine._maybe_send_report(MID_DAY)
+        assert reporter.reports == []  # too early in the session
+
+        engine._maybe_send_report(NEAR_CLOSE)
+        assert len(reporter.reports) == 1
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=1))
+        assert len(reporter.reports) == 1  # once per session
+
+        assert engine._state.last_report_date == date(2026, 8, 18)
+        assert engine._state.last_report_equity == 2_000.0
+
+
+def test_report_day_delta_uses_previous_anchor(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._maybe_send_report(NEAR_CLOSE)
+        first = reporter.reports[0]
+        assert first.previous_equity is None  # type: ignore[attr-defined]
+
+        engine._last_equity = 2_100.0
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1))
+        second = reporter.reports[1]
+        assert second.previous_equity == 2_000.0  # type: ignore[attr-defined]
+        assert second.equity == 2_100.0  # type: ignore[attr-defined]
+
+
+def test_report_anchor_persists_before_delivery_failure(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A Discord failure must not re-arm the report (no double-post)."""
+    from midas.live_state import load_state
+
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        assert len(reporter.reports) == 1
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=2))
+        assert len(reporter.reports) == 1
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.last_report_date == date(2026, 8, 18)
+    assert on_disk.last_report_equity == 2_000.0
+
+
+def test_report_counters_reset_after_send(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._alerts_posted = 3
+        engine._alerts_confirmed = 2
+        engine._alerts_declined = 1
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert (report.alerts_posted, report.confirmed, report.declined) == (3, 2, 1)  # type: ignore[attr-defined]
+        assert engine._alerts_posted == engine._alerts_confirmed == engine._alerts_declined == 0
+
+
+def test_no_report_when_market_hours_disabled(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0)], available_cash=1_000.0)
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        reporter=reporter,  # type: ignore[arg-type]
+        market_hours_only=False,
+    ) as engine:
+        engine._last_equity = 2_000.0
+        engine._maybe_send_report(NEAR_CLOSE)
+
+    # 24/7 mode has no session concept — no close-of-day report.
+    assert reporter.reports == []

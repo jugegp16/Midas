@@ -121,6 +121,10 @@ class LiveState:
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     pending_orders: list[PendingOrder] = field(default_factory=list)
     intent_cooldowns: list[IntentCooldown] = field(default_factory=list)
+    # Close-of-day report anchor: equity at the last report, so the next
+    # report's day-over-day delta survives engine restarts.
+    last_report_date: date | None = None
+    last_report_equity: float | None = None
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -158,6 +162,11 @@ def save_atomic(state: LiveState, path: Path) -> None:
             }
             for pending in state.pending_orders
         ],
+        "last_report": (
+            {"date": state.last_report_date, "equity": state.last_report_equity}
+            if state.last_report_date is not None
+            else None
+        ),
         "intent_cooldowns": [
             {
                 "ticker": cooldown.ticker,
@@ -236,6 +245,15 @@ def load_state(path: Path) -> LiveState:
     pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
     intent_cooldowns = [_parse_intent_cooldown(entry, path) for entry in raw.get("intent_cooldowns") or []]
 
+    last_report = raw.get("last_report")
+    last_report_date: date | None = None
+    last_report_equity: float | None = None
+    if isinstance(last_report, dict):
+        report_date_raw = last_report.get("date")
+        last_report_date = date.fromisoformat(report_date_raw) if isinstance(report_date_raw, str) else report_date_raw
+        equity_raw = last_report.get("equity")
+        last_report_equity = float(equity_raw) if equity_raw is not None else None
+
     return LiveState(
         available_cash=float(raw["available_cash"]),
         cash_infusion_next_date=next_date,
@@ -244,6 +262,8 @@ def load_state(path: Path) -> LiveState:
         lots=lots,
         pending_orders=pending_orders,
         intent_cooldowns=intent_cooldowns,
+        last_report_date=last_report_date,
+        last_report_equity=last_report_equity,
     )
 
 

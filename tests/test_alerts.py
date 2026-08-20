@@ -359,3 +359,143 @@ class TestBuildConfirmer:
         monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "   ")
 
         assert build_confirmer(AlertsConfig()) is None
+
+
+class TestReportEmbed:
+    def _report(self, **overrides: object) -> alerts.DailyReport:
+        from datetime import date as date_type
+
+        from midas.alerts import DailyReport
+
+        base: dict[str, object] = {
+            "session_date": date_type(2026, 8, 18),
+            "equity": 10_500.0,
+            "previous_equity": 10_000.0,
+            "cash": 900.0,
+            "positions": 4,
+            "pending": 1,
+            "alerts_posted": 3,
+            "confirmed": 2,
+            "declined": 1,
+            "expired": 0,
+            "cppi_scale": 1.0,
+            "vol_target_scale": 1.0,
+        }
+        base.update(overrides)
+        return DailyReport(**base)  # type: ignore[arg-type]
+
+    def test_day_change_and_fields(self) -> None:
+        from midas.alerts import report_embed
+
+        embed = report_embed(self._report())
+
+        assert embed["title"] == "Close of day — 2026-08-18"
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["Equity"] == "$10,500.00"
+        assert fields["Day"] == "+$500.00 (+5.00%)"
+        assert fields["Cash"] == "$900.00"
+        assert "3 posted" in fields["Alerts"] and "1 pending" in fields["Alerts"]
+        assert "Risk overlays" not in fields  # both scales at 1.0
+
+    def test_first_report_has_no_delta(self) -> None:
+        from midas.alerts import report_embed
+
+        fields = {f["name"]: f["value"] for f in report_embed(self._report(previous_equity=None))["fields"]}
+        assert fields["Day"] == "n/a (first report)"
+
+    def test_negative_day_change(self) -> None:
+        from midas.alerts import report_embed
+
+        fields = {f["name"]: f["value"] for f in report_embed(self._report(equity=9_500.0))["fields"]}
+        assert fields["Day"] == "-$500.00 (-5.00%)"
+
+    def test_risk_overlays_shown_when_engaged(self) -> None:
+        from midas.alerts import report_embed
+
+        fields = {f["name"]: f["value"] for f in report_embed(self._report(vol_target_scale=0.8))["fields"]}
+        assert "vol target" in fields["Risk overlays"]
+
+
+class TestDiscordReporter:
+    def test_posts_single_plain_embed(self, captured: list[dict[str, Any]]) -> None:
+        from datetime import date as date_type
+
+        from midas.alerts import DailyReport, DiscordReporter
+
+        reporter = DiscordReporter(DiscordBotClient("tok"), CHANNEL)
+        report = DailyReport(
+            session_date=date_type(2026, 8, 18),
+            equity=1.0,
+            previous_equity=None,
+            cash=1.0,
+            positions=0,
+            pending=0,
+            alerts_posted=0,
+            confirmed=0,
+            declined=0,
+            expired=0,
+            cppi_scale=1.0,
+            vol_target_scale=1.0,
+        )
+
+        assert reporter.post_report(report) is True
+        assert [req["method"] for req in captured] == ["POST"]
+        assert captured[0]["url"].endswith(f"/channels/{CHANNEL}/messages")
+        assert "content" not in captured[0]["payload"]
+
+    def test_delivery_failure_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import date as date_type
+
+        from midas.alerts import DailyReport, DiscordReporter
+
+        def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> FakeResponse:
+            raise urllib.error.URLError("down")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        reporter = DiscordReporter(DiscordBotClient("tok"), CHANNEL)
+        report = DailyReport(
+            session_date=date_type(2026, 8, 18),
+            equity=1.0,
+            previous_equity=None,
+            cash=1.0,
+            positions=0,
+            pending=0,
+            alerts_posted=0,
+            confirmed=0,
+            declined=0,
+            expired=0,
+            cppi_scale=1.0,
+            vol_target_scale=1.0,
+        )
+
+        assert reporter.post_report(report) is False  # must not raise
+
+
+class TestBuildReporter:
+    def test_no_token_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(DISCORD_BOT_TOKEN_ENV_VAR, raising=False)
+        from midas.alerts import build_reporter
+
+        assert build_reporter(AlertsConfig(discord_report_channel_id=CHANNEL)) is None
+
+    def test_report_channel_preferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
+        from midas.alerts import build_reporter
+
+        reporter = build_reporter(AlertsConfig(discord_channel_id="111", discord_report_channel_id="222"))
+        assert reporter is not None
+        assert reporter._channel_id == "222"
+
+    def test_falls_back_to_alerts_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
+        from midas.alerts import build_reporter
+
+        reporter = build_reporter(AlertsConfig(discord_channel_id="111"))
+        assert reporter is not None
+        assert reporter._channel_id == "111"
+
+    def test_no_channels_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DISCORD_BOT_TOKEN_ENV_VAR, "tok")
+        from midas.alerts import build_reporter
+
+        assert build_reporter(AlertsConfig()) is None

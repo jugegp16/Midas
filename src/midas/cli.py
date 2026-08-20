@@ -357,14 +357,20 @@ def backtest(
 )
 @click.option("--interval", default=60, help="Poll interval in seconds.")
 @click.option("--dry-run", is_flag=True, help="Log signals without alerts.")
+@click.option(
+    "--ignore-market-hours",
+    is_flag=True,
+    help="Poll 24/7 instead of only during US equity sessions (debugging).",
+)
 def live(
     portfolio: str,
     strategies: str | None,
     interval: int,
     dry_run: bool,
+    ignore_market_hours: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
-    from midas.alerts import build_confirmer
+    from midas.alerts import build_confirmer, build_reporter
     from midas.live import LiveEngine
 
     portfolio_path = Path(portfolio)
@@ -375,10 +381,13 @@ def live(
         confirmer = build_confirmer(port.alerts_config)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+    reporter = build_reporter(port.alerts_config)
     if confirmer is not None and not dry_run:
         click.echo("Discord confirm mode: orders fill only on \u2705 reaction.")
     else:
         click.echo("Terminal-only mode: alerts assume immediate execution.")
+    if reporter is not None:
+        click.echo("Close-of-day report: Discord.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
@@ -404,6 +413,8 @@ def live(
         confirmer=confirmer,
         pending_ttl_hours=alerts_cfg.pending_ttl_hours,
         realert_hours=alerts_cfg.realert_hours,
+        reporter=reporter,
+        market_hours_only=not ignore_market_hours,
     ) as engine:
         engine.run()
 

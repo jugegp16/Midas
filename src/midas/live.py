@@ -17,7 +17,7 @@ try:
 except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
-from midas.alerts import OrderConfirmer
+from midas.alerts import DailyReport, DiscordReporter, OrderConfirmer, report_embed
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
@@ -34,6 +34,7 @@ from midas.live_state import (
     resolve_purchase_date,
     save_atomic,
 )
+from midas.market_hours import MARKET_TZ, is_market_open, next_session_open, session_close
 from midas.models import (
     DEFAULT_PENDING_TTL_HOURS,
     DEFAULT_REALERT_HOURS,
@@ -57,6 +58,13 @@ logger = logging.getLogger(__name__)
 # the pending alert has outlived the re-alert cooldown — then the stale
 # alert is expired and replaced. (Direction flips replace immediately.)
 PENDING_RESIZE_TOLERANCE = 0.10
+
+# The close-of-day report fires on the first tick at or after this many
+# minutes before the session close (~15:55 ET with the default 5).
+REPORT_MINUTES_BEFORE_CLOSE = 5.0
+# Off-hours sleep is chunked so a suspended laptop or clock jump can't
+# oversleep a session by more than one chunk.
+MAX_SLEEP_CHUNK_SECONDS = 3600.0
 
 
 def _acquire_state_lock(lock_path: Path) -> int:
@@ -117,6 +125,8 @@ class LiveEngine:
         confirmer: OrderConfirmer | None = None,
         pending_ttl_hours: float = DEFAULT_PENDING_TTL_HOURS,
         realert_hours: float = DEFAULT_REALERT_HOURS,
+        reporter: DiscordReporter | None = None,
+        market_hours_only: bool = True,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -140,6 +150,11 @@ class LiveEngine:
             realert_hours: Minimum hours before the same (ticker,
                 direction) is re-alerted after a confirmed fill or a
                 resize of a still-pending alert.
+            reporter: Discord destination for the close-of-day report;
+                None keeps the report terminal-only.
+            market_hours_only: When True (default), tick only during
+                regular US equity sessions and sleep until the next open
+                otherwise. False restores 24/7 polling (debugging).
 
         Raises:
             RuntimeError: If file locking is unavailable on this platform or
@@ -198,6 +213,17 @@ class LiveEngine:
                 )
             self._pending_ttl = timedelta(hours=pending_ttl_hours)
             self._realert_cooldown = timedelta(hours=realert_hours)
+            self._reporter = reporter
+            self._market_hours_only = market_hours_only
+            self._last_equity: float | None = None
+            self._last_risk_telemetry: tuple[float, float] = (1.0, 1.0)
+            # In-memory per-session alert counters for the report. Reset
+            # after each report; an intra-day restart undercounts, which
+            # the report tolerates (state-derived figures do not).
+            self._alerts_posted = 0
+            self._alerts_confirmed = 0
+            self._alerts_declined = 0
+            self._alerts_expired = 0
             # Derive the history window from the largest warmup required across
             # configured strategies (plus slack for weekends/holidays). An explicit
             # ``history_days`` override is still honored for tests.
@@ -242,7 +268,7 @@ class LiveEngine:
         self.close()
 
     def run(self) -> None:
-        """Poll forever, ticking every ``poll_interval`` seconds until Ctrl-C."""
+        """Poll during market sessions, ticking every ``poll_interval`` seconds until Ctrl-C."""
         tickers = [holding.ticker for holding in self._portfolio.holdings]
         print_status(
             f"Starting {'dry run' if self._dry_run else 'live'} analysis "
@@ -251,8 +277,13 @@ class LiveEngine:
 
         try:
             while True:
+                now = datetime.now(tz=UTC)
+                if self._market_hours_only and not is_market_open(now):
+                    self._sleep_until_open(now)
+                    continue
                 try:
                     self._tick(tickers)
+                    self._maybe_send_report(datetime.now(tz=UTC))
                 except Exception:
                     # A live process watching real money must not die
                     # overnight on a one-tick bug — state transitions are
@@ -262,6 +293,70 @@ class LiveEngine:
                 time.sleep(self._poll_interval)
         except KeyboardInterrupt:
             print_status("Stopped.")
+
+    @staticmethod
+    def _sleep_until_open(now: datetime) -> None:
+        """Sleep (in chunks) until the next session open.
+
+        Chunked so a laptop suspend or clock jump re-evaluates the target
+        at most ``MAX_SLEEP_CHUNK_SECONDS`` late rather than oversleeping
+        into an entire missed session.
+        """
+        next_open = next_session_open(now)
+        local = next_open.astimezone(MARKET_TZ)
+        print_status(f"Market closed — sleeping until {local:%Y-%m-%d %H:%M} ET")
+        while True:
+            remaining = (next_open - datetime.now(tz=UTC)).total_seconds()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
+
+    def _maybe_send_report(self, now: datetime) -> None:
+        """Emit the close-of-day report once per session, near the close."""
+        if not self._market_hours_only:
+            return
+        session_date = now.astimezone(MARKET_TZ).date()
+        if self._state.last_report_date == session_date:
+            return
+        seconds_to_close = (session_close(now) - now).total_seconds()
+        if seconds_to_close > REPORT_MINUTES_BEFORE_CLOSE * 60 or seconds_to_close < 0:
+            return
+        self._send_report(session_date)
+
+    def _send_report(self, session_date: date) -> None:
+        """Assemble and deliver the report; persist the equity anchor."""
+        equity = self._last_equity if self._last_equity is not None else self._state.available_cash
+        report = DailyReport(
+            session_date=session_date,
+            equity=equity,
+            previous_equity=self._state.last_report_equity,
+            cash=self._state.available_cash,
+            positions=sum(1 for lots in self._state.lots.values() if sum(lot.shares for lot in lots) > 0),
+            pending=len(self._state.pending_orders),
+            alerts_posted=self._alerts_posted,
+            confirmed=self._alerts_confirmed,
+            declined=self._alerts_declined,
+            expired=self._alerts_expired,
+            cppi_scale=self._last_risk_telemetry[0],
+            vol_target_scale=self._last_risk_telemetry[1],
+        )
+        # Persist the anchor BEFORE delivery: a Discord failure must not
+        # re-arm the report and double-post on a later tick, and the
+        # day-over-day delta must survive restarts.
+        self._state.last_report_date = session_date
+        self._state.last_report_equity = equity
+        save_atomic(self._state, self._state_path)
+
+        embed = report_embed(report)
+        print_status(f"Close of day — {session_date.isoformat()}")
+        for field_entry in embed["fields"]:
+            print_status(f"  {field_entry['name']}: {field_entry['value']}")
+        if self._reporter is not None:
+            self._reporter.post_report(report)
+        self._alerts_posted = 0
+        self._alerts_confirmed = 0
+        self._alerts_declined = 0
+        self._alerts_expired = 0
 
     def _append_log_row(
         self,
@@ -514,11 +609,14 @@ class LiveEngine:
 
             # State is durable — everything below is replay-safe salvage.
             if decision == "confirmed":
+                self._alerts_confirmed += 1
                 self._finish_confirmed_fill(pending, booked, note, today)
             elif decision == "declined":
+                self._alerts_declined += 1
                 print_status(f"Declined: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)")
                 self._confirmer.mark_declined(pending.message_id)
             else:
+                self._alerts_expired += 1
                 print_status(
                     f"Expired unconfirmed: {pending.direction.value} {pending.ticker} ({pending.shares:g} shares)"
                 )
@@ -713,6 +811,7 @@ class LiveEngine:
                 # Not persisted as pending: the order is re-proposed and the
                 # post retried on a later tick.
                 continue
+            self._alerts_posted += 1
             self._state.pending_orders.append(
                 PendingOrder(
                     ticker=order.ticker,
@@ -794,6 +893,8 @@ class LiveEngine:
             current_weights=current_weights,
             current_drawdown=current_drawdown,
         )
+        telemetry = allocation.risk_telemetry
+        self._last_risk_telemetry = (telemetry.cppi_scale, telemetry.vol_target_scale)
 
         # Phase 2: Exit rules clamp proposed targets downward.
         clamped_targets, clamp_attribution = self._clamp_targets(
@@ -853,6 +954,7 @@ class LiveEngine:
             # (already reflected in positions/cash above).
             self._post_pending_alerts(filtered, now, pre_fill_cash)
             current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
+            self._last_equity = current_equity
             self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
             # Persist pending-order transitions along with HWM/peak/infusion.
             save_atomic(self._state, self._state_path)
@@ -862,6 +964,7 @@ class LiveEngine:
 
         # Update peak equity from the current portfolio value (post-fills).
         current_equity = self._portfolio_value(self._positions(active_tickers), current_prices)
+        self._last_equity = current_equity
         self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,

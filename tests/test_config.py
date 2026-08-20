@@ -425,3 +425,14 @@ def test_load_strategies_bare_forecast_scaling_key_is_default(tmp_path: Path) ->
     path = _write_strategies(tmp_path, "forecast_scaling:\nstrategies:\n  - name: Momentum\n")
     _, constraints, _ = load_strategies(path)
     assert constraints.forecast_scaling == "none"
+
+
+def test_load_portfolio_alerts_report_channel(tmp_path: Path) -> None:
+    path = tmp_path / "portfolio.yaml"
+    path.write_text(
+        "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
+        "alerts:\n  discord_channel_id: 111\n  discord_report_channel_id: 222\n"
+    )
+    alerts = load_portfolio(path).alerts_config
+    assert alerts is not None
+    assert alerts.discord_report_channel_id == "222"

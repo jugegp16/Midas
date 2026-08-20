@@ -68,6 +68,32 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `-s`, `--strategies` | all strategies | Path to strategies YAML |
 | `--interval` | 60 | Poll interval in seconds |
 | `--dry-run` | off | Log signals without emitting alerts |
+| `--ignore-market-hours` | off | Poll 24/7 instead of only during US equity sessions (debugging) |
+
+### Market hours
+
+Live polls only during regular US equity sessions (9:30-16:00 ET,
+weekdays, minus full-closure market holidays) — outside the session it
+sleeps until the next open instead of burning API calls on prices that
+cannot move. The session clock is DST-correct regardless of the host
+timezone. The static holiday table in `midas/market_hours.py` covers the
+current and next year and needs a yearly refresh (like the tax
+brackets); if it ages out, the engine fails open — it polls through
+unlisted holidays rather than risk sleeping through a real session.
+
+### Close-of-day report
+
+Near the close of each session (~15:55 ET), live emits a one-embed
+summary: equity and day-over-day change, cash, position count, the
+day's alert tally (posted / ✅ / ❌ / expired / still pending), and
+risk-overlay scales when engaged. It doubles as a heartbeat — the day
+ends with a push notification even when no orders fired, so silence
+stops being ambiguous between "no signals" and "engine died".
+
+The report posts to `discord_report_channel_id` when set — keeping the
+alerts channel action-only — and falls back to the alerts channel
+otherwise. Terminal always gets it. The day-over-day anchor persists in
+the state file, so the delta survives restarts.
 
 ### Discord push notifications + fill confirmation
 
@@ -121,6 +147,7 @@ Configure the channel in the portfolio YAML (the id is not a secret):
 ```yaml
 alerts:
   discord_channel_id: 1400000000000000001
+  discord_report_channel_id: 1400000000000000002  # optional, close-of-day reports
   timeout_seconds: 5      # optional, per-request timeout
   pending_ttl_hours: 8    # optional, confirmation window
   realert_hours: 1        # optional, min gap between re-alerts of one intent
