@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
 from midas.live_state import (
     LiveState,
@@ -510,6 +511,24 @@ class TestPendingOrderPersistence:
         path.write_text(content)
 
         assert load_state(path).pending_orders == []
+
+    def test_pre_report_state_without_tally_keys_loads_defaults(self, tmp_path: Path) -> None:
+        """State files written before the end-of-day report existed load with
+        zero tallies and no report anchor."""
+        state = LiveState(available_cash=1000.0, cash_infusion_next_date=None)
+        path = tmp_path / "state.yaml"
+        save_atomic(state, path)
+        raw = yaml.safe_load(path.read_text())
+        raw.pop("alert_tally", None)
+        raw.pop("last_report", None)
+        path.write_text(yaml.safe_dump(raw))
+
+        loaded = load_state(path)
+
+        tallies = (loaded.tally_posted, loaded.tally_confirmed, loaded.tally_declined, loaded.tally_expired)
+        assert tallies == (0, 0, 0, 0)
+        assert loaded.last_report_date is None
+        assert loaded.last_report_equity is None
 
     def test_hand_edited_naive_timestamp_is_utc(self, tmp_path: Path) -> None:
         path = tmp_path / "state.yaml"

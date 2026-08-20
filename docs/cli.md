@@ -67,7 +67,34 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `-p`, `--portfolio` | required | Path to portfolio YAML |
 | `-s`, `--strategies` | all strategies | Path to strategies YAML |
 | `--interval` | 60 | Poll interval in seconds |
-| `--dry-run` | off | Log signals without emitting alerts |
+| `--dry-run` | off | Observe signals with in-memory fills — never writes state, trade log, or Discord |
+| `--ignore-market-hours` | off | Poll 24/7 instead of only during US equity sessions (debugging) |
+
+### Market hours
+
+Live polls only during regular US equity sessions (9:30-16:00 ET,
+weekdays, minus full-closure market holidays) — outside the session it
+sleeps until the next open instead of burning API calls on prices that
+cannot move. The session clock is DST-correct regardless of the host
+timezone, and holidays are computed from the exchange's calendar rules
+(fixed dates with weekend observation, nth-weekday floaters, Good
+Friday via computus) — valid for any year, no maintenance. One-off
+special closures (e.g. mourning days) are unknowable in advance; the
+engine polls harmlessly through them.
+
+### End-of-day report
+
+Near the close of each session (~15:55 ET), live emits a one-embed
+summary: equity and day-over-day change, cash, position count, the
+day's alert tally (posted / ✅ / ❌ / expired / still pending), and
+risk-overlay scales when engaged. It doubles as a heartbeat — the day
+ends with a push notification even when no orders fired, so silence
+stops being ambiguous between "no signals" and "engine died".
+
+The report posts to `discord_end_of_day_channel_id` when set — keeping the
+alerts channel action-only — and falls back to the alerts channel
+otherwise. Terminal always gets it. The day-over-day anchor persists in
+the state file, so the delta survives restarts.
 
 ### Discord push notifications + fill confirmation
 
@@ -120,11 +147,17 @@ Configure the channel in the portfolio YAML (the id is not a secret):
 
 ```yaml
 alerts:
-  discord_channel_id: 1400000000000000001
+  discord_intra_day_channel_id: 1400000000000000001  # optional, order alerts + confirmation
+  discord_end_of_day_channel_id: 1400000000000000002  # optional, end-of-day reports
   timeout_seconds: 5      # optional, per-request timeout
   pending_ttl_hours: 8    # optional, confirmation window
   realert_hours: 1        # optional, min gap between re-alerts of one intent
 ```
+
+The two channels are independently optional: intra-day only gives
+confirm-mode alerts with reports falling back to the same channel;
+end-of-day only gives the daily report while alerts stay terminal-only
+with assumed fills; both gives the full split.
 
 The bot token IS a secret — it goes in the environment, never in YAML:
 
@@ -132,10 +165,36 @@ The bot token IS a secret — it goes in the environment, never in YAML:
 MIDAS_DISCORD_BOT_TOKEN=... uv run midas live -p portfolio.yaml
 ```
 
-Both the token and the channel id are required for confirm mode;
-setting only one is a startup error. `--dry-run` disables confirm mode
-(terminal-only, assumed fills, alerts labeled).
+The token plus at least one channel id are required for any Discord
+delivery; a token with no channel, or a channel without the token, is a
+startup error. `--dry-run` is fully ephemeral: it reads existing state
+for a realistic starting book but writes nothing — no state file, no
+trade log rows, no Discord. Fills are simulated in memory, alerts print
+labeled to the terminal, and the end-of-day report prints terminal-only.
+(It still takes the state lock, so it can't run concurrently with a
+real session against the same state file.)
 
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —
 > delete the webhook in Discord and switch to the bot setup above.
+
+## doctor
+
+Check that configured integrations actually work, with a fix hint for
+every failure. Posts clearly-labeled 🧪 test messages to the configured
+Discord channels and verifies each capability live mode depends on:
+bot token, channel visibility, posting, reading messages back (what
+confirm-mode polling uses), and editing. The end-of-day test report is
+built from your real state file marked to market when possible, and
+falls back to labeled sample numbers otherwise. Never touches live
+state. Exits non-zero when any check fails.
+
+```bash
+uv run midas doctor -p portfolio.yaml
+uv run midas doctor -p portfolio.yaml --wait-reaction
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `--wait-reaction` | off | Wait up to 60s for you to react to the test alert, verifying the confirm round trip |

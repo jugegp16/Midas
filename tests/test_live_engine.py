@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -1154,3 +1155,379 @@ def test_superseded_removal_is_durable_before_annotation(tmp_path: Path, make_pr
         assert confirmer.superseded == ["msg-1"]
         # When mark_superseded ran, msg-1 was already gone from disk.
         assert on_disk_at_annotation == [[]]
+
+
+class FakeReporter:
+    """DiscordReporter test double recording posted reports."""
+
+    def __init__(self, deliver: bool = True) -> None:
+        self.reports: list[object] = []
+        self.deliver = deliver
+
+    def post_report(self, report: object) -> bool:
+        self.reports.append(report)
+        return self.deliver
+
+
+def _make_report_engine(tmp_path: Path, make_provider: ProviderFactory, reporter: FakeReporter) -> LiveEngine:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    return LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        reporter=reporter,  # type: ignore[arg-type]
+    )
+
+
+# Tue 2026-08-18: EDT, so 16:00 ET close == 20:00 UTC.
+NEAR_CLOSE = datetime(2026, 8, 18, 19, 56, tzinfo=UTC)
+MID_DAY = datetime(2026, 8, 18, 15, 0, tzinfo=UTC)
+
+
+def test_report_fires_once_near_close(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+
+        engine._maybe_send_report(MID_DAY)
+        assert reporter.reports == []  # too early in the session
+
+        engine._maybe_send_report(NEAR_CLOSE)
+        assert len(reporter.reports) == 1
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=1))
+        assert len(reporter.reports) == 1  # once per session
+
+        assert engine._state.last_report_date == date(2026, 8, 18)
+        assert engine._state.last_report_equity == 2_000.0
+
+
+def test_report_day_delta_uses_previous_anchor(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+        first = reporter.reports[0]
+        assert first.previous_equity is None  # type: ignore[attr-defined]
+
+        engine._last_equity = 2_100.0
+        engine._last_equity_session = date(2026, 8, 19)
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1))
+        second = reporter.reports[1]
+        assert second.previous_equity == 2_000.0  # type: ignore[attr-defined]
+        assert second.equity == 2_100.0  # type: ignore[attr-defined]
+
+
+def test_report_anchor_persists_before_delivery_failure(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A Discord failure must not re-arm the report build (no second anchor)."""
+    from midas.live_state import load_state
+
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        assert len(reporter.reports) == 1
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.last_report_date == date(2026, 8, 18)
+    assert on_disk.last_report_equity == 2_000.0
+
+
+def test_failed_delivery_retries_until_success(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The heartbeat is the feature — a transient Discord failure at 15:55
+    must retry the built report on later ticks, not lose the day silently."""
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+        assert len(reporter.reports) == 1
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=1))
+        assert len(reporter.reports) == 2
+        # The retry re-posts the report built at 15:56 — never a rebuild,
+        # whose tallies were already zeroed by the anchor persistence.
+        assert reporter.reports[1] is reporter.reports[0]
+
+        reporter.deliver = True
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=2))
+        assert len(reporter.reports) == 3
+
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(minutes=3))
+        assert len(reporter.reports) == 3  # delivered — no further attempts
+
+
+def test_stale_undelivered_report_dropped_at_next_session(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """When a new session's report is built, an undelivered previous one is
+    dropped — a late heartbeat must never arrive after a newer one."""
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)  # day 1: fails
+
+        engine._last_equity = 2_100.0
+        engine._last_equity_session = date(2026, 8, 19)
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1))  # retry day 1 fails; day 2 fails
+
+        reporter.deliver = True
+        engine._maybe_send_report(NEAR_CLOSE + timedelta(days=1, minutes=1))
+
+        sessions = [r.session_date for r in reporter.reports]  # type: ignore[attr-defined]
+        assert sessions == [date(2026, 8, 18), date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 19)]
+
+
+def test_dry_run_report_stays_terminal_only(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """--dry-run must not post real reports to Discord, nor let a dry run's
+    anchor suppress the real run's report (mirrors confirm-mode disarming)."""
+    reporter = FakeReporter()
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        dry_run=True,
+        reporter=reporter,  # type: ignore[arg-type]
+    ) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+
+    assert reporter.reports == []
+
+
+def test_report_counters_reset_after_send(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._state.tally_posted = 3
+        engine._state.tally_confirmed = 2
+        engine._state.tally_declined = 1
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert (report.alerts_posted, report.confirmed, report.declined) == (3, 2, 1)  # type: ignore[attr-defined]
+        assert engine._state.tally_posted == engine._state.tally_confirmed == engine._state.tally_declined == 0
+
+
+def test_no_report_when_market_hours_disabled(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0)], available_cash=1_000.0)
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 18)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        reporter=reporter,  # type: ignore[arg-type]
+        market_hours_only=False,
+    ) as engine:
+        engine._last_equity = 2_000.0
+        engine._maybe_send_report(NEAR_CLOSE)
+
+    # 24/7 mode has no session concept — no end-of-day report.
+    assert reporter.reports == []
+
+
+def test_report_catches_up_after_close(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A long poll interval can step from 15:5x straight past 16:00 — the
+    closed-branch catch-up must still emit the report before sleeping."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        after_close = datetime(2026, 8, 18, 20, 3, tzinfo=UTC)  # 16:03 ET
+
+        engine._maybe_send_report(after_close)
+
+        assert len(reporter.reports) == 1
+
+
+def test_no_catchup_report_without_equity_observation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An engine started in the evening never saw the session — no report."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        assert engine._last_equity is None
+        engine._maybe_send_report(datetime(2026, 8, 18, 20, 3, tzinfo=UTC))
+
+        assert reporter.reports == []
+
+
+def test_no_report_on_weekend(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 22)
+        engine._maybe_send_report(datetime(2026, 8, 22, 19, 56, tzinfo=UTC))  # Saturday
+
+        assert reporter.reports == []
+
+
+def test_no_report_from_another_sessions_equity(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A machine suspended since Monday must not stamp Monday's equity onto
+    Wednesday's end-of-day report."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 17)  # Monday's observation
+
+        engine._maybe_send_report(datetime(2026, 8, 19, 20, 30, tzinfo=UTC))  # Wednesday evening
+
+        assert reporter.reports == []
+        assert engine._state.last_report_date is None
+
+
+def test_pre_close_report_requires_equity_observation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An engine started at 15:56 whose fetches all failed must not report
+    cash-only equity — and must not poison the persisted anchor with it."""
+    from midas.live_state import load_state
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        assert engine._last_equity is None
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        assert reporter.reports == []
+        assert engine._state.last_report_equity is None
+    assert load_state(tmp_path / "state.yaml").last_report_equity is None
+
+
+def test_alert_tally_survives_restart(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The day's counts are durable state, not an in-memory counter."""
+    from midas.live_state import load_state
+
+    confirmer = FakeConfirmer()
+    with _make_confirm_engine(tmp_path, make_provider, confirmer) as engine:
+        engine._post_pending_alerts([_sized_order("AAPL", Direction.BUY, 5.0)], NOW, 10_000.0)
+        confirmer.decisions["msg-1"] = "declined"
+        engine._resolve_pending(TODAY, NOW)
+
+    on_disk = load_state(tmp_path / "state.yaml")
+    assert on_disk.tally_posted == 1
+    assert on_disk.tally_declined == 1
+
+
+def test_run_loop_sleeps_weekend_to_monday_open(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Saturday startup sleeps to Monday 9:30 ET, then ticks — driven
+    through the clock seams in virtual time."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        clock = {"now": datetime(2026, 8, 22, 16, 0, tzinfo=UTC)}  # Saturday noon ET
+        slept: list[float] = []
+        ticks: list[datetime] = []
+
+        def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+            clock["now"] += timedelta(seconds=seconds)
+
+        def fake_tick(tickers: list[str]) -> None:
+            ticks.append(clock["now"])
+            raise KeyboardInterrupt  # stop the loop after the first tick
+
+        engine._now = lambda: clock["now"]
+        engine._sleep = fake_sleep
+        engine._tick = fake_tick  # type: ignore[method-assign]
+
+        engine.run()
+
+        assert len(ticks) == 1
+        first_tick_et = ticks[0].astimezone(ZoneInfo("America/New_York"))
+        assert first_tick_et.date() == date(2026, 8, 24)  # Monday
+        assert (first_tick_et.hour, first_tick_et.minute) == (9, 30)
+        assert all(chunk <= 3600.0 for chunk in slept)  # chunked, never one giant sleep
+
+
+def test_dry_run_leaves_no_footprint_on_fresh_start(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A dry run must never create a state file or trade log."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        dry_run=True,
+    ) as engine:
+        engine._tick(["AAPL"])
+        # In-memory simulation still works (HWM advanced this session).
+        assert engine._state.high_water_marks["AAPL"] == 150.0
+
+    assert not state_path.exists()
+    assert not (tmp_path / "state.yaml.trades.csv").exists()
+
+
+def test_dry_run_reads_but_never_writes_existing_state(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Dry runs rehearse from the real book without touching it."""
+    state_path = tmp_path / "state.yaml"
+    seeded = LiveState(
+        available_cash=5_000.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=100.0)]},
+    )
+    save_atomic(seeded, state_path)
+    before = state_path.read_bytes()
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=5_000.0,
+    )
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        dry_run=True,
+    ) as engine:
+        assert engine._state.available_cash == 5_000.0  # real book loaded
+        engine._tick(["AAPL"])
+
+    assert state_path.read_bytes() == before  # byte-identical after the run
+
+
+def test_dry_run_writes_no_trade_log_on_fills(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Assumed fills in dry run stay in memory — no rows reach tax-report."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 8, 20)])
+    with LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=tmp_path / "state.yaml",
+        dry_run=True,
+    ) as engine:
+        # Drive a fill through the assumed-fill path directly.
+        order = _sized_order("AAPL", Direction.SELL, 5.0, price=100.0)
+        breakdowns = engine._apply_fills([order], date(2026, 8, 20))
+        engine._log_fills([order], breakdowns, date(2026, 8, 20))
+        assert engine._state.available_cash == 1_500.0  # in-memory fill applied
+
+    assert not (tmp_path / "state.yaml.trades.csv").exists()

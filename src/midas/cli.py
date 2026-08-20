@@ -356,15 +356,25 @@ def backtest(
     help="Path to strategies YAML config. Defaults to all strategies.",
 )
 @click.option("--interval", default=60, help="Poll interval in seconds.")
-@click.option("--dry-run", is_flag=True, help="Log signals without alerts.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Observe signals with in-memory fills: no state file, trade log, or Discord writes.",
+)
+@click.option(
+    "--ignore-market-hours",
+    is_flag=True,
+    help="Poll 24/7 instead of only during US equity sessions (debugging).",
+)
 def live(
     portfolio: str,
     strategies: str | None,
     interval: int,
     dry_run: bool,
+    ignore_market_hours: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
-    from midas.alerts import build_confirmer
+    from midas.alerts import build_discord
     from midas.live import LiveEngine
 
     portfolio_path = Path(portfolio)
@@ -372,13 +382,15 @@ def live(
     state_path = _resolve_state_path(port, portfolio_path)
     alerts_cfg = port.alerts_config or AlertsConfig()
     try:
-        confirmer = build_confirmer(port.alerts_config)
+        confirmer, reporter = build_discord(port.alerts_config)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
     if confirmer is not None and not dry_run:
         click.echo("Discord confirm mode: orders fill only on \u2705 reaction.")
     else:
         click.echo("Terminal-only mode: alerts assume immediate execution.")
+    if reporter is not None and not ignore_market_hours and not dry_run:
+        click.echo("End-of-day report: Discord.")
     # Setup opportunity: live's trade log is what tax-report consumes later.
     _ensure_tax_config(port, portfolio_path)
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
@@ -404,8 +416,54 @@ def live(
         confirmer=confirmer,
         pending_ttl_hours=alerts_cfg.pending_ttl_hours,
         realert_hours=alerts_cfg.realert_hours,
+        reporter=reporter,
+        market_hours_only=not ignore_market_hours,
     ) as engine:
         engine.run()
+
+
+@cli.command()
+@click.option(
+    "-p",
+    "--portfolio",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to portfolio YAML config.",
+)
+@click.option(
+    "--wait-reaction",
+    is_flag=True,
+    help="After posting the intra-day test message, wait for you to react to verify the confirm round trip.",
+)
+def doctor(portfolio: str, wait_reaction: bool) -> None:
+    """Check that configured integrations actually work, with fix hints.
+
+    Posts clearly-labeled test messages to the configured Discord
+    channels and verifies every capability live mode depends on: token,
+    channel visibility, posting, reading back (confirm-mode polling),
+    and editing. Never touches live state.
+    """
+    import os
+
+    from midas.alerts import DISCORD_BOT_TOKEN_ENV_VAR
+    from midas.doctor import run_discord_checks
+
+    portfolio_path = Path(portfolio)
+    port = load_portfolio(portfolio_path)
+    result = run_discord_checks(
+        port.alerts_config,
+        os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, ""),
+        _resolve_state_path(port, portfolio_path),
+        CachedYFinanceProvider(),
+        echo=click.echo,
+        wait_reaction=wait_reaction,
+    )
+    click.echo(
+        ("healthy" if result.healthy else "NOT healthy")
+        + f" — {result.checks} checks, {result.failures} failed, {result.warnings} warning(s)"
+    )
+    if not result.healthy:
+        raise SystemExit(1)
 
 
 def _resolve_report_period(

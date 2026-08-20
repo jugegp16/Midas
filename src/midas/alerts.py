@@ -22,7 +22,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol
 
 from midas.models import DEFAULT_ALERT_TIMEOUT_SECONDS, AlertsConfig, Direction, Order
@@ -36,6 +37,7 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_RETRY_AFTER_SECONDS = 5.0
 COLOR_BUY = 0x57F287  # Discord green
 COLOR_SELL = 0xED4245  # Discord red
+COLOR_REPORT = 0x5865F2  # Discord blurple — neither buy-green nor sell-red
 # Cloudflare fronts Discord and rejects urllib's default Python-urllib/x.y
 # User-Agent with HTTP 403 (error code 1010), so send an explicit one.
 USER_AGENT = "midas-alerts/0.2"
@@ -153,6 +155,22 @@ class DiscordBotClient:
     def edit_message(self, channel_id: str, message_id: str, payload: dict[str, Any]) -> None:
         """PATCH fields (e.g. ``content``) of an existing message."""
         self._request("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
+
+    def get_current_user(self) -> dict[str, Any]:
+        """GET the bot's own user object (validates the token)."""
+        response = self._request("GET", "/users/@me")
+        if not isinstance(response, dict):
+            msg = "Discord /users/@me returned a non-object body"
+            raise DiscordApiError(msg)
+        return response
+
+    def get_channel(self, channel_id: str) -> dict[str, Any]:
+        """GET a channel object (validates visibility and the id)."""
+        response = self._request("GET", f"/channels/{channel_id}")
+        if not isinstance(response, dict):
+            msg = "Discord channel fetch returned a non-object body"
+            raise DiscordApiError(msg)
+        return response
 
     def get_message(self, channel_id: str, message_id: str) -> dict[str, Any]:
         """GET one message (includes its ``reactions`` summary)."""
@@ -301,33 +319,119 @@ def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
         return None
 
 
-def build_confirmer(alerts_config: AlertsConfig | None) -> DiscordConfirmer | None:
-    """Resolve the Discord confirmer for a live run, or None for terminal-only.
+@dataclass(frozen=True)
+class DailyReport:
+    """End-of-day summary assembled by the live engine."""
 
-    Discord delivery requires BOTH the ``MIDAS_DISCORD_BOT_TOKEN`` env var
-    (the token is a secret — env only, never YAML) and ``discord_channel_id``
-    in the ``alerts:`` block. Neither → terminal-only with assumed fills,
-    behavior unchanged from before Discord existed.
+    session_date: date
+    equity: float
+    previous_equity: float | None
+    cash: float
+    positions: int
+    pending: int
+    alerts_posted: int
+    confirmed: int
+    declined: int
+    expired: int
+    cppi_scale: float
+    vol_target_scale: float
+
+
+def report_embed(report: DailyReport) -> dict[str, Any]:
+    """Build the end-of-day report embed (plain: no reactions, never polled)."""
+    if report.previous_equity is not None and report.previous_equity > 0:
+        delta = report.equity - report.previous_equity
+        pct = delta / report.previous_equity
+        day_change = f"{'+' if delta >= 0 else '-'}${abs(delta):,.2f} ({pct:+.2%})"
+    else:
+        day_change = "n/a (first report)"
+    alerts_line = (
+        f"{report.alerts_posted} posted · {report.confirmed} \u2705 · "
+        f"{report.declined} \u274c · {report.expired} expired · {report.pending} pending"
+    )
+    fields = [
+        {"name": "Equity", "value": f"${report.equity:,.2f}", "inline": True},
+        {"name": "Day", "value": day_change, "inline": True},
+        {"name": "Cash", "value": f"${report.cash:,.2f}", "inline": True},
+        {"name": "Positions", "value": str(report.positions), "inline": True},
+        {"name": "Alerts", "value": alerts_line, "inline": False},
+    ]
+    if report.cppi_scale != 1.0 or report.vol_target_scale != 1.0:
+        fields.append(
+            {
+                "name": "Risk overlays",
+                "value": f"CPPI \u00d7{report.cppi_scale:.2f} · vol target \u00d7{report.vol_target_scale:.2f}",
+                "inline": False,
+            }
+        )
+    return {
+        "title": f"End of day — {report.session_date.isoformat()}",
+        "color": COLOR_REPORT,
+        "fields": fields,
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+class DiscordReporter:
+    """Posts informational embeds (end-of-day report) to a channel.
+
+    Plain messages: no reactions, never polled, and — as everywhere in
+    this module — a delivery failure is logged and swallowed, never
+    raised into the tick loop.
+    """
+
+    def __init__(self, client: DiscordBotClient, channel_id: str) -> None:
+        self._client = client
+        self._channel_id = channel_id
+
+    def post_report(self, report: DailyReport) -> bool:
+        """Post the report embed. Returns False on delivery failure."""
+        try:
+            self._client.create_message(self._channel_id, {"embeds": [report_embed(report)]})
+        except DiscordApiError as exc:
+            logger.error("Discord report delivery failed (%s)", exc)
+            return False
+        return True
+
+
+def build_discord(alerts_config: AlertsConfig | None) -> tuple[DiscordConfirmer | None, DiscordReporter | None]:
+    """Resolve Discord delivery for a live run: ``(confirmer, reporter)``.
+
+    Both channels are independently optional:
+
+    - ``discord_intra_day_channel_id`` -> confirm mode (order alerts fill
+      only on operator reaction there).
+    - ``discord_end_of_day_channel_id`` -> end-of-day reports, falling
+      back to the intra-day channel when only that one is configured.
+    - Neither channel and no token -> terminal-only, ``(None, None)``.
+
+    The bot token comes exclusively from the ``MIDAS_DISCORD_BOT_TOKEN``
+    env var (a secret — never YAML).
 
     Raises:
-        ValueError: If exactly one of the two is configured — a half-wired
-            bot must be a loud startup error, not a silent fallback.
+        ValueError: On a half-wired bot — the token without any channel,
+            or a channel without the token. Misconfiguration must be a
+            loud startup error, never a silent fallback.
     """
     token = os.environ.get(DISCORD_BOT_TOKEN_ENV_VAR, "").strip()
-    channel_id = alerts_config.discord_channel_id.strip() if alerts_config is not None else ""
-    if not token and not channel_id:
-        return None
+    intra_day = alerts_config.discord_intra_day_channel_id.strip() if alerts_config is not None else ""
+    end_of_day = alerts_config.discord_end_of_day_channel_id.strip() if alerts_config is not None else ""
+    if not token and not intra_day and not end_of_day:
+        return None, None
     if not token:
         msg = (
-            f"alerts: discord_channel_id is set but {DISCORD_BOT_TOKEN_ENV_VAR} is not — "
-            "export the bot token or remove the channel id"
+            f"alerts: a Discord channel id is set but {DISCORD_BOT_TOKEN_ENV_VAR} is not — "
+            "export the bot token or remove the channel id(s)"
         )
         raise ValueError(msg)
-    if not channel_id:
+    if not intra_day and not end_of_day:
         msg = (
-            f"{DISCORD_BOT_TOKEN_ENV_VAR} is set but alerts: discord_channel_id is not — "
-            "add the channel id to the portfolio YAML or unset the token"
+            f"{DISCORD_BOT_TOKEN_ENV_VAR} is set but the alerts: block has no channel id — "
+            "add discord_intra_day_channel_id and/or discord_end_of_day_channel_id, or unset the token"
         )
         raise ValueError(msg)
-    timeout = alerts_config.timeout_seconds if alerts_config is not None else DEFAULT_ALERT_TIMEOUT_SECONDS
-    return DiscordConfirmer(DiscordBotClient(token, timeout_seconds=timeout), channel_id)
+    assert alerts_config is not None  # a channel id implies a config
+    client = DiscordBotClient(token, timeout_seconds=alerts_config.timeout_seconds)
+    confirmer = DiscordConfirmer(client, intra_day) if intra_day else None
+    reporter = DiscordReporter(client, end_of_day or intra_day)
+    return confirmer, reporter

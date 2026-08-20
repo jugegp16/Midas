@@ -121,6 +121,19 @@ class LiveState:
     lots: dict[str, list[PositionLot]] = field(default_factory=dict)
     pending_orders: list[PendingOrder] = field(default_factory=list)
     intent_cooldowns: list[IntentCooldown] = field(default_factory=list)
+    # End-of-day report anchor: equity at the last report, so the next
+    # report's day-over-day delta survives engine restarts.
+    last_report_date: date | None = None
+    last_report_equity: float | None = None
+    # Alert tally since the last report, persisted so an intra-day restart
+    # doesn't zero the day's counts. Incremented in the same durable
+    # transitions that record the underlying pending-order lifecycle;
+    # reset when a report goes out. (In 24/7 debug mode no report ever
+    # fires, so these accumulate meaninglessly — harmless.)
+    tally_posted: int = 0
+    tally_confirmed: int = 0
+    tally_declined: int = 0
+    tally_expired: int = 0
 
 
 def save_atomic(state: LiveState, path: Path) -> None:
@@ -158,6 +171,17 @@ def save_atomic(state: LiveState, path: Path) -> None:
             }
             for pending in state.pending_orders
         ],
+        "alert_tally": {
+            "posted": state.tally_posted,
+            "confirmed": state.tally_confirmed,
+            "declined": state.tally_declined,
+            "expired": state.tally_expired,
+        },
+        "last_report": (
+            {"date": state.last_report_date, "equity": state.last_report_equity}
+            if state.last_report_date is not None
+            else None
+        ),
         "intent_cooldowns": [
             {
                 "ticker": cooldown.ticker,
@@ -236,6 +260,17 @@ def load_state(path: Path) -> LiveState:
     pending_orders = [_parse_pending_order(entry, path) for entry in raw.get("pending_orders") or []]
     intent_cooldowns = [_parse_intent_cooldown(entry, path) for entry in raw.get("intent_cooldowns") or []]
 
+    tally = raw.get("alert_tally") or {}
+
+    last_report = raw.get("last_report")
+    last_report_date: date | None = None
+    last_report_equity: float | None = None
+    if isinstance(last_report, dict):
+        report_date_raw = last_report.get("date")
+        last_report_date = date.fromisoformat(report_date_raw) if isinstance(report_date_raw, str) else report_date_raw
+        equity_raw = last_report.get("equity")
+        last_report_equity = float(equity_raw) if equity_raw is not None else None
+
     return LiveState(
         available_cash=float(raw["available_cash"]),
         cash_infusion_next_date=next_date,
@@ -244,6 +279,12 @@ def load_state(path: Path) -> LiveState:
         lots=lots,
         pending_orders=pending_orders,
         intent_cooldowns=intent_cooldowns,
+        last_report_date=last_report_date,
+        last_report_equity=last_report_equity,
+        tally_posted=int(tally.get("posted", 0)),
+        tally_confirmed=int(tally.get("confirmed", 0)),
+        tally_declined=int(tally.get("declined", 0)),
+        tally_expired=int(tally.get("expired", 0)),
     )
 
 
@@ -291,7 +332,7 @@ def _parse_pending_order(entry: Any, path: Path) -> PendingOrder:
         raise StateFileError(msg) from exc
 
 
-def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
+def load_or_seed(portfolio: PortfolioConfig, state_path: Path, persist_seed: bool = True) -> LiveState:
     """Load state from *state_path*, or seed it from *portfolio* if missing.
 
     The seed branch creates one ``PositionLot`` per ticker with ``shares > 0``,
@@ -307,6 +348,8 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
     Args:
         portfolio: Portfolio configuration to seed from when no state exists.
         state_path: Filesystem path of the persisted state YAML.
+        persist_seed: Write a freshly-seeded state to disk. Dry runs pass
+            False so observing signals never creates a state file.
 
     Returns:
         The loaded or freshly-seeded ``LiveState``.
@@ -343,8 +386,9 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
         peak_equity=seed_equity if seed_equity > 0 else None,
         lots=lots,
     )
-    save_atomic(state, state_path)
-    logger.info("Seeded state at %s from portfolio config", state_path)
+    if persist_seed:
+        save_atomic(state, state_path)
+        logger.info("Seeded state at %s from portfolio config", state_path)
     return state
 
 

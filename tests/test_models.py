@@ -209,7 +209,7 @@ class TestTaxConfig:
 class TestAlertsConfig:
     def test_defaults(self) -> None:
         cfg = AlertsConfig()
-        assert cfg.discord_channel_id == ""
+        assert cfg.discord_intra_day_channel_id == ""
         assert cfg.timeout_seconds == 5.0
         assert cfg.pending_ttl_hours == 8.0
 

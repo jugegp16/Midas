@@ -314,7 +314,12 @@ class AlertsConfig:
         a real market-session clock exists.
     """
 
-    discord_channel_id: str = ""
+    discord_intra_day_channel_id: str = ""
+    # End-of-day reports post here; empty falls back to the alerts
+    # channel. Separate so the alerts channel stays action-only (every
+    # message there wants a reaction) and per-channel notification
+    # settings can keep alerts loud and reports quiet.
+    discord_end_of_day_channel_id: str = ""
     timeout_seconds: float = DEFAULT_ALERT_TIMEOUT_SECONDS
     pending_ttl_hours: float = DEFAULT_PENDING_TTL_HOURS
     realert_hours: float = DEFAULT_REALERT_HOURS
