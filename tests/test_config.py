@@ -325,7 +325,7 @@ def test_load_portfolio_without_alerts_block(tmp_path: Path) -> None:
 
 
 def test_load_portfolio_alerts_removed_webhook_key_raises_migration_error(tmp_path: Path) -> None:
-    """The #73 webhook key must fail loudly, not be silently ignored."""
+    """The legacy webhook key must fail loudly, not be silently ignored."""
     path = tmp_path / "portfolio.yaml"
     path.write_text(
         "portfolio:\n  - ticker: AAPL\n    shares: 100\navailable_cash: 1000\n"
@@ -400,3 +400,28 @@ def test_load_portfolio_alerts_non_numeric_ttl_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="alerts: pending_ttl_hours"):
         load_portfolio(path)
+
+
+def test_load_strategies_forecast_scaling(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "forecast_scaling: quantile\nstrategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "quantile"
+
+
+def test_load_strategies_forecast_scaling_defaults_to_none(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "strategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "none"
+
+
+def test_load_strategies_invalid_forecast_scaling_raises(tmp_path: Path) -> None:
+    path = _write_strategies(tmp_path, "forecast_scaling: softmax\nstrategies:\n  - name: Momentum\n")
+    with pytest.raises(ValueError, match="forecast_scaling"):
+        load_strategies(path)
+
+
+def test_load_strategies_bare_forecast_scaling_key_is_default(tmp_path: Path) -> None:
+    """A bare `forecast_scaling:` key means the default, not the string 'None'."""
+    path = _write_strategies(tmp_path, "forecast_scaling:\nstrategies:\n  - name: Momentum\n")
+    _, constraints, _ = load_strategies(path)
+    assert constraints.forecast_scaling == "none"

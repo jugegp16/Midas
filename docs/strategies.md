@@ -77,6 +77,12 @@ See [Architecture: Risk-aware allocator phases](architecture.md#phase-4a-cppi-dr
 
 Entry signals score a ticker's bullishness in `[0, 1]`. They contribute to the allocator's per-ticker blend via a configurable `weight` (default 1.0). A signal returning `None` is excluded from the blend entirely — it doesn't pull the average toward zero, it simply doesn't participate. A signal returning 0 means "no opinion" — the ticker is treated as held at its current weight rather than as an active buy candidate.
 
+### Score normalization (`forecast_scaling`)
+
+A `0.8` from one rule and a `0.8` from another are not the same conviction — rules have different score distributions, and raw averaging lets naturally fat-tailed rules dominate the blend. Setting `forecast_scaling: quantile` in the strategies YAML rank-transforms each rule's positive scores across the tickers it scored on that bar before blending: every rule's strongest pick becomes 1.0 and its weakest positive pick `1/n`, so rules get equal say regardless of raw scale. Zeros stay exactly zero (no opinion is never rank-inflated into conviction), abstentions stay out entirely, and per-rule `weight` still applies after the transform. Default is `none` (raw blending, the historical behavior). Note the flip side of equal say: whenever a rule fires positive on exactly one ticker that bar — always the case on a single-ticker portfolio, and common on larger ones for selective rules like dip or oversold entries — that lone score ranks to 1.0 regardless of raw magnitude, so a weakly positive lone signal is reported at full conviction. This is the transform working as designed (a rule's strongest pick of the bar is its strongest pick), but if a rule's raw magnitudes carry meaning you want preserved, leave `forecast_scaling: none`.
+
+A z-score variant with a fitted calibration window (following pysystemtrade's forecast scalars) was considered and deferred: the rank transform is stateless, robust to fat tails, and needs no calibration script. Revisit only if quantile provably loses too much information.
+
 ---
 
 ### MeanReversion

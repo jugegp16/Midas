@@ -1,4 +1,4 @@
-"""Regression for PR #63 bug 2: the optimizer silently dropped the risk: block.
+"""Regression: the optimizer silently dropped the risk: block.
 
 This test feeds a non-default RiskConfig through the optimizer's
 trial-construction path and asserts the configured ``vol_target`` reaches the
@@ -42,7 +42,7 @@ def _two_ticker_portfolio() -> tuple[PortfolioConfig, dict[str, pd.DataFrame]]:
 def test_risk_config_survives_run_trial_structural() -> None:
     """Structural: vol_target reaches BacktestResult.risk_metrics.
 
-    Catches the PR #63 bug 2 regression where the optimizer silently dropped
+    Catches the regression where the optimizer silently dropped
     the risk: block before constructing the trial allocator.
     """
     portfolio, price_data = _two_ticker_portfolio()

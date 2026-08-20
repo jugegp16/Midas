@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from conftest import ph
 
-from midas.allocator import Allocator
+from midas.allocator import Allocator, quantile_rank
 from midas.data.price_history import PriceHistory
-from midas.models import AllocationConstraints, RiskConfig
+from midas.models import AllocationConstraints, AssetSuitability, RiskConfig
+from midas.strategies.base import EntrySignal
 from midas.strategies.mean_reversion import MeanReversion
 from midas.strategies.momentum import Momentum
 
@@ -242,3 +244,117 @@ class TestAllocatorRiskConfigPlumbing:
         result = allocator.allocate(["A", "B"], prices, current_drawdown=0.20)
         # Without a configured CPPI overlay, current_drawdown is a no-op.
         assert sum(result.targets.values()) > 0
+
+
+class FixedScore(EntrySignal):
+    """EntrySignal stub returning a fixed per-ticker score (keyed by first close)."""
+
+    def __init__(self, name: str, scores_by_price: dict[float, float | None]) -> None:
+        self._name = name
+        self._scores = scores_by_price
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def warmup_period(self) -> int:
+        return 1
+
+    @property
+    def suitability(self) -> list[AssetSuitability]:
+        return [AssetSuitability.ALL]
+
+    @property
+    def description(self) -> str:
+        return "fixed-score test stub"
+
+    def score(self, price_history: PriceHistory, **kwargs: object) -> float | None:
+        return self._scores[float(price_history.close[0])]
+
+
+def _fixed_prices(keys: list[float]) -> dict[str, PriceHistory]:
+    return {f"T{i}": _prices([key] * 5) for i, key in enumerate(keys)}
+
+
+class TestQuantileRank:
+    def test_ranks_positives_and_keeps_zeros(self) -> None:
+        normalized = quantile_rank({"A": 0.9, "B": 0.05, "C": 0.0, "D": 0.4})
+
+        assert normalized["A"] == pytest.approx(3 / 3)
+        assert normalized["D"] == pytest.approx(2 / 3)
+        assert normalized["B"] == pytest.approx(1 / 3)
+        assert normalized["C"] == 0.0  # no opinion stays no opinion
+
+    def test_ties_share_average_rank(self) -> None:
+        normalized = quantile_rank({"A": 0.5, "B": 0.5, "C": 0.9})
+
+        assert normalized["A"] == normalized["B"] == pytest.approx(1.5 / 3)
+        assert normalized["C"] == pytest.approx(1.0)
+
+    def test_single_positive_is_top_rank(self) -> None:
+        assert quantile_rank({"A": 0.03, "B": 0.0}) == {"A": 1.0, "B": 0.0}
+
+    def test_empty_and_all_zero(self) -> None:
+        assert quantile_rank({}) == {}
+        assert quantile_rank({"A": 0.0}) == {"A": 0.0}
+
+
+class TestForecastScaling:
+    """Forecast-scaling acceptance: rules with different score scales get equal say."""
+
+    def _allocator(self, forecast_scaling: str) -> Allocator:
+        # Rule "timid" scores in [0, 0.1]; rule "bold" scores in [0, 1].
+        # They disagree: timid's top pick is T0, bold's is T1.
+        timid = FixedScore("Timid", {1.0: 0.10, 2.0: 0.02})
+        bold = FixedScore("Bold", {1.0: 0.20, 2.0: 1.00})
+        constraints = AllocationConstraints(min_cash_pct=0.0, forecast_scaling=forecast_scaling)
+        return Allocator([(timid, 1.0), (bold, 1.0)], constraints, n_tickers=2)
+
+    def test_raw_blend_lets_bold_rule_dominate(self) -> None:
+        result = self._allocator("none").allocate(["T0", "T1"], _fixed_prices([1.0, 2.0]))
+
+        # Raw average: T0 = (0.10+0.20)/2 = 0.15, T1 = (0.02+1.00)/2 = 0.51.
+        assert result.blended_scores["T1"] > result.blended_scores["T0"]
+
+    def test_quantile_blend_gives_rules_equal_say(self) -> None:
+        result = self._allocator("quantile").allocate(["T0", "T1"], _fixed_prices([1.0, 2.0]))
+
+        # Each rule ranks its two picks {0.5, 1.0} in opposite order, so the
+        # disagreeing rules cancel exactly: both tickers blend to 0.75.
+        assert result.blended_scores["T0"] == pytest.approx(0.75)
+        assert result.blended_scores["T1"] == pytest.approx(0.75)
+        assert result.contributions["T0"] == {"Timid": 1.0, "Bold": 0.5}
+        assert result.contributions["T1"] == {"Timid": 0.5, "Bold": 1.0}
+
+    def test_entry_weights_still_apply_after_scaling(self) -> None:
+        timid = FixedScore("Timid", {1.0: 0.10, 2.0: 0.02})
+        bold = FixedScore("Bold", {1.0: 0.20, 2.0: 1.00})
+        constraints = AllocationConstraints(min_cash_pct=0.0, forecast_scaling="quantile")
+        allocator = Allocator([(timid, 3.0), (bold, 1.0)], constraints, n_tickers=2)
+
+        result = allocator.allocate(["T0", "T1"], _fixed_prices([1.0, 2.0]))
+
+        # Weight 3 on Timid tilts the blend toward Timid's ranking.
+        assert result.blended_scores["T0"] == pytest.approx((3 * 1.0 + 1 * 0.5) / 4)
+        assert result.blended_scores["T1"] == pytest.approx((3 * 0.5 + 1 * 1.0) / 4)
+
+    def test_abstaining_ticker_absent_from_rule_ranking(self) -> None:
+        rule = FixedScore("Rule", {1.0: 0.4, 2.0: None, 3.0: 0.8})
+        constraints = AllocationConstraints(min_cash_pct=0.0, forecast_scaling="quantile")
+        allocator = Allocator([(rule, 1.0)], constraints, n_tickers=3)
+
+        result = allocator.allocate(["T0", "T1", "T2"], _fixed_prices([1.0, 2.0, 3.0]))
+
+        # T1 abstained: not ranked, contributes nothing, held.
+        assert result.contributions["T1"] == {}
+        assert result.contributions["T0"]["Rule"] == pytest.approx(0.5)
+        assert result.contributions["T2"]["Rule"] == pytest.approx(1.0)
+
+
+def test_quantile_rank_nan_drops_out_as_abstention() -> None:
+    """A NaN score fails both sign comparisons and vanishes from the result."""
+    normalized = quantile_rank({"A": float("nan"), "B": 0.4})
+
+    assert "A" not in normalized
+    assert normalized["B"] == 1.0

@@ -309,10 +309,14 @@ def _print_risk_engine_activity(result: BacktestResult) -> None:
 
 
 def _print_vol_contribution(result: BacktestResult) -> None:
-    """Render per-ticker vol contributions with inline concentration bars."""
+    """Render per-ticker vol contributions with inline concentration bars.
+
+    Shares are time-averaged over the run, so a ticker exited mid-run
+    keeps the risk it carried while held. Rows sum to ~100%.
+    """
     if result.risk_metrics is None or not result.risk_metrics.per_ticker_vol_contribution:
         return
-    contrib_table = make_metric_table("Per-Ticker Vol Contribution")
+    contrib_table = make_metric_table("Per-Ticker Vol Contribution (time-averaged)")
     items = sorted(
         result.risk_metrics.per_ticker_vol_contribution.items(),
         key=lambda kv: -abs(kv[1]),

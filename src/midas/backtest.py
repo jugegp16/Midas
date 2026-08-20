@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -143,6 +144,10 @@ class _SimState:
     cash: float = 0.0
     starting_value: float = 0.0
     trades: list[TradeRecord] = field(default_factory=list)
+    # Whole-run vol attribution: per-bar contribution shares summed per
+    # ticker, averaged over vol_contrib_bars when the result is built.
+    vol_contrib_sums: dict[str, float] = field(default_factory=dict)
+    vol_contrib_bars: int = 0
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -319,6 +324,13 @@ class BacktestEngine:
             A BacktestResult containing trades, metrics, and the
             equity curve.
         """
+        # Simulate against a private copy: the engine advances
+        # cash_infusion.next_date in place as infusions are credited, and
+        # mutating the caller's object makes run() non-idempotent — in the
+        # optimizer, only each worker's FIRST trial saw infusions and every
+        # later trial silently ran without them, so trials were scored on
+        # different problems and the final refit didn't match the search.
+        portfolio = copy.deepcopy(portfolio)
         trading_days = self._collect_trading_days(price_data, start, end)
         split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
@@ -538,6 +550,7 @@ class BacktestEngine:
                 self._capture_split_snapshot(state, portfolio, current_data)
             self._run_day(state, portfolio, current_data, day)
             self._record_bar(state, portfolio, current_data, day)
+            self._accumulate_vol_contribution(state, current_data)
 
     @staticmethod
     def _advance_slices(ticker_idx: dict[str, _TickerIndex], day: date) -> dict[str, PriceHistory]:
@@ -1147,7 +1160,7 @@ class BacktestEngine:
                 equity_curve=equity_curve,
                 vol_target=(self._allocator.risk_config.vol_target if self._allocator.risk_config else None),
                 per_strategy_pnl=attributed_strategy_pnl,
-                per_ticker_vol_contribution=self._end_state_vol_contribution(state, price_data, end_day),
+                per_ticker_vol_contribution=self._average_vol_contribution(state),
                 risk_history=state.risk_history,
                 vol_target_skip_count=state.vol_target_skip_count,
             ),
@@ -1269,50 +1282,52 @@ class BacktestEngine:
             result.cost_ratio = (cagr - result.cagr) / cagr if cagr > 0 else None
         return result
 
-    def _end_state_vol_contribution(
-        self,
-        state: _SimState,
-        price_data: dict[str, pd.DataFrame],
-        end_day: date,
-    ) -> dict[str, float]:
-        """Per-ticker share of portfolio vol from end-of-run positions.
+    def _accumulate_vol_contribution(self, state: _SimState, current_data: dict[str, PriceHistory]) -> None:
+        """Accumulate this bar's per-ticker vol-contribution shares.
 
-        Uses the same lookback window as the configured Phase 4b (default 60
-        bars when no ``risk_config`` is set). Returns ``{}`` when no risk
-        config is configured, or when any held ticker has insufficient
-        history / non-positive prices / zero stdev in the window — same
-        skip semantics as ``_apply_vol_target``.
+        Whole-run attribution: the final metric is the time-average of these
+        per-bar shares, so tickers exited mid-run keep the risk they carried
+        while held (an end-of-run snapshot made a decade-long backtest look
+        like only the final day's holdings ever carried risk). Bars are
+        skipped — not counted — when nothing is held or any held ticker has
+        insufficient history / non-positive prices / zero stdev in the
+        window, same skip semantics as ``_apply_vol_target``.
         """
         risk_config = self._allocator.risk_config
         if risk_config is None:
-            return {}
+            return
         held = [ticker for ticker, shares in state.positions.items() if shares > 0]
         if not held:
-            return {}
+            return
         lookback = risk_config.vol_lookback_days
         end_prices: dict[str, float] = {}
         log_return_columns: list[np.ndarray] = []
         for ticker in held:
-            df = price_data.get(ticker)
-            if df is None:
-                return {}
-            in_range = df[df.index <= end_day]
-            if len(in_range) < lookback + 1:
-                return {}
-            window = np.asarray(in_range["close"].iloc[-(lookback + 1) :], dtype=float)
+            history = current_data.get(ticker)
+            if history is None or len(history.close) < lookback + 1:
+                return
+            window = history.close[-(lookback + 1) :]
             if np.any(window <= 0):
-                return {}
+                return
             series = np.diff(np.log(window))
             if np.std(series, ddof=1) == 0.0:
-                return {}
+                return
             log_return_columns.append(series)
             end_prices[ticker] = float(window[-1])
 
         position_values = np.array([state.positions[ticker] * end_prices[ticker] for ticker in held], dtype=float)
         total_value = state.cash + float(position_values.sum())
         if total_value <= 0:
-            return {}
+            return
         weights = position_values / total_value
-        log_returns = np.column_stack(log_return_columns)
-        contributions = per_ticker_vol_contribution(weights, log_returns)
-        return {ticker: float(contrib) for ticker, contrib in zip(held, contributions, strict=True)}
+        contributions = per_ticker_vol_contribution(weights, np.column_stack(log_return_columns))
+        state.vol_contrib_bars += 1
+        for ticker, contribution in zip(held, contributions, strict=True):
+            state.vol_contrib_sums[ticker] = state.vol_contrib_sums.get(ticker, 0.0) + float(contribution)
+
+    @staticmethod
+    def _average_vol_contribution(state: _SimState) -> dict[str, float]:
+        """Time-averaged per-ticker vol contribution over all counted bars."""
+        if state.vol_contrib_bars == 0:
+            return {}
+        return {ticker: total / state.vol_contrib_bars for ticker, total in state.vol_contrib_sums.items()}

@@ -45,7 +45,7 @@ See [Strategies](strategies.md) for the full reference.
 
 ### Allocator
 
-The allocator turns entry-signal scores into target portfolio weights. It runs in three phases.
+The allocator turns entry-signal scores into target portfolio weights. It runs as a pipeline of phases.
 
 #### Phase 1: Score and Blend
 
@@ -55,6 +55,10 @@ Tickers fall into two buckets:
 
 - **Active** — at least one entry signal scored > 0. The blended score is positive.
 - **Held** — every entry signal returned 0 or `None`. The allocator treats this as "no opinion" and holds the ticker at its current weight (or the equal-weight base on the very first allocation).
+
+#### Phase 1.5: Score Normalization (optional)
+
+With `forecast_scaling: quantile`, each entry-rule instance's positive scores are rank-transformed across the tickers it scored on that bar — its strongest pick becomes 1.0, its weakest positive `1/n` — before the weighted average in Phase 1 blends them. This gives every rule equal say regardless of its raw score distribution. Zeros and abstentions are untouched. The default `none` skips the transform entirely. See [Strategies](strategies.md#score-normalization-forecast_scaling) for details.
 
 #### Phase 2: Softmax Budget Allocation
 

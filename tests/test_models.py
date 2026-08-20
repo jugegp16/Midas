@@ -232,3 +232,15 @@ class TestAlertsConfig:
     def test_timeout_nan_invalid(self) -> None:
         with pytest.raises(ValueError, match="timeout_seconds"):
             AlertsConfig(timeout_seconds=float("nan"))
+
+
+class TestAllocationConstraintsForecastScaling:
+    def test_default_is_none(self) -> None:
+        assert AllocationConstraints().forecast_scaling == "none"
+
+    def test_quantile_accepted(self) -> None:
+        assert AllocationConstraints(forecast_scaling="quantile").forecast_scaling == "quantile"
+
+    def test_invalid_value_raises(self) -> None:
+        with pytest.raises(ValueError, match="forecast_scaling"):
+            AllocationConstraints(forecast_scaling="zscore")

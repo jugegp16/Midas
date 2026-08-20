@@ -12,3 +12,7 @@ dist/
 .env.*
 .claude/
 CLAUDE.md
+
+# Local optimizer outputs
+/output/
+*optimized*.yaml

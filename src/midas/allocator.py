@@ -46,6 +46,46 @@ HIGH_POSITION_MULTIPLIER = 5.0
 MIN_TEMPERATURE = 1e-6
 
 
+def quantile_rank(scores: dict[str, float]) -> dict[str, float]:
+    """Rank-transform one rule's positive scores across the cross-section.
+
+    Phase 1.5 of the blend: the i-th smallest positive score
+    maps to ``rank / n_positive`` (average rank for ties), so every rule's
+    strongest pick scores 1.0 and its weakest positive pick ``1/n``
+    regardless of the rule's raw score distribution.
+
+    Zeros stay exactly zero and never join the ranking: the entry-signal
+    contract says 0 means "no opinion", and rank-inflating a near-zero
+    score to mid-pack would manufacture conviction the rule never
+    expressed. Negative scores violate the [0, 1] contract and are
+    coerced to 0.0 the same way rather than entering the blend (under
+    raw blending they would pull the average down instead).
+
+    Args:
+        scores: Ticker -> raw score in [0, 1] for a single rule instance.
+
+    Returns:
+        Ticker -> normalized score. NaN inputs (a contract-violating
+        live ``score()``) fail both sign comparisons and drop out of the
+        result entirely — downstream treats a missing key as abstention,
+        which is the safe reading of an undefined score.
+    """
+    positives = sorted((score, ticker) for ticker, score in scores.items() if score > 0)
+    normalized = {ticker: 0.0 for ticker, score in scores.items() if score <= 0}
+    total = len(positives)
+    index = 0
+    while index < total:
+        tie_end = index
+        while tie_end + 1 < total and positives[tie_end + 1][0] == positives[index][0]:
+            tie_end += 1
+        # 1-based ranks index+1 .. tie_end+1, averaged across the tie group.
+        average_rank = (index + tie_end + 2) / 2
+        for _, ticker in positives[index : tie_end + 1]:
+            normalized[ticker] = average_rank / total
+        index = tie_end + 1
+    return normalized
+
+
 @dataclass
 class _ScoredEntry:
     """An entry signal paired with its blending weight."""
@@ -265,6 +305,12 @@ class Allocator:
         active: list[str] = []
         held: list[str] = []
 
+        # Pass 1: collect raw scores per entry instance across the
+        # cross-section. Keyed by entry index, not strategy name — two
+        # configs of the same strategy have different score distributions
+        # and must be normalized independently.
+        per_entry_scores: list[dict[str, float]] = [{} for _ in self._entries]
+        scorable: list[str] = []
         for ticker in tickers:
             history = price_data.get(ticker)
             if history is None or len(history) == 0:
@@ -272,23 +318,37 @@ class Allocator:
                 blended_scores[ticker] = 0.0
                 held.append(ticker)
                 continue
-
+            scorable.append(ticker)
             ticker_ctx = ctx.get(ticker, {})
-            ticker_contributions: dict[str, float] = {}
-            weighted_sum = 0.0
-            weight_total = 0.0
-
-            for entry in self._entries:
+            for index, entry in enumerate(self._entries):
                 hit, score = self._lookup_score(entry.strategy, ticker, len(history))
                 if not hit:
                     score = entry.strategy.score(history, **ticker_ctx)
                 if score is not None:
+                    per_entry_scores[index][ticker] = score
+
+        # Phase 1.5: per-rule cross-sectional rank transform.
+        # A 0.8 from one rule and a 0.8 from another are not the same
+        # conviction — raw averaging lets fat-tailed rules dominate the
+        # blend. Ranking within each rule's own cross-section makes the
+        # rules commensurable before their weights are applied.
+        if self._constraints.forecast_scaling == "quantile":
+            per_entry_scores = [quantile_rank(scores) for scores in per_entry_scores]
+
+        # Pass 2: blend per ticker. Contributions record the scores that
+        # actually entered the blend (normalized when scaling is on), so
+        # alert attribution matches what drove the decision.
+        for ticker in scorable:
+            ticker_contributions: dict[str, float] = {}
+            weighted_sum = 0.0
+            weight_total = 0.0
+            for index, entry in enumerate(self._entries):
+                score = per_entry_scores[index].get(ticker)
+                if score is not None:
                     ticker_contributions[entry.strategy.name] = score
                     weighted_sum += entry.weight * score
                     weight_total += entry.weight
-
             contributions[ticker] = ticker_contributions
-
             if weight_total > 0 and weighted_sum > 0:
                 blended_scores[ticker] = weighted_sum / weight_total
                 active.append(ticker)
@@ -309,8 +369,9 @@ class Allocator:
         Tickers with insufficient or zero vol are reclassified as held
         (Option A) by appending to *held* in place. Offsets are added
         *outside* the /T divider in _softmax_allocate, so inverse-vol
-        intensity is invariant to softmax_temperature (PR #63 used
-        (1/vol)^(1/T) and was rejected).
+        intensity is invariant to softmax_temperature (an earlier
+        implementation used (1/vol)^(1/T) and was rejected for coupling
+        the two knobs).
 
         Returns:
             ``(offsets, still_active)`` — the offset map and the surviving

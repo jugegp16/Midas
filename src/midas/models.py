@@ -7,6 +7,19 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
 from pathlib import Path
+from typing import Literal, get_args
+
+type ForecastScaling = Literal["none", "quantile"]
+
+
+def forecast_scaling_error(value: object) -> str:
+    """One error message for every layer that validates ``forecast_scaling``."""
+    allowed = ", ".join(repr(v) for v in get_args(ForecastScaling.__value__))
+    return (
+        f"forecast_scaling must be one of {allowed}, got {value!r} "
+        "(zscore was considered and deferred until quantile proves insufficient)"
+    )
+
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
@@ -185,6 +198,14 @@ class AllocationConstraints:
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT
     min_buy_delta: float = DEFAULT_MIN_BUY_DELTA
     softmax_temperature: float = DEFAULT_SOFTMAX_TEMPERATURE
+    # "quantile" rank-transforms each rule's scores across the cross-section
+    # before blending; "none" blends raw scores as before.
+    forecast_scaling: ForecastScaling = "none"
+
+    def __post_init__(self) -> None:
+        if self.forecast_scaling not in get_args(ForecastScaling.__value__):
+            msg = forecast_scaling_error(self.forecast_scaling)
+            raise ValueError(msg)
 
 
 @dataclass
@@ -290,7 +311,7 @@ class AlertsConfig:
 
     pending_ttl_hours: how long a posted alert stays confirmable before
         it expires. A crude stand-in for "end of the trading day" until
-        the #68 session clock exists.
+        a real market-session clock exists.
     """
 
     discord_channel_id: str = ""

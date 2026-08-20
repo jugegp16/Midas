@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
 
@@ -19,12 +19,14 @@ from midas.models import (
     AlertsConfig,
     AllocationConstraints,
     CashInfusion,
+    ForecastScaling,
     Holding,
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
     TaxConfig,
     TradingRestrictions,
+    forecast_scaling_error,
 )
 
 
@@ -105,7 +107,7 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
 
     Raises:
         ValueError: If the block has unrecognized keys, is not a mapping,
-            or still uses the webhook key removed in #81.
+            or still uses the removed webhook key.
     """
     if alerts_raw is None:
         return None
@@ -113,8 +115,9 @@ def _parse_alerts_config(alerts_raw: Any) -> AlertsConfig | None:
         msg = f"alerts: must be a mapping, got {alerts_raw!r}"
         raise ValueError(msg)
     if "discord_webhook_url" in alerts_raw:
-        # Removed in #81 — silently ignoring it would leave the operator
-        # believing alerts still flow through the (dead) webhook.
+        # Removed when bot delivery replaced the webhook — silently ignoring
+        # it would leave the operator believing alerts still flow through
+        # the (dead) webhook.
         msg = (
             "alerts: discord_webhook_url was replaced by bot delivery — "
             "set discord_channel_id here and export MIDAS_DISCORD_BOT_TOKEN instead "
@@ -182,6 +185,15 @@ def load_portfolio(path: Path) -> PortfolioConfig:
     )
 
 
+def _parse_forecast_scaling(raw_value: Any) -> ForecastScaling:
+    """Coerce the optional ``forecast_scaling`` key; a bare key means the default."""
+    if raw_value is None:
+        return "none"
+    if raw_value not in get_args(ForecastScaling.__value__):
+        raise ValueError(forecast_scaling_error(raw_value))
+    return "quantile" if raw_value == "quantile" else "none"
+
+
 def load_strategies(
     path: Path,
 ) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
@@ -212,6 +224,7 @@ def load_strategies(
         min_buy_delta=float(
             raw.get("min_buy_delta", DEFAULT_MIN_BUY_DELTA),
         ),
+        forecast_scaling=_parse_forecast_scaling(raw.get("forecast_scaling")),
     )
 
     risk_raw = raw.get("risk") or {}

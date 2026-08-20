@@ -177,7 +177,7 @@ def test_backtest_runs_real_ohlcv_through_strategy() -> None:
     assert not other_buys, f"unexpected buys outside the gap-fill day: {other_buys}"
 
 
-# --- execution lag (#46) ---
+# --- execution lag ---
 #
 # Honest execution defers today's decision to tomorrow's open (or close)
 # instead of filling on the bar the signal reads — eliminating the
@@ -1959,3 +1959,84 @@ def test_summary_json_omits_after_tax_block_when_not_set(tmp_path: Path) -> None
     assert "after_tax_twr" not in summary
     assert "tax_cost_ratio" not in summary
     assert "tax_summary" not in summary
+
+
+def test_run_does_not_mutate_portfolio_and_is_idempotent() -> None:
+    """Two runs on one portfolio object must produce identical results.
+
+    The engine advances cash_infusion.next_date while crediting infusions;
+    doing that on the caller's object meant only the first run in a
+    process saw infusions — in the optimizer, every trial after each
+    worker's first was silently scored on an infusion-free problem.
+    """
+    from midas.models import CashInfusion
+
+    start = date(2024, 1, 2)
+    end = date(2024, 6, 28)
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAA", shares=10.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+        cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 2, 1), frequency="biweekly"),
+    )
+    rng_returns = [0.002] * 130
+    price_data = {"AAA": make_price_series(start=start, days=130, base_price=100.0, daily_returns=rng_returns)}
+
+    def run_once() -> float:
+        engine = BacktestEngine(
+            allocator=Allocator([(MeanReversion(window=10, threshold=0.02), 1.0)], AllocationConstraints(), 1),
+            order_sizer=OrderSizer(),
+            exit_rules=[],
+            constraints=AllocationConstraints(),
+            enable_split=False,
+        )
+        return engine.run(portfolio, price_data, start, end).final_value
+
+    original_next_date = portfolio.cash_infusion.next_date
+    first = run_once()
+    assert portfolio.cash_infusion.next_date == original_next_date, "engine mutated the caller's portfolio"
+    second = run_once()
+    assert first == second
+    # Infusions were actually in play: final value exceeds start + growth-only.
+    assert first > 1_000.0 + 10.0 * 100.0
+
+
+def test_vol_contribution_is_time_averaged_not_end_snapshot() -> None:
+    """A ticker exited mid-run keeps the risk share it carried while held."""
+    from midas.models import RiskConfig
+    from midas.strategies.stop_loss import StopLoss
+
+    start = date(2024, 1, 2)
+    rng = np.random.default_rng(3)
+    stable = list(rng.normal(0.0005, 0.01, 200))
+    # CRASH crashes 2% a day from bar 100 — StopLoss liquidates it mid-run.
+    crash = list(rng.normal(0.0005, 0.01, 100)) + [-0.02] * 100
+    price_data = {
+        "KEEP": make_price_series(start=start, days=200, base_price=100.0, daily_returns=stable),
+        "CRASH": make_price_series(start=start, days=200, base_price=100.0, daily_returns=crash),
+    }
+    portfolio = PortfolioConfig(
+        holdings=[
+            Holding(ticker="KEEP", shares=50.0, cost_basis=100.0),
+            Holding(ticker="CRASH", shares=50.0, cost_basis=100.0),
+        ],
+        available_cash=1_000.0,
+    )
+    engine = BacktestEngine(
+        allocator=Allocator(
+            [], AllocationConstraints(), 2, risk_config=RiskConfig(weighting="equal", vol_lookback_days=10)
+        ),
+        order_sizer=OrderSizer(),
+        exit_rules=[StopLoss(loss_threshold=0.10)],
+        constraints=AllocationConstraints(),
+        enable_split=False,
+    )
+    result = engine.run(portfolio, price_data, start, price_data["KEEP"].index[-1])
+
+    assert result.risk_metrics is not None
+    contributions = result.risk_metrics.per_ticker_vol_contribution
+    # CRASH was fully liquidated mid-run: an end-of-run snapshot would omit
+    # it entirely; the time average must retain the risk it carried.
+    assert any(t.ticker == "CRASH" and t.direction.value == "SELL" for t in result.trades)
+    assert contributions.get("CRASH", 0.0) > 0.05
+    assert contributions.get("KEEP", 0.0) > 0.0
+    assert sum(contributions.values()) == pytest.approx(1.0, abs=1e-9)

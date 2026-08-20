@@ -77,7 +77,7 @@ class StateFileError(ValueError):
 
 @dataclass(frozen=True)
 class PendingOrder:
-    """An alerted order awaiting operator confirmation (issue #81).
+    """An alerted order awaiting operator confirmation.
 
     Created when the confirm-mode engine posts an alert to Discord;
     resolved when the operator reacts (✅ fill at ``price``, ❌ cancel)

@@ -935,7 +935,7 @@ def test_unavailable_poll_never_expires_pending(tmp_path: Path, make_provider: P
     """A failing poll past TTL must NOT expire — the operator may have confirmed.
 
     Expiring on an outage/revoked-token span drops a fill the operator
-    executed at the broker: exactly the phantom divergence #81 exists to
+    executed at the broker: exactly the phantom divergence confirm mode exists to
     eliminate.
     """
     confirmer = FakeConfirmer()

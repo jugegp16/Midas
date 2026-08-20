@@ -1,4 +1,4 @@
-"""Regression for PR #63 bug 1: risk math must use sliced history per bar.
+"""Regression: risk math must use sliced history per bar, never the full array.
 
 Two backtests cover the same prefix [start..T]. One ends at T (truncated);
 the other extends past T (full). At the boundary date T, every quantity

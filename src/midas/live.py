@@ -533,7 +533,7 @@ class LiveEngine:
         """Apply a confirmed fill to in-memory state (no IO, no side effects).
 
         Fills at the alert price — the same price assumption the legacy
-        path made; confirmation changes only the WHETHER (#74 will later
+        path made; confirmation changes only the WHETHER (broker sync will later
         correct the at-what from broker truth).
 
         Returns:
