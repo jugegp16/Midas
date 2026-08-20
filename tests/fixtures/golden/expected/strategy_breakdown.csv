@@ -1,22 +1,21 @@
 strategy,ticker,trades,buys,sells,win_rate,pnl
-MeanReversion,AAA,9,9,0,,
-MeanReversion,BBB,18,18,0,,
-MeanReversion,CCC,7,7,0,,
-Momentum,AAA,3,3,0,,
+MeanReversion,AAA,18,18,0,,
+MeanReversion,BBB,34,34,0,,
+MeanReversion,CCC,12,12,0,,
+Momentum,AAA,5,5,0,,
 Momentum,BBB,1,1,0,,
-Momentum,CCC,6,6,0,,
-ProfitTaking,AAA,2,0,2,1.0,2240.99
-ProfitTaking,CCC,2,0,2,1.0,2799.05
-RSIOversold,AAA,3,3,0,,
-RSIOversold,BBB,4,4,0,,
-RSIOversold,CCC,3,3,0,,
-StopLoss,BBB,2,0,2,0.0,-2033.18
-MeanReversion,*,34,34,0,,
-Momentum,*,10,10,0,,
-ProfitTaking,*,4,0,4,1.0,5040.04
-RSIOversold,*,10,10,0,,
-StopLoss,*,2,0,2,0.0,-2033.18
-Open Positions (Unrealized),AAA,,,,,1069.25
-Open Positions (Unrealized),BBB,,,,,-1131.14
-Open Positions (Unrealized),CCC,,,,,1136.14
-Open Positions (Unrealized),*,,,,,1074.25
+Momentum,CCC,5,5,0,,
+ProfitTaking,AAA,2,0,2,1.0,3305.66
+ProfitTaking,CCC,2,0,2,1.0,4006.06
+RSIOversold,AAA,1,1,0,,
+RSIOversold,BBB,1,1,0,,
+RSIOversold,CCC,1,1,0,,
+StopLoss,BBB,3,0,3,0.0,-5560.81
+MeanReversion,*,64,64,0,,
+Momentum,*,11,11,0,,
+ProfitTaking,*,4,0,4,1.0,7311.72
+RSIOversold,*,3,3,0,,
+StopLoss,*,3,0,3,0.0,-5560.81
+Open Positions (Unrealized),AAA,,,,,1299.51
+Open Positions (Unrealized),BBB,,,,,-488.43
+Open Positions (Unrealized),*,,,,,811.08

@@ -1,6 +1,11 @@
 # Golden-test strategy config. Do not edit casually — changes invalidate
 # every golden output. See tests/test_golden.py and tests/README.md.
 min_cash_pct: 0.05
+# With 3 tickers the auto position cap (0.25 each, 0.75 total) is smaller
+# than the 0.95 budget, which clamps every ticker to the cap and makes
+# sizing completely score-independent — the softmax path was unpinned.
+# Raise the cap so scores actually drive weights in this scenario.
+max_position_pct: 0.50
 min_buy_delta: 0.02
 softmax_temperature: 0.5
 # Exercise the quantile rank transform in the pinned scenario.
