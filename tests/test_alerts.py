@@ -388,14 +388,14 @@ class TestReportEmbed:
     def _report(self, **overrides: object) -> alerts.DailyReport:
         from datetime import date as date_type
 
-        from midas.alerts import DailyReport
+        from midas.alerts import DailyReport, ReportPosition
 
         base: dict[str, object] = {
             "session_date": date_type(2026, 8, 18),
             "equity": 10_500.0,
             "previous_equity": 10_000.0,
             "cash": 900.0,
-            "positions": 4,
+            "positions": (ReportPosition("AAPL", 10.0, 1_850.0), ReportPosition("MSFT", 5.5, 2_777.5)),
             "pending": 1,
             "alerts_posted": 3,
             "confirmed": 2,
@@ -419,6 +419,42 @@ class TestReportEmbed:
         assert fields["Cash"] == "$900.00"
         assert "3 posted" in fields["Alerts"] and "1 pending" in fields["Alerts"]
         assert "Risk overlays" not in fields  # both scales at 1.0
+
+    def test_positions_render_as_aligned_table(self) -> None:
+        """Shares / Position / Value columns in a code block (embeds are
+        proportional; only a code block keeps columns aligned)."""
+        from midas.alerts import report_embed
+
+        fields = {f["name"]: f["value"] for f in report_embed(self._report())["fields"]}
+        assert fields["Positions"] == (
+            "```\nShares  Position      Value\n    10  AAPL      $1,850.00\n   5.5  MSFT      $2,777.50\n```"
+        )
+
+    def test_position_without_price_shows_na_value(self) -> None:
+        from midas.alerts import ReportPosition, report_embed
+
+        fields = {
+            f["name"]: f["value"]
+            for f in report_embed(self._report(positions=(ReportPosition("AAPL", 10.0, None),)))["fields"]
+        }
+        assert "n/a" in fields["Positions"]
+
+    def test_no_positions_reads_none(self) -> None:
+        from midas.alerts import report_embed
+
+        fields = {f["name"]: f["value"] for f in report_embed(self._report(positions=()))["fields"]}
+        assert fields["Positions"] == "none"
+
+    def test_positions_table_caps_with_explicit_overflow(self) -> None:
+        """A huge portfolio must not blow Discord's 1024-char field limit,
+        and the cap must be visible, never silent."""
+        from midas.alerts import ReportPosition, report_embed
+
+        many = tuple(ReportPosition(f"TK{i:02d}", 1.0, 100.0) for i in range(25))
+        fields = {f["name"]: f["value"] for f in report_embed(self._report(positions=many))["fields"]}
+        assert "+5 more" in fields["Positions"]
+        assert "TK19" in fields["Positions"] and "TK20" not in fields["Positions"]
+        assert len(fields["Positions"]) <= 1024
 
     def test_first_report_has_no_delta(self) -> None:
         from midas.alerts import report_embed
@@ -451,7 +487,7 @@ class TestDiscordReporter:
             equity=1.0,
             previous_equity=None,
             cash=1.0,
-            positions=0,
+            positions=(),
             pending=0,
             alerts_posted=0,
             confirmed=0,
@@ -481,7 +517,7 @@ class TestDiscordReporter:
             equity=1.0,
             previous_equity=None,
             cash=1.0,
-            positions=0,
+            positions=(),
             pending=0,
             alerts_posted=0,
             confirmed=0,

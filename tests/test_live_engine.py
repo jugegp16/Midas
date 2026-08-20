@@ -1287,6 +1287,37 @@ def test_stale_undelivered_report_dropped_at_next_session(tmp_path: Path, make_p
         assert sessions == [date(2026, 8, 18), date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 19)]
 
 
+def test_report_positions_digest_from_state_lots(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """The report lists each held position with its market value at the
+    session's last observed price, not a bare count."""
+    from midas.alerts import ReportPosition
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._last_prices = {"AAPL": 100.0}
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert report.positions == (ReportPosition("AAPL", 10.0, 1_000.0),)  # type: ignore[attr-defined]
+
+
+def test_report_position_without_observed_price_has_no_value(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A held ticker absent from the last tick's prices (e.g. dropped from
+    the portfolio config) still lists, with an unknown market value."""
+    from midas.alerts import ReportPosition
+
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+
+        report = reporter.reports[0]
+        assert report.positions == (ReportPosition("AAPL", 10.0, None),)  # type: ignore[attr-defined]
+
+
 def test_dry_run_report_stays_terminal_only(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """--dry-run must not post real reports to Discord, nor let a dry run's
     anchor suppress the real run's report (mirrors confirm-mode disarming)."""
@@ -1453,6 +1484,42 @@ def test_run_loop_sleeps_weekend_to_monday_open(tmp_path: Path, make_provider: P
         assert first_tick_et.date() == date(2026, 8, 24)  # Monday
         assert (first_tick_et.hour, first_tick_et.minute) == (9, 30)
         assert all(chunk <= 3600.0 for chunk in slept)  # chunked, never one giant sleep
+
+
+def test_failed_close_report_retries_during_overnight_sleep(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A delivery failure at the close retries on the chunked sleep
+    wake-ups — a Friday-evening Discord blip must not delay the heartbeat
+    until Monday's open."""
+    reporter = FakeReporter(deliver=False)
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._last_equity_session = date(2026, 8, 18)
+        engine._maybe_send_report(NEAR_CLOSE)
+        assert len(reporter.reports) == 1  # built, delivery failed
+
+        clock = {"now": datetime(2026, 8, 18, 20, 5, tzinfo=UTC)}  # just past the close
+        posted_at: list[datetime] = []
+        original_post = reporter.post_report
+
+        def fake_sleep(seconds: float) -> None:
+            clock["now"] += timedelta(seconds=seconds)
+            reporter.deliver = True  # Discord recovers during the first chunk
+
+        def spy_post(report: object) -> bool:
+            posted_at.append(clock["now"])
+            return original_post(report)
+
+        engine._now = lambda: clock["now"]
+        engine._sleep = fake_sleep
+        reporter.post_report = spy_post  # type: ignore[method-assign]
+
+        engine._sleep_until_open(clock["now"])
+
+        assert engine._unsent_report is None
+        # Delivered at the first hourly wake-up, once — not re-posted on
+        # every later chunk, and never a rebuild of the report object.
+        assert posted_at == [datetime(2026, 8, 18, 21, 5, tzinfo=UTC)]
+        assert reporter.reports[1] is reporter.reports[0]
 
 
 def test_dry_run_leaves_no_footprint_on_fresh_start(tmp_path: Path, make_provider: ProviderFactory) -> None:

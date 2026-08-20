@@ -85,7 +85,9 @@ engine polls harmlessly through them.
 ### End-of-day report
 
 Near the close of each session (~15:55 ET), live emits a one-embed
-summary: equity and day-over-day change, cash, position count, the
+summary: equity and day-over-day change, cash, a position table
+(shares, ticker, and market value at the session's last observed
+price; largest portfolios capped with an explicit "+N more"), the
 day's alert tally (posted / ✅ / ❌ / expired / still pending), and
 risk-overlay scales when engaged. It doubles as a heartbeat — the day
 ends with a push notification even when no orders fired, so silence

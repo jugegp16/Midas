@@ -16,3 +16,8 @@ CLAUDE.md
 # Local optimizer outputs
 /output/
 *optimized*.yaml
+
+# Live-engine local data: real portfolios and generated state, never committed
+/sample-portfolios/
+*.state.yaml
+*.state.yaml.lock
