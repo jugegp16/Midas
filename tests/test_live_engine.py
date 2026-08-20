@@ -1272,3 +1272,35 @@ def test_no_report_when_market_hours_disabled(tmp_path: Path, make_provider: Pro
 
     # 24/7 mode has no session concept — no close-of-day report.
     assert reporter.reports == []
+
+
+def test_report_catches_up_after_close(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A long poll interval can step from 15:5x straight past 16:00 — the
+    closed-branch catch-up must still emit the report before sleeping."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        after_close = datetime(2026, 8, 18, 20, 3, tzinfo=UTC)  # 16:03 ET
+
+        engine._maybe_send_report(after_close)
+
+        assert len(reporter.reports) == 1
+
+
+def test_no_catchup_report_without_equity_observation(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An engine started in the evening never saw the session — no report."""
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        assert engine._last_equity is None
+        engine._maybe_send_report(datetime(2026, 8, 18, 20, 3, tzinfo=UTC))
+
+        assert reporter.reports == []
+
+
+def test_no_report_on_weekend(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    reporter = FakeReporter()
+    with _make_report_engine(tmp_path, make_provider, reporter) as engine:
+        engine._last_equity = 2_000.0
+        engine._maybe_send_report(datetime(2026, 8, 22, 19, 56, tzinfo=UTC))  # Saturday
+
+        assert reporter.reports == []

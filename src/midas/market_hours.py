@@ -55,7 +55,7 @@ HOLIDAY_TABLE_YEARS = frozenset(day.year for day in MARKET_HOLIDAYS)
 _stale_table_years_warned: set[int] = set()
 
 
-def _is_trading_day(day: date) -> bool:
+def is_trading_day(day: date) -> bool:
     """Weekday and not a listed full-closure holiday.
 
     Fails OPEN when the holiday table has aged past *day*'s year: polling
@@ -77,7 +77,7 @@ def _is_trading_day(day: date) -> bool:
 def is_market_open(now: datetime) -> bool:
     """Whether the regular US equity session is open at *now* (tz-aware)."""
     local = now.astimezone(MARKET_TZ)
-    if not _is_trading_day(local.date()):
+    if not is_trading_day(local.date()):
         return False
     return SESSION_OPEN <= local.time() < SESSION_CLOSE
 
@@ -90,9 +90,9 @@ def next_session_open(now: datetime) -> datetime:
     """
     local = now.astimezone(MARKET_TZ)
     day = local.date()
-    same_day_open_possible = _is_trading_day(day) and local.time() < SESSION_CLOSE
+    same_day_open_possible = is_trading_day(day) and local.time() < SESSION_CLOSE
     candidate = day if same_day_open_possible else day + timedelta(days=1)
-    while not _is_trading_day(candidate):
+    while not is_trading_day(candidate):
         candidate += timedelta(days=1)
     open_local = datetime.combine(candidate, SESSION_OPEN, tzinfo=MARKET_TZ)
     return open_local.astimezone(UTC)

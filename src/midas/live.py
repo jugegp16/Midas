@@ -34,7 +34,7 @@ from midas.live_state import (
     resolve_purchase_date,
     save_atomic,
 )
-from midas.market_hours import MARKET_TZ, is_market_open, next_session_open, session_close
+from midas.market_hours import MARKET_TZ, is_market_open, is_trading_day, next_session_open, session_close
 from midas.models import (
     DEFAULT_PENDING_TTL_HOURS,
     DEFAULT_REALERT_HOURS,
@@ -279,6 +279,15 @@ class LiveEngine:
             while True:
                 now = datetime.now(tz=UTC)
                 if self._market_hours_only and not is_market_open(now):
+                    try:
+                        # Catch-up: with a poll interval longer than the
+                        # report window, the last in-session tick can land
+                        # before 15:55 and the next loop iteration after
+                        # 16:00 — the report must still go out before the
+                        # overnight sleep.
+                        self._maybe_send_report(now)
+                    except Exception:
+                        logger.exception("close-of-day report failed; continuing")
                     self._sleep_until_open(now)
                     continue
                 try:
@@ -312,14 +321,23 @@ class LiveEngine:
             time.sleep(min(remaining, MAX_SLEEP_CHUNK_SECONDS))
 
     def _maybe_send_report(self, now: datetime) -> None:
-        """Emit the close-of-day report once per session, near the close."""
+        """Emit the close-of-day report once per session, near (or after) the close.
+
+        Fires in the report window before the close, or after the close as
+        a catch-up (long poll intervals can step straight from 15:5x to
+        past 16:00). The catch-up requires an equity observation, so an
+        engine started in the evening reports nothing for a session it
+        never saw.
+        """
         if not self._market_hours_only:
             return
         session_date = now.astimezone(MARKET_TZ).date()
-        if self._state.last_report_date == session_date:
+        if self._state.last_report_date == session_date or not is_trading_day(session_date):
             return
         seconds_to_close = (session_close(now) - now).total_seconds()
-        if seconds_to_close > REPORT_MINUTES_BEFORE_CLOSE * 60 or seconds_to_close < 0:
+        if seconds_to_close > REPORT_MINUTES_BEFORE_CLOSE * 60:
+            return
+        if seconds_to_close < 0 and self._last_equity is None:
             return
         self._send_report(session_date)
 
