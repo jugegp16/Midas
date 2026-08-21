@@ -225,6 +225,12 @@ class FoldResult:
     ``test_return_raw`` are the raw (un-annualized) TWR over the fold's own
     window — used by the overall-CAGR compounding loop, which must not
     double-annualize.
+
+    The ``after_tax_*`` pair mirrors the test-return pair when the portfolio
+    has a tax config, else ``None``. Each fold is a fresh backtest, so lots
+    re-enter at the fold start and every gain inside a short fold is
+    short-term: per-fold after-tax figures overstate tax drag relative to
+    a continuous run, but compare objectives on equal footing.
     """
 
     fold: int
@@ -239,6 +245,8 @@ class FoldResult:
     test_return_raw: float
     trials_run: int
     objective_value: float = 0.0  # what the fold's search maximized (train window)
+    after_tax_test_return: float | None = None
+    after_tax_test_return_raw: float | None = None
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
@@ -260,6 +268,7 @@ class WalkForwardResult:
     best_params: dict[str, dict[str, float]]  # from last fold (most recent data)
     total_trials: int
     objective: Objective = DEFAULT_OBJECTIVE
+    after_tax_annualized_return: float | None = None  # OOS CAGR after tax; None without a tax config
     mean_max_drawdown: float = 0.0
     mean_sharpe: float = 0.0
     mean_sortino: float = 0.0
@@ -804,6 +813,13 @@ def _aggregate_folds(
     years = (last_test_end - first_test_start).days / DAYS_PER_YEAR
     annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
 
+    after_tax_annualized: float | None = None
+    if all(fold.after_tax_test_return_raw is not None for fold in fold_results):
+        after_tax_compounded = math.prod(1.0 + (fold.after_tax_test_return_raw or 0.0) for fold in fold_results)
+        after_tax_annualized = (
+            after_tax_compounded ** (1.0 / years) - 1.0 if years > 0 and after_tax_compounded > 0 else 0.0
+        )
+
     winning_folds = sum(1 for ret in test_returns if ret > 0)
     best_fold = max(test_returns)
     worst_fold = min(test_returns)
@@ -824,6 +840,8 @@ def _aggregate_folds(
     log("")
     log("Walk-forward complete")
     log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
+    if after_tax_annualized is not None:
+        log(f"  Annualized OOS return after tax: {after_tax_annualized:.2%}")
     log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
     log(f"  Winning folds: {winning_folds}/{num_folds} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
     log(f"  Efficiency ratio: {efficiency:.0%}")
@@ -841,6 +859,7 @@ def _aggregate_folds(
         best_params=fold_results[-1].best_params,
         total_trials=sum(fold.trials_run for fold in fold_results),
         objective=objective,
+        after_tax_annualized_return=round(after_tax_annualized, 4) if after_tax_annualized is not None else None,
         mean_max_drawdown=round(mean_dd, 4),
         mean_sharpe=round(mean_sharpe, 4),
         mean_sortino=round(mean_sortino, 4),
@@ -961,6 +980,8 @@ def walk_forward_optimize(
             test_days = (fold_test_end - fold_test_start).days
             train_ann = compute_annualized_return(train_return_raw, train_days)
             test_ann = compute_annualized_return(test_twr, test_days)
+            after_tax_raw = test_result.after_tax_twr
+            after_tax_ann = compute_annualized_return(after_tax_raw, test_days) if after_tax_raw is not None else None
 
             log(f"  Result — train: {train_ann:.2%} annualized | out-of-sample: {test_ann:.2%} annualized")
 
@@ -978,6 +999,8 @@ def walk_forward_optimize(
                     test_return_raw=round(test_twr, 4),
                     trials_run=len(study.trials),
                     objective_value=round(objective_value, 4),
+                    after_tax_test_return=round(after_tax_ann, 4) if after_tax_ann is not None else None,
+                    after_tax_test_return_raw=round(after_tax_raw, 4) if after_tax_raw is not None else None,
                     max_drawdown=round(test_result.max_drawdown, 4),
                     sharpe_ratio=round(test_result.sharpe_ratio, 4),
                     sortino_ratio=round(test_result.sortino_ratio, 4),

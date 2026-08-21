@@ -57,7 +57,13 @@ with a `# optimized with --objective …` comment recording the choice.
   prompt when the portfolio file is silent on tax).
 
 Train/test returns and the efficiency ratio stay return-based under every
-objective, so they remain comparable across runs.
+objective, so they remain comparable across runs. When the portfolio has a
+`tax:` block, the walk-forward report adds an after-tax OOS column and an
+after-tax OOS CAGR so `net` can be judged on its own terms — with one
+caveat: each fold is a fresh backtest, so lots re-enter at the fold start
+and every gain inside a short fold is short-term. Per-fold after-tax
+figures overstate tax drag relative to a continuous run; compare
+objectives against each other, not against the continuous backtest.
 
 ## backtest
 

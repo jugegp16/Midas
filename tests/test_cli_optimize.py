@@ -83,3 +83,12 @@ def test_walk_forward_honors_objective(tmp_path: Path, fake_prices: None) -> Non
     result, out = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "20", "--objective", "gross")
     assert result.exit_code == 0, result.output
     assert out.read_text().splitlines()[0] == "# optimized with --objective gross"
+
+
+def test_walk_forward_report_shows_after_tax_oos_only_when_taxed(tmp_path: Path, fake_prices: None) -> None:
+    taxed, _ = _invoke(tmp_path, PORTFOLIO_TAXED, "--walk-forward", "-n", "20", "--objective", "gross")
+    assert taxed.exit_code == 0, taxed.output
+    assert "After-Tax" in taxed.output
+    untaxed, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "20", "--objective", "gross")
+    assert untaxed.exit_code == 0, untaxed.output
+    assert "After-Tax" not in untaxed.output

@@ -247,3 +247,49 @@ def test_degenerate_taxed_trial_scores_zero_under_net_instead_of_aborting() -> N
         tax_config=empty.tax_config,
     )
     assert score_trial(metrics, "net") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward carries after-tax OOS figures so `net` can be judged on its own terms.
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_reports_after_tax_oos_per_fold_when_taxed() -> None:
+    portfolio, price_data, start, end = _make_data(tax_config=TaxConfig())
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+        objective="gross",
+        tax_config=portfolio.tax_config,
+    )
+    assert result.after_tax_annualized_return is not None
+    for fold in result.folds:
+        assert fold.after_tax_test_return is not None
+        _, test_result = _run_trial(
+            fold.best_params,
+            portfolio,
+            price_data,
+            fold.test_start,
+            fold.test_end,
+            enable_split=False,
+            tax_config=portfolio.tax_config,
+        )
+        assert fold.after_tax_test_return_raw == pytest.approx(test_result.after_tax_twr, abs=1e-4)
+
+
+def test_walk_forward_after_tax_oos_is_absent_without_tax() -> None:
+    portfolio, price_data, start, end = _make_data()
+    result = walk_forward_optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+    )
+    assert result.after_tax_annualized_return is None
+    assert all(fold.after_tax_test_return is None for fold in result.folds)

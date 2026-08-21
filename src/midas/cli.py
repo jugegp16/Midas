@@ -864,17 +864,26 @@ def _print_fold_table(folds: Sequence[FoldResult]) -> None:
     fold_table.add_column("OOS Period")
     fold_table.add_column("IS Return (Annualized)", justify="right")
     fold_table.add_column("OOS Return (Annualized)", justify="right")
+    taxed = any(fold.after_tax_test_return is not None for fold in folds)
+    if taxed:
+        fold_table.add_column("OOS After-Tax (Annualized)", justify="right")
     fold_table.add_column("Max DD", justify="right")
     fold_table.add_column("Sharpe", justify="right")
     fold_table.add_column("Sortino", justify="right")
     fold_table.add_column("Win Rate", justify="right")
     for fold in folds:
+        after_tax = (
+            [color_signed(fold.after_tax_test_return) if fold.after_tax_test_return is not None else "—"]
+            if taxed
+            else []
+        )
         fold_table.add_row(
             str(fold.fold),
             f"{fold.train_start} → {fold.train_end}",
             f"{fold.test_start} → {fold.test_end}",
             color_signed(fold.train_return),
             color_signed(fold.test_return),
+            *after_tax,
             f"[red]{fold.max_drawdown:.2%}[/red]",
             color_signed(fold.sharpe_ratio, fmt=".2f"),
             color_signed(fold.sortino_ratio, fmt=".2f"),
@@ -903,6 +912,8 @@ def _print_wf_aggregate(wf_result: WalkForwardResult) -> None:
     n_folds = len(wf_result.folds)
     agg = make_metric_table("Walk-Forward Aggregate")
     agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
+    if wf_result.after_tax_annualized_return is not None:
+        agg.add_row("Annualized OOS Return After-Tax", color_signed(wf_result.after_tax_annualized_return))
     agg.add_row(
         "Per-Fold OOS Mean ± Std (Annualized)",
         f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
