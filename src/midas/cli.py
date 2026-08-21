@@ -947,7 +947,7 @@ def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> Non
 
 def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str) -> None:
     """Render the single-run optimization console report."""
-    from midas.optimizer import ALLOCATION_KEY
+    from midas.optimizer import ALLOCATION_KEY, format_objective
 
     console.print()
 
@@ -955,9 +955,7 @@ def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str
     assert result.best_result is not None
     print_backtest_summary(result.best_result)
 
-    best = (
-        f"{result.best_objective_value:.2f}" if result.objective == "sharpe" else f"{result.best_objective_value:.2%}"
-    )
+    best = format_objective(result.best_objective_value, result.objective)
     print_run_info(
         [
             ("Objective", f"{result.objective} (best in-sample: {best})"),

@@ -174,6 +174,14 @@ class TrialMetrics:
 def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
     """Pick the scalar Optuna maximizes for *objective*.
 
+    Args:
+        metrics: In-sample metrics from one trial backtest.
+        objective: ``gross`` (raw TWR), ``sharpe`` (annualized Sharpe), or
+            ``net`` (TWR after tax).
+
+    Returns:
+        The value to maximize; higher is better for every objective.
+
     Raises:
         ValueError: On an unknown objective, or ``net`` without tax accounting.
     """
@@ -367,15 +375,24 @@ def _run_trial(
     )
     result = engine.run(portfolio, price_data, start, end)
 
+    # ``after_tax_twr`` is None for two unrelated reasons: accounting is off
+    # (no tax config) or the run was degenerate (nothing to invest, empty
+    # curve). Only the first is a configuration error ``score_trial`` should
+    # raise on; a degenerate trial scores 0.0 under ``net`` exactly as it
+    # does under ``gross``/``sharpe`` instead of aborting the whole study.
+    after_tax_twr: float | None = None
+    if tax_config is not None:
+        after_tax_twr = result.after_tax_twr if result.after_tax_twr is not None else 0.0
+
     if result.starting_value <= 0:
-        return TrialMetrics(twr=0.0, bh_return=0.0, sharpe_ratio=0.0, after_tax_twr=None), result
+        return TrialMetrics(twr=0.0, bh_return=0.0, sharpe_ratio=0.0, after_tax_twr=after_tax_twr), result
 
     bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
     metrics = TrialMetrics(
         twr=result.twr if result.twr is not None else 0.0,
         bh_return=bh_return,
         sharpe_ratio=result.sharpe_ratio,
-        after_tax_twr=result.after_tax_twr,
+        after_tax_twr=after_tax_twr,
     )
     return metrics, result
 
@@ -395,14 +412,32 @@ def train_window_end(trading_days: list[date], train_pct: float) -> date:
     counts days strictly before it as training, so a trial run on
     ``[start, train_window_end]`` with no internal split sees exactly the
     in-sample days of a full-range split run — and nothing from the test side.
+
+    Args:
+        trading_days: Sorted union of trading days over the full range.
+        train_pct: Fraction of days reserved for training, in ``(0, 1]``.
+
+    Returns:
+        The last training day. ``train_pct=1.0`` means the whole range.
+
+    Raises:
+        ValueError: On no trading days, or a ``train_pct`` so small that the
+            split leaves no training days — without this guard the index
+            would wrap to the last day and score every trial on the full range.
     """
+    if not trading_days:
+        msg = "No trading days in the requested range"
+        raise ValueError(msg)
     split_idx = int(len(trading_days) * train_pct)
+    if split_idx == 0:
+        msg = f"train_pct {train_pct} leaves no training days in {len(trading_days)} trading days"
+        raise ValueError(msg)
     if split_idx >= len(trading_days):
         return trading_days[-1]
     return trading_days[split_idx - 1]
 
 
-def _format_objective(value: float, objective: Objective) -> str:
+def format_objective(value: float, objective: Objective) -> str:
     """Render an objective value for logs: ratios as decimals, returns as percents."""
     return f"{value:.2f}" if objective == "sharpe" else f"{value:.2%}"
 
@@ -638,7 +673,7 @@ def optimize(
             trials_done += 1
             if trials_done % 25 == 0 or trials_done == n_trials:
                 pct = trials_done * 100 // n_trials
-                best = _format_objective(study.best_value, objective)
+                best = format_objective(study.best_value, objective)
                 log(f"  [{pct:3d}%] {trials_done}/{n_trials} trials — best {objective}: {best}")
 
         return score_trial(metrics, objective)
@@ -652,7 +687,7 @@ def optimize(
     best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
 
     best_value = best.value or 0.0
-    log(f"Optimization complete — best {objective}: {_format_objective(best_value, objective)}")
+    log(f"Optimization complete — best {objective}: {format_objective(best_value, objective)}")
 
     # Re-run best params over the full range with the split in the main
     # process: the report wants train/test on one continuous equity curve,
@@ -739,7 +774,7 @@ def _make_wf_objective(
             counter[0] += 1
             if counter[0] % 25 == 0 or counter[0] == fold_trials:
                 pct = counter[0] * 100 // fold_trials
-                best = _format_objective(study.best_value, objective)
+                best = format_objective(study.best_value, objective)
                 log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best {objective}: {best}")
         return score_trial(metrics, objective)
 

@@ -215,3 +215,35 @@ def test_write_strategies_yaml_records_objective(tmp_path: Path) -> None:
     text = out.read_text()
     assert text.splitlines()[0] == "# optimized with --objective net"
     assert "objective" not in yaml.safe_load(text)
+
+
+def test_train_window_end_rejects_a_split_with_no_training_days() -> None:
+    """A tiny train_pct would wrap to trading_days[-1] and score trials on the full range."""
+    days = [date(2024, 1, 1) + pd.Timedelta(days=i).to_pytimedelta() for i in range(10)]
+    with pytest.raises(ValueError, match="no training days"):
+        train_window_end(days, 0.01)
+
+
+def test_train_window_end_rejects_empty_trading_days() -> None:
+    with pytest.raises(ValueError, match="trading days"):
+        train_window_end([], 0.7)
+
+
+def test_degenerate_taxed_trial_scores_zero_under_net_instead_of_aborting() -> None:
+    """A trial with nothing to invest must score 0.0 like gross/sharpe do, not kill the study."""
+    portfolio, price_data, start, end = _make_data(tax_config=TaxConfig())
+    empty = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=0, cost_basis=100.0)],
+        available_cash=0.0,
+        tax_config=portfolio.tax_config,
+    )
+    metrics, _ = _run_trial(
+        {"MeanReversion": {"window": 20, "threshold": 0.05, "_weight": 1.0}},
+        empty,
+        price_data,
+        start,
+        end,
+        enable_split=False,
+        tax_config=empty.tax_config,
+    )
+    assert score_trial(metrics, "net") == 0.0
