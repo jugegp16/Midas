@@ -11,7 +11,7 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, get_args
 
 import optuna
 import pandas as pd
@@ -22,10 +22,14 @@ from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
 from midas.metrics import DAYS_PER_YEAR, compute_annualized_return
 from midas.models import (
     DEFAULT_MIN_CASH_PCT,
+    DEFAULT_OBJECTIVE,
     AllocationConstraints,
     ForecastScaling,
+    Objective,
     PortfolioConfig,
     RiskConfig,
+    TaxConfig,
+    objective_error,
 )
 from midas.order_sizer import OrderSizer
 from midas.results import BacktestResult
@@ -151,12 +155,60 @@ WF_MIN_TRAIN_PCT = 0.60
 WF_MIN_TEST_DAYS = 63
 
 
+@dataclass(frozen=True)
+class TrialMetrics:
+    """In-sample metrics from one trial backtest, scored by :func:`score_trial`.
+
+    Every field is measured over the training window only — the worker runs
+    the trial on ``[start, train_end]`` with no internal split, so nothing
+    here has seen the test period. ``after_tax_twr`` is ``None`` when the
+    portfolio has no tax config.
+    """
+
+    twr: float
+    bh_return: float
+    sharpe_ratio: float
+    after_tax_twr: float | None
+
+
+def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
+    """Pick the scalar Optuna maximizes for *objective*.
+
+    Args:
+        metrics: In-sample metrics from one trial backtest.
+        objective: ``gross`` (raw TWR), ``sharpe`` (annualized Sharpe), or
+            ``net`` (TWR after tax).
+
+    Returns:
+        The value to maximize; higher is better for every objective.
+
+    Raises:
+        ValueError: On an unknown objective, or ``net`` without tax accounting.
+    """
+    if objective == "gross":
+        return metrics.twr
+    if objective == "sharpe":
+        return metrics.sharpe_ratio
+    if objective == "net":
+        if metrics.after_tax_twr is None:
+            msg = "objective 'net' requires a tax: block in the portfolio YAML (after-tax accounting is off)"
+            raise ValueError(msg)
+        return metrics.after_tax_twr
+    raise ValueError(objective_error(objective))
+
+
 @dataclass
 class OptimizeResult:
-    """Best parameters and headline returns from a single optimisation run."""
+    """Best parameters and headline figures from a single optimisation run.
+
+    ``best_objective_value`` is whatever *objective* maximized (a return for
+    ``gross``/``net``, a ratio for ``sharpe``); ``best_train_return`` is always
+    the in-sample TWR so the train/test comparison stays return-based.
+    """
 
     best_params: dict[str, dict[str, float]]
-    best_return: float
+    objective: Objective
+    best_objective_value: float
     best_bh_return: float
     best_train_return: float
     best_test_return: float
@@ -173,6 +225,12 @@ class FoldResult:
     ``test_return_raw`` are the raw (un-annualized) TWR over the fold's own
     window — used by the overall-CAGR compounding loop, which must not
     double-annualize.
+
+    The ``after_tax_*`` pair mirrors the test-return pair when the portfolio
+    has a tax config, else ``None``. Each fold is a fresh backtest, so lots
+    re-enter at the fold start and every gain inside a short fold is
+    short-term: per-fold after-tax figures overstate tax drag relative to
+    a continuous run, but compare objectives on equal footing.
     """
 
     fold: int
@@ -186,6 +244,9 @@ class FoldResult:
     train_return_raw: float
     test_return_raw: float
     trials_run: int
+    objective_value: float = 0.0  # what the fold's search maximized (train window)
+    after_tax_test_return: float | None = None
+    after_tax_test_return_raw: float | None = None
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
@@ -206,6 +267,8 @@ class WalkForwardResult:
     efficiency_ratio: float  # mean OOS return / mean train return
     best_params: dict[str, dict[str, float]]  # from last fold (most recent data)
     total_trials: int
+    objective: Objective = DEFAULT_OBJECTIVE
+    after_tax_annualized_return: float | None = None  # OOS CAGR after tax; None without a tax config
     mean_max_drawdown: float = 0.0
     mean_sharpe: float = 0.0
     mean_sortino: float = 0.0
@@ -287,10 +350,13 @@ def _run_trial(
     enable_split: bool = True,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
-) -> tuple[float, float, float, float, float, BacktestResult]:
+    tax_config: TaxConfig | None = None,
+) -> tuple[TrialMetrics, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
-    Returns (total_return, bh_return, train_return, test_return, twr, result).
+    Returns the scoring metrics alongside the full result. Callers that want
+    in-sample-only metrics must pass a train-only window with
+    ``enable_split=False``; the metrics cover whatever window was run.
     """
     # Extract global allocation knobs
     global_params = strategy_params.get(ALLOCATION_KEY, {})
@@ -314,15 +380,88 @@ def _run_trial(
         constraints=constraints,
         train_pct=train_pct,
         enable_split=enable_split,
+        tax_config=tax_config,
     )
     result = engine.run(portfolio, price_data, start, end)
 
-    if result.starting_value <= 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, result
+    # ``after_tax_twr`` is None for two unrelated reasons: accounting is off
+    # (no tax config) or the run was degenerate (nothing to invest, empty
+    # curve). Only the first is a configuration error ``score_trial`` should
+    # raise on; a degenerate trial scores 0.0 under ``net`` exactly as it
+    # does under ``gross``/``sharpe`` instead of aborting the whole study.
+    after_tax_twr: float | None = None
+    if tax_config is not None:
+        after_tax_twr = result.after_tax_twr if result.after_tax_twr is not None else 0.0
 
-    total_return = (result.final_value - result.starting_value) / result.starting_value
+    if result.starting_value <= 0:
+        return TrialMetrics(twr=0.0, bh_return=0.0, sharpe_ratio=0.0, after_tax_twr=after_tax_twr), result
+
     bh_return = (result.buy_and_hold_value - result.starting_value) / result.starting_value
-    return total_return, bh_return, result.train_return, result.test_return, result.twr, result
+    metrics = TrialMetrics(
+        twr=result.twr if result.twr is not None else 0.0,
+        bh_return=bh_return,
+        sharpe_ratio=result.sharpe_ratio,
+        after_tax_twr=after_tax_twr,
+    )
+    return metrics, result
+
+
+def _trading_days(price_data: dict[str, pd.DataFrame], start: date, end: date) -> list[date]:
+    """Sorted union of trading days across all tickers within ``[start, end]``."""
+    all_dates: set[date] = set()
+    for df in price_data.values():
+        all_dates.update(dt for dt in df.index if start <= dt <= end)
+    return sorted(all_dates)
+
+
+def train_window_end(trading_days: list[date], train_pct: float) -> date:
+    """Last trading day of the training window, mirroring the engine's split.
+
+    The engine places the split at ``trading_days[int(n * train_pct)]`` and
+    counts days strictly before it as training, so a trial run on
+    ``[start, train_window_end]`` with no internal split sees exactly the
+    in-sample days of a full-range split run — and nothing from the test side.
+
+    Args:
+        trading_days: Sorted union of trading days over the full range.
+        train_pct: Fraction of days reserved for training, in ``(0, 1]``.
+
+    Returns:
+        The last training day. ``train_pct=1.0`` means the whole range.
+
+    Raises:
+        ValueError: On no trading days, or a ``train_pct`` so small that the
+            split leaves no training days — without this guard the index
+            would wrap to the last day and score every trial on the full range.
+    """
+    if not trading_days:
+        msg = "No trading days in the requested range"
+        raise ValueError(msg)
+    split_idx = int(len(trading_days) * train_pct)
+    if split_idx == 0:
+        msg = f"train_pct {train_pct} leaves no training days in {len(trading_days)} trading days"
+        raise ValueError(msg)
+    if split_idx >= len(trading_days):
+        return trading_days[-1]
+    return trading_days[split_idx - 1]
+
+
+def format_objective(value: float, objective: Objective) -> str:
+    """Render an objective value for logs: ratios as decimals, returns as percents."""
+    return f"{value:.2f}" if objective == "sharpe" else f"{value:.2%}"
+
+
+def _require_tax_for_net(objective: Objective, tax_config: TaxConfig | None) -> None:
+    """Fail before any work starts when ``net`` has nothing to tax.
+
+    Raises:
+        ValueError: On an unknown objective, or ``net`` without a tax config.
+    """
+    if objective not in get_args(Objective.__value__):
+        raise ValueError(objective_error(objective))
+    if objective == "net" and tax_config is None:
+        msg = "objective 'net' requires a tax: block in the portfolio YAML (after-tax accounting is off)"
+        raise ValueError(msg)
 
 
 worker_state: dict[str, Any] = {}
@@ -332,14 +471,13 @@ def _init_worker(
     portfolio: PortfolioConfig,
     price_data: dict[str, pd.DataFrame],
     start: date,
-    end: date,
+    train_end: date,
     min_cash_pct: float,
-    train_pct: float,
-    enable_split: bool = True,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
+    tax_config: TaxConfig | None = None,
 ) -> None:
-    """Initialise standard-optimizer workers with the full trial state."""
+    """Initialise standard-optimizer workers with the train-window trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
     # explores boundary values that trigger heuristic warnings but are fine
     # to evaluate. Scoped to the worker process so the main-process final
@@ -351,19 +489,19 @@ def _init_worker(
         portfolio=portfolio,
         price_data=price_data,
         start=start,
-        end=end,
+        end=train_end,
         min_cash_pct=min_cash_pct,
-        train_pct=train_pct,
-        enable_split=enable_split,
+        enable_split=False,
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
+        tax_config=tax_config,
     )
 
 
-def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> tuple[float, ...]:
+def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> TrialMetrics:
     """Evaluate one trial in a worker process, dropping the unpicklable result."""
-    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(strategy_params, **worker_state)
-    return total_ret, bh_ret, train_ret, test_ret, twr
+    metrics, _result = _run_trial(strategy_params, **worker_state)
+    return metrics
 
 
 def _wf_init_worker(
@@ -372,6 +510,7 @@ def _wf_init_worker(
     min_cash_pct: float,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
+    tax_config: TaxConfig | None = None,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -381,6 +520,7 @@ def _wf_init_worker(
         min_cash_pct=min_cash_pct,
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
+        tax_config=tax_config,
     )
 
 
@@ -388,9 +528,9 @@ def _wf_trial_worker(
     strategy_params: dict[str, dict[str, float]],
     start: date,
     end: date,
-) -> tuple[float, ...]:
+) -> TrialMetrics:
     """Evaluate one walk-forward trial over the given window in a worker process."""
-    total_ret, bh_ret, train_ret, test_ret, twr, _result = _run_trial(
+    metrics, _result = _run_trial(
         strategy_params,
         worker_state["portfolio"],
         worker_state["price_data"],
@@ -400,8 +540,9 @@ def _wf_trial_worker(
         enable_split=False,
         risk_config=worker_state.get("risk_config"),
         forecast_scaling=worker_state.get("forecast_scaling", "none"),
+        tax_config=worker_state.get("tax_config"),
     )
-    return total_ret, bh_ret, train_ret, test_ret, twr
+    return metrics
 
 
 def max_warmup_for_search(
@@ -478,22 +619,33 @@ def optimize(
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
+    objective: Objective = DEFAULT_OBJECTIVE,
+    tax_config: TaxConfig | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
     Runs *n_trials* Optuna trials (default 200).  Each trial samples a
     parameter combination via the Tree-structured Parzen Estimator and
-    evaluates it with a full backtest.  Backtests are executed in a worker
-    pool to utilise multiple CPU cores.
+    evaluates it with a backtest over the training window only — the first
+    *train_pct* of trading days — so the objective never sees the test
+    period.  Backtests are executed in a worker pool to utilise multiple
+    CPU cores.  The best parameters are then re-run over the full range with
+    the train/test split for reporting.
+
+    Raises:
+        ValueError: On an unknown objective, or ``net`` without a tax config.
     """
     log = log_fn or (lambda _: None)
+    _require_tax_for_net(objective, tax_config)
 
     names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
+    train_end = train_window_end(_trading_days(price_data, start, end), train_pct)
 
     max_workers = _pool_workers(n_trials)
 
     strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Optimizing {len(strat_names)} strategies over {start} to {end}")
+    log(f"  objective: {objective} | train window: {start} → {train_end}")
     log(f"  {n_trials} trials across {max_workers} workers")
 
     # Suppress Optuna's default logging (we provide our own via log_fn).
@@ -508,49 +660,48 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, end, min_cash_pct, train_pct, True, risk_config, forecast_scaling),
+        initargs=(portfolio, price_data, start, train_end, min_cash_pct, risk_config, forecast_scaling, tax_config),
     )
 
     trials_done = 0
     progress_lock = threading.Lock()
 
-    def objective(trial: optuna.Trial) -> float:
+    def trial_objective(trial: optuna.Trial) -> float:
         nonlocal trials_done
 
         strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
 
-        _total_ret, bh_ret, train_ret, test_ret, _twr = pool.submit(
-            _trial_worker,
-            strategy_params,
-        ).result()
+        metrics = pool.submit(_trial_worker, strategy_params).result()
 
         # Store auxiliary metrics as user attributes for later retrieval.
-        trial.set_user_attr("bh_return", bh_ret)
-        trial.set_user_attr("train_return", train_ret)
-        trial.set_user_attr("test_return", test_ret)
+        trial.set_user_attr("bh_return", metrics.bh_return)
+        trial.set_user_attr("train_return", metrics.twr)
         trial.set_user_attr("params", strategy_params)
 
         with progress_lock:
             trials_done += 1
             if trials_done % 25 == 0 or trials_done == n_trials:
                 pct = trials_done * 100 // n_trials
-                log(f"  [{pct:3d}%] {trials_done}/{n_trials} trials — best return: {study.best_value:.2%}")
+                best = format_objective(study.best_value, objective)
+                log(f"  [{pct:3d}%] {trials_done}/{n_trials} trials — best {objective}: {best}")
 
-        return train_ret
+        return score_trial(metrics, objective)
 
     try:
-        study.optimize(objective, n_trials=n_trials, n_jobs=max_workers)
+        study.optimize(trial_objective, n_trials=n_trials, n_jobs=max_workers)
     finally:
         pool.shutdown(wait=True)
 
     best = study.best_trial
     best_params: dict[str, dict[str, float]] = best.user_attrs["params"]
 
-    log(f"Optimization complete — best train return: {best.value:.2%}")
+    best_value = best.value or 0.0
+    log(f"Optimization complete — best {objective}: {format_objective(best_value, objective)}")
 
-    # Re-run best params in the main process to capture the full BacktestResult
-    # (risk/trade metrics aren't serialised through the worker pool).
-    _total, _bh, _train, _test, _twr, best_result = _run_trial(
+    # Re-run best params over the full range with the split in the main
+    # process: the report wants train/test on one continuous equity curve,
+    # and risk/trade metrics aren't serialised through the worker pool.
+    _metrics, best_result = _run_trial(
         best_params,
         portfolio,
         price_data,
@@ -560,6 +711,7 @@ def optimize(
         train_pct=train_pct,
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
+        tax_config=tax_config,
     )
 
     log(
@@ -570,10 +722,11 @@ def optimize(
 
     return OptimizeResult(
         best_params=best_params,
-        best_return=round(best.value or 0.0, 4),
+        objective=objective,
+        best_objective_value=round(best_value, 4),
         best_bh_return=round(best.user_attrs["bh_return"], 4),
         best_train_return=round(best.user_attrs["train_return"], 4),
-        best_test_return=round(best.user_attrs["test_return"], 4),
+        best_test_return=round(best_result.test_return, 4),
         trials_run=len(study.trials),
         best_result=best_result,
     )
@@ -614,32 +767,34 @@ def _make_wf_objective(
     fold_trials: int,
     train_start: date,
     train_end: date,
+    objective: Objective,
     log: Callable[[str], None],
 ) -> Callable[[optuna.Trial], float]:
-    """Build the Optuna objective for one walk-forward fold (train-window TWR)."""
+    """Build the Optuna objective for one walk-forward fold (scored on the train window)."""
     counter = [0]
     lock = threading.Lock()
 
-    def objective(trial: optuna.Trial) -> float:
+    def fold_objective(trial: optuna.Trial) -> float:
         strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
-        _total_ret, _bh, _train, _test, twr = pool.submit(
-            _wf_trial_worker,
-            strategy_params,
-            train_start,
-            train_end,
-        ).result()
+        metrics = pool.submit(_wf_trial_worker, strategy_params, train_start, train_end).result()
         trial.set_user_attr("params", strategy_params)
+        trial.set_user_attr("train_return", metrics.twr)
         with lock:
             counter[0] += 1
             if counter[0] % 25 == 0 or counter[0] == fold_trials:
                 pct = counter[0] * 100 // fold_trials
-                log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best: {study.best_value:.2%}")
-        return twr
+                best = format_objective(study.best_value, objective)
+                log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best {objective}: {best}")
+        return score_trial(metrics, objective)
 
-    return objective
+    return fold_objective
 
 
-def _aggregate_folds(fold_results: list[FoldResult], log: Callable[[str], None]) -> WalkForwardResult:
+def _aggregate_folds(
+    fold_results: list[FoldResult],
+    objective: Objective,
+    log: Callable[[str], None],
+) -> WalkForwardResult:
     """Aggregate per-fold results into a WalkForwardResult and log the summary."""
     # Per-fold test returns are already annualized, so aggregates (mean, std,
     # best/worst) compare folds of different lengths apples-to-apples.
@@ -657,6 +812,13 @@ def _aggregate_folds(fold_results: list[FoldResult], log: Callable[[str], None])
     last_test_end = fold_results[-1].test_end
     years = (last_test_end - first_test_start).days / DAYS_PER_YEAR
     annualized = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
+
+    after_tax_annualized: float | None = None
+    if all(fold.after_tax_test_return_raw is not None for fold in fold_results):
+        after_tax_compounded = math.prod(1.0 + (fold.after_tax_test_return_raw or 0.0) for fold in fold_results)
+        after_tax_annualized = (
+            after_tax_compounded ** (1.0 / years) - 1.0 if years > 0 and after_tax_compounded > 0 else 0.0
+        )
 
     winning_folds = sum(1 for ret in test_returns if ret > 0)
     best_fold = max(test_returns)
@@ -678,6 +840,8 @@ def _aggregate_folds(fold_results: list[FoldResult], log: Callable[[str], None])
     log("")
     log("Walk-forward complete")
     log(f"  Annualized OOS return (CAGR): {annualized:.2%}")
+    if after_tax_annualized is not None:
+        log(f"  Annualized OOS return after tax: {after_tax_annualized:.2%}")
     log(f"  Per-fold mean: {mean_test:.2%} ± {std_test:.2%}")
     log(f"  Winning folds: {winning_folds}/{num_folds} | Best: {best_fold:.2%} | Worst: {worst_fold:.2%}")
     log(f"  Efficiency ratio: {efficiency:.0%}")
@@ -694,6 +858,8 @@ def _aggregate_folds(fold_results: list[FoldResult], log: Callable[[str], None])
         efficiency_ratio=round(efficiency, 4),
         best_params=fold_results[-1].best_params,
         total_trials=sum(fold.trials_run for fold in fold_results),
+        objective=objective,
+        after_tax_annualized_return=round(after_tax_annualized, 4) if after_tax_annualized is not None else None,
         mean_max_drawdown=round(mean_dd, 4),
         mean_sharpe=round(mean_sharpe, 4),
         mean_sortino=round(mean_sortino, 4),
@@ -714,24 +880,26 @@ def walk_forward_optimize(
     log_fn: Callable[[str], None] | None = None,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
+    objective: Objective = DEFAULT_OBJECTIVE,
+    tax_config: TaxConfig | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
     Reserves *min_train_pct* of trading days as the minimum training window,
     then carves the remainder into test windows of *min_test_days* each.
     Each fold grows the training window while the test window slides forward.
-    Parameters are re-optimised per fold so every test period is genuinely
-    out-of-sample.
+    Parameters are re-optimised per fold (scored by *objective* on the
+    fold's training window) so every test period is genuinely out-of-sample.
+
+    Raises:
+        ValueError: On an unknown objective, ``net`` without a tax config, or
+            too few trading days for two test folds.
     """
     log = log_fn or (lambda _: None)
+    _require_tax_for_net(objective, tax_config)
 
     names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
-
-    # Collect trading days across all tickers.
-    all_dates: set[date] = set()
-    for df in price_data.values():
-        all_dates.update(dt for dt in df.index if start <= dt <= end)
-    trading_days = sorted(all_dates)
+    trading_days = _trading_days(price_data, start, end)
 
     fold_boundaries = _fold_boundaries(len(trading_days), min_train_pct, min_test_days)
     n_folds = len(fold_boundaries) - 1
@@ -742,6 +910,7 @@ def walk_forward_optimize(
 
     strat_names = [name for name in names if name != ALLOCATION_KEY]
     log(f"Walk-forward optimization — {len(strat_names)} strategies, {start} to {end}")
+    log(f"  objective: {objective}")
     log(f"  {n_folds} folds, ~{test_size} trading days per test window, {trials_per_fold} trials/fold")
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -753,7 +922,7 @@ def walk_forward_optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_wf_init_worker,
-        initargs=(portfolio, price_data, min_cash_pct, risk_config, forecast_scaling),
+        initargs=(portfolio, price_data, min_cash_pct, risk_config, forecast_scaling, tax_config),
     )
 
     try:
@@ -780,17 +949,20 @@ def walk_forward_optimize(
                 study.enqueue_trial(prev_best_flat)
 
             study.optimize(
-                _make_wf_objective(pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end, log),
+                _make_wf_objective(
+                    pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end, objective, log
+                ),
                 n_trials=trials_per_fold,
                 n_jobs=max_workers,
             )
 
             best_params: dict[str, dict[str, float]] = study.best_trial.user_attrs["params"]
-            train_return_raw = study.best_trial.value or 0.0
+            train_return_raw = study.best_trial.user_attrs["train_return"]
+            objective_value = study.best_trial.value or 0.0
             prev_best_flat = dict(study.best_trial.params)
 
             # --- Evaluate best params on test window ---
-            _test_total, _bh, _train, _test, test_twr, test_result = _run_trial(
+            test_metrics, test_result = _run_trial(
                 best_params,
                 portfolio,
                 price_data,
@@ -800,12 +972,16 @@ def walk_forward_optimize(
                 enable_split=False,
                 risk_config=risk_config,
                 forecast_scaling=forecast_scaling,
+                tax_config=tax_config,
             )
+            test_twr = test_metrics.twr
 
             train_days = (fold_train_end - fold_train_start).days
             test_days = (fold_test_end - fold_test_start).days
             train_ann = compute_annualized_return(train_return_raw, train_days)
             test_ann = compute_annualized_return(test_twr, test_days)
+            after_tax_raw = test_result.after_tax_twr
+            after_tax_ann = compute_annualized_return(after_tax_raw, test_days) if after_tax_raw is not None else None
 
             log(f"  Result — train: {train_ann:.2%} annualized | out-of-sample: {test_ann:.2%} annualized")
 
@@ -822,6 +998,9 @@ def walk_forward_optimize(
                     train_return_raw=round(train_return_raw, 4),
                     test_return_raw=round(test_twr, 4),
                     trials_run=len(study.trials),
+                    objective_value=round(objective_value, 4),
+                    after_tax_test_return=round(after_tax_ann, 4) if after_tax_ann is not None else None,
+                    after_tax_test_return_raw=round(after_tax_raw, 4) if after_tax_raw is not None else None,
                     max_drawdown=round(test_result.max_drawdown, 4),
                     sharpe_ratio=round(test_result.sharpe_ratio, 4),
                     sortino_ratio=round(test_result.sortino_ratio, 4),
@@ -831,7 +1010,7 @@ def walk_forward_optimize(
     finally:
         pool.shutdown(wait=True)
 
-    return _aggregate_folds(fold_results, log)
+    return _aggregate_folds(fold_results, objective, log)
 
 
 def write_strategies_yaml(
@@ -840,6 +1019,7 @@ def write_strategies_yaml(
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
+    objective: Objective | None = None,
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
@@ -859,6 +1039,9 @@ def write_strategies_yaml(
             an all-default ``RiskConfig`` is omitted.
         forecast_scaling: Preserved from the user's input config; the default
             ``"none"`` is omitted from the output.
+        objective: When given, recorded as a leading comment so the file says
+            what it was optimized for. A comment, never a key — the loader
+            must not see it as config.
     """
     output: dict[str, object] = {}
 
@@ -899,6 +1082,8 @@ def write_strategies_yaml(
     output["strategies"] = strategies
 
     with open(path, "w") as handle:
+        if objective is not None:
+            handle.write(f"# optimized with --objective {objective}\n")
         yaml.dump(output, handle, default_flow_style=False, sort_keys=False)
 
 

@@ -153,7 +153,7 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointl
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
 
-**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination, runs a full backtest with train/test split, and returns the training return as the optimization objective. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
+**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination and backtests it over the training window only (the first `train_pct` of trading days, no internal split), returning the chosen objective — Sharpe by default, or raw / after-tax time-weighted return — so the search never sees the test period. The best parameters are re-run over the full range with the split for the report. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
 #### Walk-Forward Optimization
 
@@ -190,7 +190,7 @@ Under lagged modes the decision computed on the *final* simulated bar never exec
 
 > **Note on initial cost basis.** The backtest seeds each starting position's cost basis from the *start-day market price*, not the YAML `cost_basis`. The YAML value is the user's real purchase basis (used by the live engine and for display), but using it inside a backtest would let exit rules fire on pre-window gains, distorting strategy performance.
 
-**Train/Test Split** -- By default, the backtest splits the date range 70/30 into training and test periods. Returns are reported separately for each. The optimizer uses train return as its objective and test return to measure how well the parameters generalize to unseen data.
+**Train/Test Split** -- By default, the backtest splits the date range 70/30 into training and test periods. Returns are reported separately for each. The optimizer searches on the training window alone and uses the test return to measure how well the parameters generalize to unseen data.
 
 **Time-Weighted Return** -- TWR accounts for external cash infusions (e.g., biweekly contributions) by breaking the simulation into sub-periods at each infusion point and compounding the sub-period returns. This gives an accurate measure of strategy performance independent of when cash enters the portfolio.
 

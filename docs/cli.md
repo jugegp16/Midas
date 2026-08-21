@@ -33,6 +33,37 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
+| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio) |
+
+### Objectives
+
+Every trial is scored on the **training window only** — the first
+`--train-pct` of trading days in standard mode, each fold's anchored
+train window in walk-forward — so no objective ever sees the test
+period. The best parameters are then re-run over the full range with the
+split for the printed train/test comparison, and the optimized YAML opens
+with a `# optimized with --objective …` comment recording the choice.
+
+- `sharpe` (default): annualized Sharpe of the training equity curve.
+  Raw return rewards the lucky high-variance corner of the parameter
+  space — two big trades beat a consistent, diversified combo with the
+  same total; a risk-adjusted objective generalizes better out of sample.
+- `gross`: raw time-weighted return. The historical objective, kept for
+  comparison and for portfolios where return is genuinely all that matters.
+- `net`: time-weighted return after capital-gains tax, using the
+  portfolio's `tax:` block. A high-turnover strategy that wins gross can
+  lose its edge after short-term gains; `net` lets the search see that.
+  Refuses to start without a `tax:` block (and offers the one-time setup
+  prompt when the portfolio file is silent on tax).
+
+Train/test returns and the efficiency ratio stay return-based under every
+objective, so they remain comparable across runs. When the portfolio has a
+`tax:` block, the walk-forward report adds an after-tax OOS column and an
+after-tax OOS CAGR so `net` can be judged on its own terms — with one
+caveat: each fold is a fresh backtest, so lots re-enter at the fold start
+and every gain inside a short fold is short-term. Per-fold after-tax
+figures overstate tax drag relative to a continuous run; compare
+objectives against each other, not against the continuous backtest.
 
 ## backtest
 
