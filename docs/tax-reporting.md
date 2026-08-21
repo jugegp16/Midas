@@ -130,9 +130,9 @@ supported) to include such sales.
 
 - **No wash-sale detection.** Broker 1099-B handles it; we don't replicate
   broker-specific adjustments.
-- **No tax-aware allocation.** The allocator is and stays tax-blind. See
-  issue #69 for the in-progress follow-up that adds an after-tax objective
-  to the optimizer.
+- **No tax-aware allocation.** The allocator is and stays tax-blind. The
+  optimizer can search on after-tax return (`midas optimize --objective
+  net`), but per-trade decisions never consult the tax config.
 - **FIFO only.** Specific-lot or LIFO accounting is out of scope.
 - **Carryforward loses ST/LT character on rollover.** IRS preserves
   character; we use a single signed scalar. For most operators the

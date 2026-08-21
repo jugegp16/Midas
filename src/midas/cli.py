@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import click
 import pandas as pd
@@ -19,9 +19,11 @@ from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
 from midas.models import (
+    DEFAULT_OBJECTIVE,
     AlertsConfig,
     AllocationConstraints,
     Direction,
+    Objective,
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
@@ -726,6 +728,14 @@ def _validate_optimize_options(
     type=int,
     help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
 )
+@click.option(
+    "--objective",
+    type=click.Choice(get_args(Objective.__value__)),
+    default=DEFAULT_OBJECTIVE,
+    show_default=True,
+    help="What trials maximize on the training window: gross (raw return), sharpe (risk-adjusted), "
+    "net (return after tax; needs a tax: block).",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
@@ -737,6 +747,7 @@ def optimize(
     walk_forward: bool,
     wf_min_train_pct: float | None,
     wf_min_test_days: int | None,
+    objective: Objective,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
     from midas.optimizer import (
@@ -753,6 +764,7 @@ def optimize(
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
 
     port = load_portfolio(Path(portfolio))
+    tax_config = _tax_config_for_objective(port, Path(portfolio), objective)
 
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
@@ -782,6 +794,8 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
         )
         write_strategies_yaml(
             wf_result.best_params,
@@ -789,6 +803,7 @@ def optimize(
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
         )
         _print_walk_forward_report(wf_result, output)
     else:
@@ -804,6 +819,8 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
         )
         write_strategies_yaml(
             result.best_params,
@@ -811,8 +828,31 @@ def optimize(
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
         )
         _print_optimize_report(result, train_pct, output)
+
+
+def _tax_config_for_objective(port: PortfolioConfig, portfolio_path: Path, objective: Objective) -> TaxConfig | None:
+    """Resolve the tax config the optimizer runs with.
+
+    Any declared tax config is passed through so the final report carries
+    after-tax figures under every objective. ``net`` additionally needs one:
+    offer the one-time interactive setup when the file is silent on tax, and
+    fail before any prices are fetched when it still isn't configured.
+
+    Raises:
+        click.ClickException: ``--objective net`` with after-tax accounting off.
+    """
+    if objective != "net":
+        return port.tax_config
+    tax_config = _ensure_tax_config(port, portfolio_path)
+    if tax_config is None:
+        raise click.ClickException(
+            f"--objective net requires a tax: block in {portfolio_path} (after-tax accounting is off). "
+            "Add one, or pick --objective gross|sharpe."
+        )
+    return tax_config
 
 
 def _print_fold_table(folds: Sequence[FoldResult]) -> None:
@@ -891,7 +931,13 @@ def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> Non
     _print_fold_table(wf_result.folds)
     _print_short_fold_note(wf_result.folds)
     _print_wf_aggregate(wf_result)
-    print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
+    print_run_info(
+        [
+            ("Objective", wf_result.objective),
+            ("Total Trials", str(wf_result.total_trials)),
+            ("Output", output),
+        ]
+    )
     print_params_table(
         "Deployed Parameters (from latest fold)",
         wf_result.best_params,
@@ -909,8 +955,12 @@ def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str
     assert result.best_result is not None
     print_backtest_summary(result.best_result)
 
+    best = (
+        f"{result.best_objective_value:.2f}" if result.objective == "sharpe" else f"{result.best_objective_value:.2%}"
+    )
     print_run_info(
         [
+            ("Objective", f"{result.objective} (best in-sample: {best})"),
             ("Trials", str(result.trials_run)),
             ("Train/Test Split", f"{train_pct:.0%} / {1 - train_pct:.0%}" if train_pct < 1.0 else "100% / 0%"),
             ("Output", output),
