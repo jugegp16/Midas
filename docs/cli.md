@@ -33,7 +33,7 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
-| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown) |
+| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
 
 ### Objectives
 
@@ -60,6 +60,19 @@ with a `# optimized with --objective …` comment recording the choice.
   penalizes upside — kinder than `sharpe` to right-skewed strategies whose
   edge lives in a few big winners — but max drawdown is a single worst
   event per window, so it is noisier than a mean/σ ratio.
+- `ulcer`: training return divided by the Ulcer Index — the RMS of
+  drawdown depth across every bar (Martin ratio). Calmar's shape without
+  its single-worst-event noise: long shallow bleeds count, one historical
+  spike does not dominate. Floored at 0.5%.
+- `robust`: the lower-quartile return across 8 contiguous blocks of the
+  training window. A consistency objective rather than a risk ratio: a
+  parameter set that made all its money in one lucky streak scores
+  terribly even if its total return and drawdown look fine.
+
+`ulcer` and `robust` (and the figures they read) are computed on an
+inflow-adjusted return series — cash infusions and deferred position
+activations are stripped out, so deposits are never counted as
+performance and never mask drawdown depth.
 
 Train/test returns and the efficiency ratio stay return-based under every
 objective, so they remain comparable across runs. When the portfolio has a

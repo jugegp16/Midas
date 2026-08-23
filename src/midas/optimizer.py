@@ -6,6 +6,7 @@ import decimal
 import logging
 import math
 import os
+import statistics
 import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -156,6 +157,7 @@ WF_MIN_TEST_DAYS = 63
 
 
 CALMAR_DRAWDOWN_FLOOR = 0.01
+ULCER_FLOOR = 0.005
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,8 @@ class TrialMetrics:
     sharpe_ratio: float
     after_tax_twr: float | None
     max_drawdown: float = 0.0
+    ulcer_index: float = 0.0
+    block_returns: tuple[float, ...] = ()
 
 
 def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
@@ -181,7 +185,9 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
     Args:
         metrics: In-sample metrics from one trial backtest.
         objective: ``gross`` (raw TWR), ``sharpe`` (annualized Sharpe),
-            ``net`` (TWR after tax), or ``calmar`` (TWR over max drawdown).
+            ``net`` (TWR after tax), ``calmar`` (TWR over max drawdown),
+            ``ulcer`` (TWR over Ulcer Index), or ``robust`` (lower-quartile
+            block return).
 
     Returns:
         The value to maximize; higher is better for every objective.
@@ -202,6 +208,14 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
         # Floor the drawdown: a monotonic train window has ~zero drawdown and
         # an unfloored ratio would be inf, dominating every real candidate.
         return metrics.twr / max(metrics.max_drawdown, CALMAR_DRAWDOWN_FLOOR)
+    if objective == "ulcer":
+        # Martin ratio; same floor rationale as calmar.
+        return metrics.twr / max(metrics.ulcer_index, ULCER_FLOOR)
+    if objective == "robust":
+        blocks = metrics.block_returns
+        if len(blocks) >= 2:
+            return statistics.quantiles(blocks, n=4)[0]
+        return blocks[0] if blocks else 0.0
     raise ValueError(objective_error(objective))
 
 
@@ -411,6 +425,8 @@ def _run_trial(
         sharpe_ratio=result.sharpe_ratio,
         after_tax_twr=after_tax_twr,
         max_drawdown=result.max_drawdown,
+        ulcer_index=result.ulcer_index,
+        block_returns=tuple(result.block_returns),
     )
     return metrics, result
 
@@ -457,7 +473,7 @@ def train_window_end(trading_days: list[date], train_pct: float) -> date:
 
 def format_objective(value: float, objective: Objective) -> str:
     """Render an objective value for logs: ratios as decimals, returns as percents."""
-    return f"{value:.2%}" if objective in ("gross", "net") else f"{value:.2f}"
+    return f"{value:.2%}" if objective in ("gross", "net", "robust") else f"{value:.2f}"
 
 
 def _require_tax_for_net(objective: Objective, tax_config: TaxConfig | None) -> None:

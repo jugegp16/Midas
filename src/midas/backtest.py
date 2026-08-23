@@ -17,12 +17,15 @@ from midas.data.price_history import PriceHistory
 from midas.live_state import aggregate_cost_basis, consume_lots_fifo, resolve_purchase_date
 from midas.metrics import (
     compute_annualized_return,
+    compute_block_returns,
     compute_cagr,
+    compute_inflow_adjusted_returns,
     compute_max_drawdown,
     compute_sharpe,
     compute_sortino,
     compute_strategy_stats,
     compute_trade_stats,
+    compute_ulcer_index,
 )
 from midas.models import (
     AllocationConstraints,
@@ -120,6 +123,12 @@ class _Decision:
         )
 
 
+# Contiguous equal blocks the training equity path is split into for the
+# robustness objective: coarse enough that a block is a meaningful stretch,
+# fine enough that one lucky streak cannot carry the score.
+BLOCK_COUNT = 8
+
+
 @dataclass
 class _SimState:
     """Mutable simulation state carried across trading days."""
@@ -153,6 +162,7 @@ class _SimState:
     split_bh_value: float | None = None
     restriction_tracker: RestrictionTracker | None = None
     twr_base_value: float = 0.0  # portfolio value after last cash infusion
+    inflows: dict[date, float] = field(default_factory=dict)  # external capital per day (infusions + activations)
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
@@ -634,6 +644,7 @@ class BacktestEngine:
                 pre_activation_value = state.portfolio_value(_close_prices(current_data))
                 state.close_twr_period(pre_activation_value)
                 state.twr_base_value = pre_activation_value + added_value
+                state.inflows[day] = state.inflows.get(day, 0.0) + added_value
 
                 state.positions[ticker] = shares
                 state.lots[ticker] = [
@@ -712,6 +723,7 @@ class BacktestEngine:
         state.close_twr_period(pre_infusion_value)
         state.cash += infusion.amount
         state.twr_base_value = pre_infusion_value + infusion.amount
+        state.inflows[day] = state.inflows.get(day, 0.0) + infusion.amount
         infusion.advance()
 
     def _update_high_water_marks(
@@ -1107,6 +1119,9 @@ class BacktestEngine:
         max_drawdown = compute_max_drawdown(equity_curve)
         sharpe = compute_sharpe(equity_curve)
         sortino = compute_sortino(equity_curve)
+        adjusted_returns = compute_inflow_adjusted_returns(equity_curve, state.inflows)
+        ulcer = compute_ulcer_index(adjusted_returns)
+        block_returns = compute_block_returns(adjusted_returns, BLOCK_COUNT)
         win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)
         # Annualize both sides of the efficiency ratio so train and test windows
         # of different lengths compare apples-to-apples (matches the walk-forward
@@ -1140,6 +1155,8 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            ulcer_index=round(ulcer, 6),
+            block_returns=[round(block, 6) for block in block_returns],
             total_days=total_days,
             train_days=train_days,
             test_days=test_days,

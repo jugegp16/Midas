@@ -2040,3 +2040,22 @@ def test_vol_contribution_is_time_averaged_not_end_snapshot() -> None:
     assert contributions.get("CRASH", 0.0) > 0.05
     assert contributions.get("KEEP", 0.0) > 0.0
     assert sum(contributions.values()) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_ulcer_and_block_returns_ignore_cash_infusions() -> None:
+    """Deposits are not performance: with flat prices and biweekly infusions the
+    equity climbs on deposits alone — corrected metrics must read it as zero."""
+    from midas.models import CashInfusion
+
+    prices = make_price_series(date(2024, 1, 2), 120, 100.0, [0.0] * 120, name="TEST")
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)],
+        available_cash=1000.0,
+        cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 1, 15), frequency="biweekly"),
+    )
+    engine = _build_engine()
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert result.equity_curve[-1][1] > result.equity_curve[0][1]  # deposits landed
+    assert result.ulcer_index == pytest.approx(0.0, abs=1e-9)
+    for block in result.block_returns:
+        assert block == pytest.approx(0.0, abs=1e-9)

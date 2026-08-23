@@ -26,9 +26,17 @@ def _metrics(
     sharpe: float = 1.5,
     after_tax_twr: float | None = 0.18,
     max_drawdown: float = 0.10,
+    ulcer_index: float = 0.05,
+    block_returns: tuple[float, ...] = (0.02,) * 8,
 ) -> TrialMetrics:
     return TrialMetrics(
-        twr=twr, bh_return=0.1, sharpe_ratio=sharpe, after_tax_twr=after_tax_twr, max_drawdown=max_drawdown
+        twr=twr,
+        bh_return=0.1,
+        sharpe_ratio=sharpe,
+        after_tax_twr=after_tax_twr,
+        max_drawdown=max_drawdown,
+        ulcer_index=ulcer_index,
+        block_returns=block_returns,
     )
 
 
@@ -68,12 +76,12 @@ def test_calmar_of_degenerate_trial_is_zero() -> None:
 
 
 def test_unknown_objective_raises_with_allowed_values() -> None:
-    with pytest.raises(ValueError, match="'gross', 'sharpe', 'net', 'calmar'"):
+    with pytest.raises(ValueError, match="'gross', 'sharpe', 'net', 'calmar', 'ulcer', 'robust'"):
         score_trial(_metrics(), "sortino")  # type: ignore[arg-type]
 
 
 def test_objective_error_lists_allowed_values() -> None:
-    assert "'gross', 'sharpe', 'net', 'calmar'" in objective_error("sortino")
+    assert "'gross', 'sharpe', 'net', 'calmar', 'ulcer', 'robust'" in objective_error("sortino")
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +336,43 @@ def test_run_trial_metrics_carry_max_drawdown() -> None:
         enable_split=False,
     )
     assert metrics.max_drawdown == result.max_drawdown
+
+
+# ---------------------------------------------------------------------------
+# Ulcer (Martin ratio) and block-robustness objectives.
+# ---------------------------------------------------------------------------
+
+
+def test_ulcer_scores_return_over_ulcer_index() -> None:
+    assert score_trial(_metrics(twr=0.30, ulcer_index=0.05), "ulcer") == pytest.approx(6.0)
+
+
+def test_ulcer_floors_index_so_smooth_runs_stay_finite() -> None:
+    assert score_trial(_metrics(twr=0.30, ulcer_index=0.0), "ulcer") == pytest.approx(0.30 / 0.005)
+
+
+def test_robust_scores_lower_quartile_of_block_returns() -> None:
+    blocks = (0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08)
+    import statistics
+
+    expected = statistics.quantiles(blocks, n=4)[0]
+    assert score_trial(_metrics(block_returns=blocks), "robust") == pytest.approx(expected)
+
+
+def test_robust_with_no_blocks_scores_zero() -> None:
+    assert score_trial(_metrics(block_returns=()), "robust") == 0.0
+
+
+def test_run_trial_metrics_carry_ulcer_and_blocks() -> None:
+    portfolio, price_data, start, end = _make_data()
+    metrics, result = _run_trial(
+        {"MeanReversion": {"window": 20, "threshold": 0.05, "_weight": 1.0}},
+        portfolio,
+        price_data,
+        start,
+        end,
+        enable_split=False,
+    )
+    assert metrics.ulcer_index == result.ulcer_index
+    assert metrics.block_returns == tuple(result.block_returns)
+    assert len(result.block_returns) == 8

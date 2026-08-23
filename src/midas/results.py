@@ -63,6 +63,12 @@ class BacktestResult:
     risk_history: RiskHistory | None = None  # per-bar risk telemetry across the run
     bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
     """Per-bar buy-and-hold equity, parallel to ``equity_curve``."""
+
+    ulcer_index: float = 0.0
+    """RMS drawdown depth of the inflow-adjusted equity path (0 = never underwater)."""
+
+    block_returns: list[float] = field(default_factory=list)
+    """Inflow-adjusted returns compounded over up to 8 contiguous equal blocks."""
     after_tax_final_value: float | None = None
     after_tax_total_return: float | None = None
     after_tax_cagr: float | None = None
