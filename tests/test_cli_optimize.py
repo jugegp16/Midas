@@ -46,9 +46,9 @@ def test_help_shows_sharpe_default() -> None:
 
 
 def test_unknown_objective_rejected(tmp_path: Path, fake_prices: None) -> None:
-    result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "calmar")
+    result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "sortino")
     assert result.exit_code == 2
-    assert "calmar" in result.output
+    assert "sortino" in result.output
 
 
 def test_net_without_tax_block_is_clean_error(tmp_path: Path, fake_prices: None) -> None:

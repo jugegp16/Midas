@@ -33,7 +33,7 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
-| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio) |
+| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown) |
 
 ### Objectives
 
@@ -55,6 +55,11 @@ with a `# optimized with --objective …` comment recording the choice.
   lose its edge after short-term gains; `net` lets the search see that.
   Refuses to start without a `tax:` block (and offers the one-time setup
   prompt when the portfolio file is silent on tax).
+- `calmar`: training return divided by max drawdown (floored at 1% so a
+  drawdown-free window stays finite). Return-magnitude-aware and never
+  penalizes upside — kinder than `sharpe` to right-skewed strategies whose
+  edge lives in a few big winners — but max drawdown is a single worst
+  event per window, so it is noisier than a mean/σ ratio.
 
 Train/test returns and the efficiency ratio stay return-based under every
 objective, so they remain comparable across runs. When the portfolio has a

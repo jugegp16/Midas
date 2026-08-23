@@ -155,6 +155,9 @@ WF_MIN_TRAIN_PCT = 0.60
 WF_MIN_TEST_DAYS = 63
 
 
+CALMAR_DRAWDOWN_FLOOR = 0.01
+
+
 @dataclass(frozen=True)
 class TrialMetrics:
     """In-sample metrics from one trial backtest, scored by :func:`score_trial`.
@@ -169,6 +172,7 @@ class TrialMetrics:
     bh_return: float
     sharpe_ratio: float
     after_tax_twr: float | None
+    max_drawdown: float = 0.0
 
 
 def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
@@ -176,8 +180,8 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
 
     Args:
         metrics: In-sample metrics from one trial backtest.
-        objective: ``gross`` (raw TWR), ``sharpe`` (annualized Sharpe), or
-            ``net`` (TWR after tax).
+        objective: ``gross`` (raw TWR), ``sharpe`` (annualized Sharpe),
+            ``net`` (TWR after tax), or ``calmar`` (TWR over max drawdown).
 
     Returns:
         The value to maximize; higher is better for every objective.
@@ -194,6 +198,10 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
             msg = "objective 'net' requires a tax: block in the portfolio YAML (after-tax accounting is off)"
             raise ValueError(msg)
         return metrics.after_tax_twr
+    if objective == "calmar":
+        # Floor the drawdown: a monotonic train window has ~zero drawdown and
+        # an unfloored ratio would be inf, dominating every real candidate.
+        return metrics.twr / max(metrics.max_drawdown, CALMAR_DRAWDOWN_FLOOR)
     raise ValueError(objective_error(objective))
 
 
@@ -402,6 +410,7 @@ def _run_trial(
         bh_return=bh_return,
         sharpe_ratio=result.sharpe_ratio,
         after_tax_twr=after_tax_twr,
+        max_drawdown=result.max_drawdown,
     )
     return metrics, result
 
@@ -448,7 +457,7 @@ def train_window_end(trading_days: list[date], train_pct: float) -> date:
 
 def format_objective(value: float, objective: Objective) -> str:
     """Render an objective value for logs: ratios as decimals, returns as percents."""
-    return f"{value:.2f}" if objective == "sharpe" else f"{value:.2%}"
+    return f"{value:.2%}" if objective in ("gross", "net") else f"{value:.2f}"
 
 
 def _require_tax_for_net(objective: Objective, tax_config: TaxConfig | None) -> None:

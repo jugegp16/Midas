@@ -20,8 +20,16 @@ from midas.optimizer import (
 )
 
 
-def _metrics(*, twr: float = 0.25, sharpe: float = 1.5, after_tax_twr: float | None = 0.18) -> TrialMetrics:
-    return TrialMetrics(twr=twr, bh_return=0.1, sharpe_ratio=sharpe, after_tax_twr=after_tax_twr)
+def _metrics(
+    *,
+    twr: float = 0.25,
+    sharpe: float = 1.5,
+    after_tax_twr: float | None = 0.18,
+    max_drawdown: float = 0.10,
+) -> TrialMetrics:
+    return TrialMetrics(
+        twr=twr, bh_return=0.1, sharpe_ratio=sharpe, after_tax_twr=after_tax_twr, max_drawdown=max_drawdown
+    )
 
 
 def test_default_objective_is_sharpe() -> None:
@@ -45,13 +53,27 @@ def test_net_without_tax_accounting_raises() -> None:
         score_trial(_metrics(after_tax_twr=None), "net")
 
 
+def test_calmar_scores_return_over_drawdown() -> None:
+    assert score_trial(_metrics(twr=0.30, max_drawdown=0.20), "calmar") == pytest.approx(1.5)
+
+
+def test_calmar_floors_drawdown_so_flat_runs_stay_finite() -> None:
+    # A monotonic train window has ~zero drawdown; an unfloored ratio would be
+    # inf and dominate every real candidate.
+    assert score_trial(_metrics(twr=0.30, max_drawdown=0.0), "calmar") == pytest.approx(0.30 / 0.01)
+
+
+def test_calmar_of_degenerate_trial_is_zero() -> None:
+    assert score_trial(_metrics(twr=0.0, max_drawdown=0.0), "calmar") == 0.0
+
+
 def test_unknown_objective_raises_with_allowed_values() -> None:
-    with pytest.raises(ValueError, match="'gross', 'sharpe', 'net'"):
-        score_trial(_metrics(), "calmar")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="'gross', 'sharpe', 'net', 'calmar'"):
+        score_trial(_metrics(), "sortino")  # type: ignore[arg-type]
 
 
 def test_objective_error_lists_allowed_values() -> None:
-    assert "'gross', 'sharpe', 'net'" in objective_error("calmar")
+    assert "'gross', 'sharpe', 'net', 'calmar'" in objective_error("sortino")
 
 
 # ---------------------------------------------------------------------------
@@ -293,3 +315,16 @@ def test_walk_forward_after_tax_oos_is_absent_without_tax() -> None:
     )
     assert result.after_tax_annualized_return is None
     assert all(fold.after_tax_test_return is None for fold in result.folds)
+
+
+def test_run_trial_metrics_carry_max_drawdown() -> None:
+    portfolio, price_data, start, end = _make_data()
+    metrics, result = _run_trial(
+        {"MeanReversion": {"window": 20, "threshold": 0.05, "_weight": 1.0}},
+        portfolio,
+        price_data,
+        start,
+        end,
+        enable_split=False,
+    )
+    assert metrics.max_drawdown == result.max_drawdown
