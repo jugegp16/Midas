@@ -380,6 +380,7 @@ def _run_trial(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
+    track_vol_contribution: bool = True,
 ) -> tuple[TrialMetrics, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
@@ -410,6 +411,7 @@ def _run_trial(
         train_pct=train_pct,
         enable_split=enable_split,
         tax_config=tax_config,
+        track_vol_contribution=track_vol_contribution,
     )
     result = engine.run(portfolio, price_data, start, end)
 
@@ -534,8 +536,12 @@ def _init_worker(
 
 
 def _trial_worker(strategy_params: dict[str, dict[str, float]]) -> TrialMetrics:
-    """Evaluate one trial in a worker process, dropping the unpicklable result."""
-    metrics, _result = _run_trial(strategy_params, **worker_state)
+    """Evaluate one trial in a worker process, dropping the unpicklable result.
+
+    Vol attribution feeds only the report table on the final re-run; trials
+    skip it (it is the single hottest per-bar cost in a backtest).
+    """
+    metrics, _result = _run_trial(strategy_params, track_vol_contribution=False, **worker_state)
     return metrics
 
 
@@ -576,6 +582,7 @@ def _wf_trial_worker(
         risk_config=worker_state.get("risk_config"),
         forecast_scaling=worker_state.get("forecast_scaling", "none"),
         tax_config=worker_state.get("tax_config"),
+        track_vol_contribution=False,
     )
     return metrics
 
@@ -1008,6 +1015,7 @@ def walk_forward_optimize(
                 risk_config=risk_config,
                 forecast_scaling=forecast_scaling,
                 tax_config=tax_config,
+                track_vol_contribution=False,
             )
             test_twr = test_metrics.twr
 

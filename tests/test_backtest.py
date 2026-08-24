@@ -2098,3 +2098,67 @@ def test_cash_infusions_do_not_mask_drawdown() -> None:
     assert raw_masked < 0.02  # deposits outrun the slide on the raw curve
     assert 0.05 < funded.max_drawdown < plain.max_drawdown
     assert funded.sharpe_ratio < 0
+
+
+def _vol_attribution_scenario() -> tuple[PortfolioConfig, dict[str, pd.DataFrame], date, date]:
+    from midas.models import RiskConfig  # noqa: F401  (used by callers)
+
+    start = date(2024, 1, 2)
+    rng = np.random.default_rng(7)
+    prices = make_price_series(
+        start=start, days=120, base_price=100.0, daily_returns=list(rng.normal(0.0005, 0.01, 120))
+    )
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=50.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    return portfolio, {"TEST": prices}, start, prices.index[-1]
+
+
+def _vol_engine(**engine_kwargs) -> BacktestEngine:
+    from midas.models import RiskConfig
+
+    return BacktestEngine(
+        allocator=Allocator(
+            [], AllocationConstraints(), 1, risk_config=RiskConfig(weighting="equal", vol_lookback_days=10)
+        ),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=AllocationConstraints(),
+        enable_split=False,
+        **engine_kwargs,
+    )
+
+
+def test_vol_attribution_can_be_switched_off_without_changing_results() -> None:
+    """Optimizer trials skip the report-only attribution; everything else is identical."""
+    portfolio, price_data, start, end = _vol_attribution_scenario()
+    tracked = _vol_engine().run(portfolio, price_data, start, end)
+    untracked = _vol_engine(track_vol_contribution=False).run(portfolio, price_data, start, end)
+
+    assert tracked.risk_metrics is not None and tracked.risk_metrics.per_ticker_vol_contribution
+    assert untracked.risk_metrics is not None
+    assert untracked.risk_metrics.per_ticker_vol_contribution == {}
+    assert untracked.twr == tracked.twr
+    assert untracked.equity_curve == tracked.equity_curve
+
+
+def test_vol_attribution_samples_bars_instead_of_every_bar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The covariance fit is the single hottest per-bar cost; a stride sample
+    keeps the time-average while cutting the fits ~5x."""
+    import midas.backtest as backtest_module
+
+    calls = []
+    real = backtest_module.per_ticker_vol_contribution
+
+    def counting(weights, log_returns):
+        calls.append(1)
+        return real(weights, log_returns)
+
+    monkeypatch.setattr(backtest_module, "per_ticker_vol_contribution", counting)
+    portfolio, price_data, start, end = _vol_attribution_scenario()
+    result = _vol_engine().run(portfolio, price_data, start, end)
+
+    assert result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution
+    n_bars = len(result.equity_curve)
+    assert 0 < len(calls) <= n_bars // backtest_module.VOL_CONTRIB_SAMPLE_STRIDE + 1

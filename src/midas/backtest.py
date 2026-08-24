@@ -124,6 +124,13 @@ class _Decision:
         )
 
 
+# The per-bar covariance fit behind vol attribution is the hottest line in a
+# backtest. Sampling every Nth held bar keeps the time-average faithful while
+# cutting the fits ~Nx; attribution shares move imperceptibly (they are
+# already averages over hundreds of bars).
+VOL_CONTRIB_SAMPLE_STRIDE = 5
+
+
 @dataclass
 class _SimState:
     """Mutable simulation state carried across trading days."""
@@ -152,6 +159,7 @@ class _SimState:
     # ticker, averaged over vol_contrib_bars when the result is built.
     vol_contrib_sums: dict[str, float] = field(default_factory=dict)
     vol_contrib_bars: int = 0
+    vol_contrib_ticks: int = 0  # held bars seen; every Nth is sampled for attribution
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -298,6 +306,7 @@ class BacktestEngine:
         log_fn: Callable[[str], None] | None = None,
         execution_mode: ExecutionMode = "next_open",
         tax_config: TaxConfig | None = None,
+        track_vol_contribution: bool = True,
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -308,6 +317,9 @@ class BacktestEngine:
         self._log = log_fn or (lambda _msg: None)
         self._execution_mode: ExecutionMode = execution_mode
         self._tax_config = tax_config
+        # Off in optimizer trials: attribution feeds only the report table,
+        # and its per-bar covariance fit is ~30% of a trial's runtime.
+        self._track_vol_contribution = track_vol_contribution
 
     def run(
         self,
@@ -1308,10 +1320,13 @@ class BacktestEngine:
         window, same skip semantics as ``_apply_vol_target``.
         """
         risk_config = self._allocator.risk_config
-        if risk_config is None:
+        if risk_config is None or not self._track_vol_contribution:
             return
         held = [ticker for ticker, shares in state.positions.items() if shares > 0]
         if not held:
+            return
+        state.vol_contrib_ticks += 1
+        if (state.vol_contrib_ticks - 1) % VOL_CONTRIB_SAMPLE_STRIDE:
             return
         lookback = risk_config.vol_lookback_days
         end_prices: dict[str, float] = {}

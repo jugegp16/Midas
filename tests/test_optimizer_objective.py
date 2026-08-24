@@ -380,3 +380,41 @@ def test_run_trial_metrics_carry_ulcer_and_blocks() -> None:
     assert metrics.ulcer_index == result.ulcer_index
     assert metrics.block_returns == tuple(result.block_returns)
     assert len(result.block_returns) == 8
+
+
+# ---------------------------------------------------------------------------
+# Optimizer trials skip report-only vol attribution; the final re-run keeps it.
+# ---------------------------------------------------------------------------
+
+
+def test_run_trial_can_skip_vol_attribution() -> None:
+    from midas.models import RiskConfig
+
+    portfolio, price_data, start, end = _make_data()
+    args = ({"MeanReversion": {"window": 20, "threshold": 0.05, "_weight": 1.0}}, portfolio, price_data, start, end)
+    kwargs = dict(enable_split=False, risk_config=RiskConfig())
+    metrics_off, result_off = _run_trial(*args, track_vol_contribution=False, **kwargs)
+    metrics_on, result_on = _run_trial(*args, **kwargs)
+    assert result_off.risk_metrics is not None
+    assert result_off.risk_metrics.per_ticker_vol_contribution == {}
+    assert result_on.risk_metrics is not None and result_on.risk_metrics.per_ticker_vol_contribution
+    assert metrics_off.twr == metrics_on.twr
+
+
+def test_optimize_final_rerun_keeps_vol_attribution() -> None:
+    from midas.models import RiskConfig
+
+    portfolio, price_data, start, end = _make_data()
+    result = optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=2,
+        objective="gross",
+        risk_config=RiskConfig(),
+    )
+    assert result.best_result is not None
+    assert result.best_result.risk_metrics is not None
+    assert result.best_result.risk_metrics.per_ticker_vol_contribution
