@@ -39,10 +39,10 @@ def _invoke(tmp_path: Path, portfolio_text: str, *extra: str):
     return CliRunner().invoke(cli, [*args, *extra]), out
 
 
-def test_help_shows_sharpe_default() -> None:
+def test_help_shows_calmar_default() -> None:
     result = CliRunner().invoke(cli, ["optimize", "--help"])
     assert "--objective" in result.output
-    assert "sharpe" in result.output
+    assert "default: calmar" in result.output
 
 
 def test_unknown_objective_rejected(tmp_path: Path, fake_prices: None) -> None:

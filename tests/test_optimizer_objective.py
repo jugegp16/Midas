@@ -40,8 +40,8 @@ def _metrics(
     )
 
 
-def test_default_objective_is_sharpe() -> None:
-    assert DEFAULT_OBJECTIVE == "sharpe"
+def test_default_objective_is_calmar() -> None:
+    assert DEFAULT_OBJECTIVE == "calmar"
 
 
 def test_gross_scores_raw_twr() -> None:

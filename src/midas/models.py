@@ -22,7 +22,7 @@ def forecast_scaling_error(value: object) -> str:
 
 
 type Objective = Literal["gross", "sharpe", "net", "calmar", "ulcer", "robust"]
-DEFAULT_OBJECTIVE: Objective = "sharpe"
+DEFAULT_OBJECTIVE: Objective = "calmar"
 
 
 def objective_error(value: object) -> str:

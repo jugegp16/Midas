@@ -33,7 +33,7 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
-| `--objective` | `sharpe` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
+| `--objective` | `calmar` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
 
 ### Objectives
 
@@ -44,22 +44,25 @@ period. The best parameters are then re-run over the full range with the
 split for the printed train/test comparison, and the optimized YAML opens
 with a `# optimized with --objective …` comment recording the choice.
 
-- `sharpe` (default): annualized Sharpe of the training equity curve.
-  Raw return rewards the lucky high-variance corner of the parameter
-  space — two big trades beat a consistent, diversified combo with the
-  same total; a risk-adjusted objective generalizes better out of sample.
+- `calmar` (default): training return divided by max drawdown. Chosen as
+  the default from a five-objective walk-forward study: it was the only
+  objective that never lost badly to buy-and-hold on any basket/strategy
+  combination — the property a sight-unseen default needs.
+- `sharpe`: annualized Sharpe of the training equity curve. Strong on
+  symmetric (mean-reversion) strategies, but it penalizes upside
+  volatility, which guts right-skewed strategies whose edge lives in a
+  few big winners.
 - `gross`: raw time-weighted return. The historical objective, kept for
-  comparison and for portfolios where return is genuinely all that matters.
+  comparison and for portfolios where return is genuinely all that
+  matters — but it overfits harder the more trials you give it.
 - `net`: time-weighted return after capital-gains tax, using the
   portfolio's `tax:` block. A high-turnover strategy that wins gross can
   lose its edge after short-term gains; `net` lets the search see that.
   Refuses to start without a `tax:` block (and offers the one-time setup
   prompt when the portfolio file is silent on tax).
-- `calmar`: training return divided by max drawdown (floored at 1% so a
-  drawdown-free window stays finite). Return-magnitude-aware and never
-  penalizes upside — kinder than `sharpe` to right-skewed strategies whose
-  edge lives in a few big winners — but max drawdown is a single worst
-  event per window, so it is noisier than a mean/σ ratio.
+  (The ratio is floored at a 1% drawdown so a drawdown-free window stays
+  finite. Max drawdown is a single worst event per window, so `calmar` is
+  noisier than a mean/σ ratio — in practice that noise cost it nothing.)
 - `ulcer`: training return divided by the Ulcer Index — the RMS of
   drawdown depth across every bar (Martin ratio). Calmar's shape without
   its single-worst-event noise: long shallow bleeds count, one historical

@@ -153,7 +153,7 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointl
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
 
-**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination and backtests it over the training window only (the first `train_pct` of trading days, no internal split), returning the chosen objective — Sharpe by default, or raw / after-tax time-weighted return — so the search never sees the test period. The best parameters are re-run over the full range with the split for the report. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
+**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination and backtests it over the training window only (the first `train_pct` of trading days, no internal split), returning the chosen objective — Calmar by default; Sharpe, raw, or after-tax time-weighted return, Ulcer, and block-robustness are selectable — so the search never sees the test period. The best parameters are re-run over the full range with the split for the report. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
 #### Walk-Forward Optimization
 
