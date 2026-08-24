@@ -23,6 +23,7 @@ from midas.models import (
     AlertsConfig,
     AllocationConstraints,
     Direction,
+    ForecastScaling,
     Objective,
     PortfolioConfig,
     RiskConfig,
@@ -733,8 +734,9 @@ def _validate_optimize_options(
     type=click.Choice(get_args(Objective.__value__)),
     default=DEFAULT_OBJECTIVE,
     show_default=True,
-    help="What trials maximize on the training window: gross (raw return), sharpe (risk-adjusted), "
-    "net (return after tax; needs a tax: block).",
+    help="What trials maximize on the training window: calmar (return over max drawdown), "
+    "sharpe (annualized Sharpe), gross (raw return), net (return after tax; needs a tax: block), "
+    "ulcer (return over Ulcer Index), robust (lower-quartile block return).",
 )
 def optimize(
     portfolio: str,
@@ -750,16 +752,7 @@ def optimize(
     objective: Objective,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
-    from midas.optimizer import (
-        WF_MIN_TEST_DAYS,
-        WF_MIN_TRAIN_PCT,
-        max_warmup_for_search,
-        walk_forward_optimize,
-        write_strategies_yaml,
-    )
-    from midas.optimizer import (
-        optimize as run_optimize,
-    )
+    from midas.optimizer import max_warmup_for_search
 
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
 
@@ -779,6 +772,61 @@ def optimize(
     start_d, end_d = _to_date(start), _to_date(end)
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
+
+    try:
+        _run_optimizer_and_write(
+            port,
+            price_data,
+            start_d,
+            end_d,
+            strategy_names=strategy_names,
+            n_trials=n_trials,
+            min_cash_pct=min_cash_pct,
+            risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
+            output=output,
+            walk_forward=walk_forward,
+            train_pct=train_pct,
+            wf_min_train_pct=wf_min_train_pct,
+            wf_min_test_days=wf_min_test_days,
+        )
+    except ValueError as exc:
+        # The optimizer rejects windows it cannot split (e.g. a train_pct that
+        # leaves no training days once the trading calendar is known).
+        raise click.ClickException(str(exc)) from exc
+
+
+def _run_optimizer_and_write(
+    port: PortfolioConfig,
+    price_data: dict[str, pd.DataFrame],
+    start_d: date,
+    end_d: date,
+    *,
+    strategy_names: list[str] | None,
+    n_trials: int,
+    min_cash_pct: float,
+    risk_config: RiskConfig | None,
+    forecast_scaling: ForecastScaling,
+    objective: Objective,
+    tax_config: TaxConfig | None,
+    output: str,
+    walk_forward: bool,
+    train_pct: float,
+    wf_min_train_pct: float | None,
+    wf_min_test_days: int | None,
+) -> None:
+    """Run the chosen optimizer mode, write the strategies YAML, and print its report."""
+    from midas.optimizer import (
+        WF_MIN_TEST_DAYS,
+        WF_MIN_TRAIN_PCT,
+        walk_forward_optimize,
+        write_strategies_yaml,
+    )
+    from midas.optimizer import (
+        optimize as run_optimize,
+    )
 
     if walk_forward:
         wf_result = walk_forward_optimize(
@@ -850,14 +898,14 @@ def _tax_config_for_objective(port: PortfolioConfig, portfolio_path: Path, objec
     if tax_config is None:
         raise click.ClickException(
             f"--objective net requires a tax: block in {portfolio_path} (after-tax accounting is off). "
-            "Add one, or pick --objective gross|sharpe."
+            "Add one, or pick another --objective."
         )
     return tax_config
 
 
 def _print_fold_table(folds: Sequence[FoldResult]) -> None:
     """Render the per-fold walk-forward results table."""
-    # Per-fold results — wider since this table has 9 columns.
+    # Per-fold results — wider since this table has 9 columns (10 with tax).
     fold_table = make_wide_table("Walk-Forward Analysis", width=140)
     fold_table.add_column("Fold", justify="center", style="bold")
     fold_table.add_column("IS Period")

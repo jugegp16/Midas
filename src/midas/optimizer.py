@@ -207,6 +207,10 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
     if objective == "calmar":
         # Floor the drawdown: a monotonic train window has ~zero drawdown and
         # an unfloored ratio would be inf, dominating every real candidate.
+        # As with any return-over-risk ratio, losers rank inversely (a -5%
+        # return looks better with a 20% drawdown than with a 5% one); the
+        # best trial is always a winner, so only the model of the losing
+        # region is distorted.
         return metrics.twr / max(metrics.max_drawdown, CALMAR_DRAWDOWN_FLOOR)
     if objective == "ulcer":
         # Martin ratio; same floor rationale as calmar.
@@ -214,7 +218,10 @@ def score_trial(metrics: TrialMetrics, objective: Objective) -> float:
     if objective == "robust":
         blocks = metrics.block_returns
         if len(blocks) >= 2:
-            return statistics.quantiles(blocks, n=4)[0]
+            # Inclusive so the quartile stays within [min, max] even with two
+            # or three blocks; the exclusive default extrapolates below the
+            # worst block there.
+            return statistics.quantiles(blocks, n=4, method="inclusive")[0]
         return blocks[0] if blocks else 0.0
     raise ValueError(objective_error(objective))
 
@@ -444,8 +451,11 @@ def train_window_end(trading_days: list[date], train_pct: float) -> date:
 
     The engine places the split at ``trading_days[int(n * train_pct)]`` and
     counts days strictly before it as training, so a trial run on
-    ``[start, train_window_end]`` with no internal split sees exactly the
-    in-sample days of a full-range split run — and nothing from the test side.
+    ``[start, train_window_end]`` with no internal split sees at most the
+    in-sample days of a full-range split run — and nothing from the test
+    side. (The split run snapshots its train value at the split day's
+    close, one bar later than this window ends, so the reported
+    ``train_return`` can differ from the searched value by that bar.)
 
     Args:
         trading_days: Sorted union of trading days over the full range.

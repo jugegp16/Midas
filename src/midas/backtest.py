@@ -16,6 +16,7 @@ from midas.allocator import AllocationResult, Allocator, AllocatorRiskTelemetry
 from midas.data.price_history import PriceHistory
 from midas.live_state import aggregate_cost_basis, consume_lots_fifo, resolve_purchase_date
 from midas.metrics import (
+    BLOCK_COUNT,
     compute_annualized_return,
     compute_block_returns,
     compute_cagr,
@@ -121,12 +122,6 @@ class _Decision:
             active_tickers=active,
             decision_day=self.decision_day,
         )
-
-
-# Contiguous equal blocks the training equity path is split into for the
-# robustness objective: coarse enough that a block is a meaningful stretch,
-# fine enough that one lucky streak cannot carry the score.
-BLOCK_COUNT = 8
 
 
 @dataclass
@@ -1116,10 +1111,12 @@ class BacktestEngine:
             train_days = 0
             test_days = 0
         cagr = compute_cagr(starting_val, final_value, total_days)
-        max_drawdown = compute_max_drawdown(equity_curve)
-        sharpe = compute_sharpe(equity_curve)
-        sortino = compute_sortino(equity_curve)
+        # Every risk figure reads the inflow-adjusted series: a deposit is not
+        # return, and measured on the raw curve it would also mask drawdown depth.
         adjusted_returns = compute_inflow_adjusted_returns(equity_curve, state.inflows)
+        max_drawdown = compute_max_drawdown(adjusted_returns)
+        sharpe = compute_sharpe(adjusted_returns)
+        sortino = compute_sortino(adjusted_returns)
         ulcer = compute_ulcer_index(adjusted_returns)
         block_returns = compute_block_returns(adjusted_returns, BLOCK_COUNT)
         win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)

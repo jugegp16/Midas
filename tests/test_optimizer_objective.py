@@ -355,8 +355,12 @@ def test_robust_scores_lower_quartile_of_block_returns() -> None:
     blocks = (0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08)
     import statistics
 
-    expected = statistics.quantiles(blocks, n=4)[0]
+    expected = statistics.quantiles(blocks, n=4, method="inclusive")[0]
     assert score_trial(_metrics(block_returns=blocks), "robust") == pytest.approx(expected)
+
+
+def test_robust_quartile_never_extrapolates_below_worst_block() -> None:
+    assert score_trial(_metrics(block_returns=(0.10, 0.20)), "robust") >= 0.10
 
 
 def test_robust_with_no_blocks_scores_zero() -> None:

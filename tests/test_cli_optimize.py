@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import get_args
 
 import pandas as pd
 import pytest
@@ -13,6 +14,7 @@ from conftest import make_price_series
 
 import midas.cli
 from midas.cli import cli
+from midas.models import Objective
 
 PORTFOLIO_NO_TAX = "portfolio:\n  - ticker: TEST\n    shares: 10\navailable_cash: 2000.0\n"
 PORTFOLIO_TAX_OFF = PORTFOLIO_NO_TAX + "tax: off\n"
@@ -39,10 +41,20 @@ def _invoke(tmp_path: Path, portfolio_text: str, *extra: str):
     return CliRunner().invoke(cli, [*args, *extra]), out
 
 
-def test_help_shows_calmar_default() -> None:
+def test_help_shows_calmar_default_and_every_objective() -> None:
     result = CliRunner().invoke(cli, ["optimize", "--help"])
     assert "--objective" in result.output
     assert "default: calmar" in result.output
+    help_text = " ".join(result.output.split())
+    for name in get_args(Objective.__value__):
+        assert f"{name} (" in help_text, name
+
+
+def test_train_pct_leaving_no_training_days_is_a_clean_error(tmp_path: Path, fake_prices: None) -> None:
+    result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--train-pct", "0.001")
+    assert result.exit_code == 1
+    assert "leaves no training days" in result.output
+    assert not isinstance(result.exception, ValueError)
 
 
 def test_unknown_objective_rejected(tmp_path: Path, fake_prices: None) -> None:

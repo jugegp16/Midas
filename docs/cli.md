@@ -47,7 +47,10 @@ with a `# optimized with --objective …` comment recording the choice.
 - `calmar` (default): training return divided by max drawdown. Chosen as
   the default from a five-objective walk-forward study: it was the only
   objective that never lost badly to buy-and-hold on any basket/strategy
-  combination — the property a sight-unseen default needs.
+  combination — the property a sight-unseen default needs. The ratio is
+  floored at a 1% drawdown so a drawdown-free window stays finite. Max
+  drawdown is a single worst event per window, so `calmar` is noisier
+  than a mean/σ ratio — in practice that noise cost it nothing.
 - `sharpe`: annualized Sharpe of the training equity curve. Strong on
   symmetric (mean-reversion) strategies, but it penalizes upside
   volatility, which guts right-skewed strategies whose edge lives in a
@@ -59,10 +62,9 @@ with a `# optimized with --objective …` comment recording the choice.
   portfolio's `tax:` block. A high-turnover strategy that wins gross can
   lose its edge after short-term gains; `net` lets the search see that.
   Refuses to start without a `tax:` block (and offers the one-time setup
-  prompt when the portfolio file is silent on tax).
-  (The ratio is floored at a 1% drawdown so a drawdown-free window stays
-  finite. Max drawdown is a single worst event per window, so `calmar` is
-  noisier than a mean/σ ratio — in practice that noise cost it nothing.)
+  prompt when the portfolio file is silent on tax). The after-tax TWR is
+  exact only without mid-period cash infusions; with them the objective
+  mixes contribution timing into the tax drag it scores.
 - `ulcer`: training return divided by the Ulcer Index — the RMS of
   drawdown depth across every bar (Martin ratio). Calmar's shape without
   its single-worst-event noise: long shallow bleeds count, one historical
@@ -72,10 +74,11 @@ with a `# optimized with --objective …` comment recording the choice.
   parameter set that made all its money in one lucky streak scores
   terribly even if its total return and drawdown look fine.
 
-`ulcer` and `robust` (and the figures they read) are computed on an
-inflow-adjusted return series — cash infusions and deferred position
-activations are stripped out, so deposits are never counted as
-performance and never mask drawdown depth.
+Every risk figure — Sharpe, Sortino, max drawdown, Ulcer Index, and the
+block returns, in the optimizer and in the backtest report alike — is
+computed on an inflow-adjusted return series: cash infusions and
+deferred position activations are stripped out, so deposits are never
+counted as performance and never mask drawdown depth.
 
 Train/test returns and the efficiency ratio stay return-based under every
 objective, so they remain comparable across runs. When the portfolio has a
