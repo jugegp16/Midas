@@ -113,3 +113,17 @@ def test_seed_option_is_exposed_and_accepted(tmp_path: Path, fake_prices: None) 
     result, out = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "gross", "--seed", "7")
     assert result.exit_code == 0, result.output
     assert out.exists()
+
+
+def test_walk_forward_warns_when_trials_per_fold_is_too_low(tmp_path: Path, fake_prices: None) -> None:
+    """The default -n over many folds lands deep in search noise; say so."""
+    result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "20", "--objective", "gross")
+    assert result.exit_code == 0, result.output
+    assert "trials per fold" in result.output
+    assert "noise" in result.output
+
+
+def test_walk_forward_is_quiet_when_trials_per_fold_is_adequate(tmp_path: Path, fake_prices: None) -> None:
+    result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "400", "--objective", "gross")
+    assert result.exit_code == 0, result.output
+    assert "trials per fold" not in result.output

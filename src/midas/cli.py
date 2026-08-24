@@ -966,6 +966,27 @@ def _print_short_fold_note(folds: Sequence[FoldResult]) -> None:
     )
 
 
+def _print_low_trials_note(wf_result: WalkForwardResult) -> None:
+    """Warn when the per-fold trial budget leaves results inside sampler noise."""
+    from midas.optimizer import MIN_TRIALS_PER_FOLD
+
+    n_folds = len(wf_result.folds)
+    if not n_folds:
+        return
+    per_fold = wf_result.total_trials // n_folds
+    if per_fold >= MIN_TRIALS_PER_FOLD:
+        return
+    suggested = MIN_TRIALS_PER_FOLD * n_folds
+    console.print(
+        f"[yellow]Note: {per_fold} trials per fold is below the {MIN_TRIALS_PER_FOLD} "
+        f"needed for the search to settle — results at this budget are dominated by "
+        f"sampler noise, and re-running with a different --seed can move OOS return "
+        f"by several points. Use -n {suggested} or more for a decision you intend to "
+        f"act on.[/yellow]",
+        justify="center",
+    )
+
+
 def _print_wf_aggregate(wf_result: WalkForwardResult) -> None:
     """Render the aggregate walk-forward metrics table."""
     # Aggregate metrics — same layout as the backtest summary tables.
@@ -1001,6 +1022,7 @@ def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> Non
     console.print()
     _print_fold_table(wf_result.folds)
     _print_short_fold_note(wf_result.folds)
+    _print_low_trials_note(wf_result)
     _print_wf_aggregate(wf_result)
     print_run_info(
         [

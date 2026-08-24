@@ -80,6 +80,25 @@ computed on an inflow-adjusted return series: cash infusions and
 deferred position activations are stripped out, so deposits are never
 counted as performance and never mask drawdown depth.
 
+### Trial budget and search noise
+
+Walk-forward divides `-n` across folds, so a 10-year range (16 folds) at
+the default `-n 200` gives **12 trials per fold** — far too few for the
+sampler to settle. Measured on `etf.yaml` + balanced-growth, varying only
+`--seed`:
+
+| trials/fold | OOS CAGR across 5 seeds | spread |
+|---|---|---|
+| 30 | 7.0 – 14.7% | 7.6 pts |
+| 100 | 9.5 – 12.4% | 2.9 pts |
+
+The median barely moved (12.5% → 11.6%), so a small budget is noisy
+rather than biased — but the noise is larger than the differences people
+usually want to read from these runs (objective choice moved medians by
+2–3 points). Below 100 trials per fold the report says so explicitly.
+Use `-n 100 × folds` or more for a result you intend to act on, and vary
+`--seed` when you need to know how much of a difference is real.
+
 Train/test returns and the efficiency ratio stay return-based under every
 objective, so they remain comparable across runs. When the portfolio has a
 `tax:` block, the walk-forward report adds an after-tax OOS column and an

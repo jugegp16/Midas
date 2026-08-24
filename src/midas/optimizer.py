@@ -152,6 +152,14 @@ DEFAULT_N_TRIALS = 200
 # byte for byte. Walk-forward offsets it per fold so folds stay distinct.
 DEFAULT_SEED = 42
 
+# Below this many trials per fold, TPE has not converged over the parameter
+# space and per-fold results are dominated by sampler noise rather than by
+# the parameters. Measured on a 10-year walk-forward: 30 trials/fold gave a
+# 7.6-point spread in OOS CAGR across sampler seeds, 100 gave 2.9 — while
+# the median barely moved. Differences smaller than that spread (objective
+# choice, for one) are unmeasurable below it.
+MIN_TRIALS_PER_FOLD = 100
+
 # Walk-forward defaults: reserve 60% for the first training window,
 # then carve the remaining 40% into test windows of ~63 trading days
 # (~3 calendar months) each.
