@@ -104,3 +104,12 @@ def test_walk_forward_report_shows_after_tax_oos_only_when_taxed(tmp_path: Path,
     untaxed, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "20", "--objective", "gross")
     assert untaxed.exit_code == 0, untaxed.output
     assert "After-Tax" not in untaxed.output
+
+
+def test_seed_option_is_exposed_and_accepted(tmp_path: Path, fake_prices: None) -> None:
+    help_result = CliRunner().invoke(cli, ["optimize", "--help"])
+    assert "--seed" in help_result.output
+    assert "default: 42" in help_result.output
+    result, out = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "gross", "--seed", "7")
+    assert result.exit_code == 0, result.output
+    assert out.exists()

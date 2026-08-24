@@ -7,9 +7,8 @@ import logging
 import math
 import os
 import statistics
-import threading
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, get_args
@@ -148,6 +147,10 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
 }
 
 DEFAULT_N_TRIALS = 200
+
+# Sampler seed: fixed so a given (inputs, seed) pair reproduces its search
+# byte for byte. Walk-forward offsets it per fold so folds stay distinct.
+DEFAULT_SEED = 42
 
 # Walk-forward defaults: reserve 60% for the first training window,
 # then carve the remaining 40% into test windows of ~63 trading days
@@ -649,6 +652,44 @@ def _prepare_names_and_ranges(
     return names, ranges
 
 
+def _run_trials_batched(
+    study: optuna.Study,
+    names: list[str],
+    ranges: dict[str, dict[str, tuple[float, float, float]]],
+    n_trials: int,
+    batch_size: int,
+    objective: Objective,
+    submit: Callable[[dict[str, dict[str, float]]], Future[TrialMetrics]],
+    log: Callable[[str], None],
+) -> None:
+    """Run *n_trials* through *study* with deterministic ask/tell batching.
+
+    ``study.optimize(n_jobs=k)`` races k threads, so the sampler sees a
+    different trial-history order every run and a fixed seed reproduces
+    nothing. Here trials are asked sequentially in the main thread
+    (deterministic sampling), evaluated concurrently in the worker pool,
+    and told back in ask order — same parallelism, reproducible search.
+    """
+    done = 0
+    while done < n_trials:
+        batch: list[tuple[optuna.Trial, dict[str, dict[str, float]], Future[TrialMetrics]]] = []
+        for _ in range(min(batch_size, n_trials - done)):
+            trial = study.ask()
+            params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
+            batch.append((trial, params, submit(params)))
+        for trial, params, future in batch:
+            metrics = future.result()
+            trial.set_user_attr("bh_return", metrics.bh_return)
+            trial.set_user_attr("train_return", metrics.twr)
+            trial.set_user_attr("params", params)
+            study.tell(trial, score_trial(metrics, objective))
+            done += 1
+            if done % 25 == 0 or done == n_trials:
+                pct = done * 100 // n_trials
+                best = format_objective(study.best_value, objective)
+                log(f"  [{pct:3d}%] {done}/{n_trials} trials — best {objective}: {best}")
+
+
 def optimize(
     portfolio: PortfolioConfig,
     price_data: dict[str, pd.DataFrame],
@@ -663,6 +704,7 @@ def optimize(
     forecast_scaling: ForecastScaling = "none",
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
+    seed: int = DEFAULT_SEED,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -695,7 +737,7 @@ def optimize(
 
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
+        sampler=optuna.samplers.TPESampler(seed=seed),
     )
 
     # -- Objective that runs in the main process but farms backtest to pool --
@@ -705,32 +747,17 @@ def optimize(
         initargs=(portfolio, price_data, start, train_end, min_cash_pct, risk_config, forecast_scaling, tax_config),
     )
 
-    trials_done = 0
-    progress_lock = threading.Lock()
-
-    def trial_objective(trial: optuna.Trial) -> float:
-        nonlocal trials_done
-
-        strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
-
-        metrics = pool.submit(_trial_worker, strategy_params).result()
-
-        # Store auxiliary metrics as user attributes for later retrieval.
-        trial.set_user_attr("bh_return", metrics.bh_return)
-        trial.set_user_attr("train_return", metrics.twr)
-        trial.set_user_attr("params", strategy_params)
-
-        with progress_lock:
-            trials_done += 1
-            if trials_done % 25 == 0 or trials_done == n_trials:
-                pct = trials_done * 100 // n_trials
-                best = format_objective(study.best_value, objective)
-                log(f"  [{pct:3d}%] {trials_done}/{n_trials} trials — best {objective}: {best}")
-
-        return score_trial(metrics, objective)
-
     try:
-        study.optimize(trial_objective, n_trials=n_trials, n_jobs=max_workers)
+        _run_trials_batched(
+            study,
+            names,
+            ranges,
+            n_trials,
+            batch_size=max_workers,
+            objective=objective,
+            submit=lambda params: pool.submit(_trial_worker, params),
+            log=log,
+        )
     finally:
         pool.shutdown(wait=True)
 
@@ -799,37 +826,6 @@ def _fold_boundaries(n_days: int, min_train_pct: float, min_test_days: int) -> l
     boundaries = [train_cutoff + i * test_size for i in range(n_folds + 1)]
     boundaries[-1] = n_days  # last fold absorbs remainder
     return boundaries
-
-
-def _make_wf_objective(
-    pool: ProcessPoolExecutor,
-    names: list[str],
-    ranges: dict[str, dict[str, tuple[float, float, float]]],
-    study: optuna.Study,
-    fold_trials: int,
-    train_start: date,
-    train_end: date,
-    objective: Objective,
-    log: Callable[[str], None],
-) -> Callable[[optuna.Trial], float]:
-    """Build the Optuna objective for one walk-forward fold (scored on the train window)."""
-    counter = [0]
-    lock = threading.Lock()
-
-    def fold_objective(trial: optuna.Trial) -> float:
-        strategy_params = {name: _suggest_params(trial, name, ranges[name]) for name in names}
-        metrics = pool.submit(_wf_trial_worker, strategy_params, train_start, train_end).result()
-        trial.set_user_attr("params", strategy_params)
-        trial.set_user_attr("train_return", metrics.twr)
-        with lock:
-            counter[0] += 1
-            if counter[0] % 25 == 0 or counter[0] == fold_trials:
-                pct = counter[0] * 100 // fold_trials
-                best = format_objective(study.best_value, objective)
-                log(f"  [{pct:3d}%] {counter[0]}/{fold_trials} trials — best {objective}: {best}")
-        return score_trial(metrics, objective)
-
-    return fold_objective
 
 
 def _aggregate_folds(
@@ -924,6 +920,7 @@ def walk_forward_optimize(
     forecast_scaling: ForecastScaling = "none",
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
+    seed: int = DEFAULT_SEED,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -982,7 +979,7 @@ def walk_forward_optimize(
             # --- Optimise on training window (no internal split) ---
             study = optuna.create_study(
                 direction="maximize",
-                sampler=optuna.samplers.TPESampler(seed=42 + fold_idx),
+                sampler=optuna.samplers.TPESampler(seed=seed + fold_idx),
             )
 
             # Warm-start: seed with previous fold's best params so Optuna
@@ -990,12 +987,22 @@ def walk_forward_optimize(
             if prev_best_flat is not None:
                 study.enqueue_trial(prev_best_flat)
 
-            study.optimize(
-                _make_wf_objective(
-                    pool, names, ranges, study, trials_per_fold, fold_train_start, fold_train_end, objective, log
-                ),
-                n_trials=trials_per_fold,
-                n_jobs=max_workers,
+            def submit_fold(
+                params: dict[str, dict[str, float]],
+                train_start: date = fold_train_start,
+                train_end: date = fold_train_end,
+            ) -> Future[TrialMetrics]:
+                return pool.submit(_wf_trial_worker, params, train_start, train_end)
+
+            _run_trials_batched(
+                study,
+                names,
+                ranges,
+                trials_per_fold,
+                batch_size=max_workers,
+                objective=objective,
+                submit=submit_fold,
+                log=log,
             )
 
             best_params: dict[str, dict[str, float]] = study.best_trial.user_attrs["params"]

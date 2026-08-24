@@ -418,3 +418,42 @@ def test_optimize_final_rerun_keeps_vol_attribution() -> None:
     assert result.best_result is not None
     assert result.best_result.risk_metrics is not None
     assert result.best_result.risk_metrics.per_ticker_vol_contribution
+
+
+# ---------------------------------------------------------------------------
+# Seeded reproducibility: same seed = identical search, byte for byte.
+# ---------------------------------------------------------------------------
+
+
+def test_optimize_is_reproducible_for_a_given_seed() -> None:
+    portfolio, price_data, start, end = _make_data()
+    kwargs = dict(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=4,
+        objective="gross",
+    )
+    first = optimize(seed=7, **kwargs)
+    second = optimize(seed=7, **kwargs)
+    assert first.best_params == second.best_params
+    assert first.best_objective_value == second.best_objective_value
+
+
+def test_walk_forward_is_reproducible_for_a_given_seed() -> None:
+    portfolio, price_data, start, end = _make_data()
+    kwargs = dict(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=10,
+        objective="gross",
+    )
+    first = walk_forward_optimize(seed=11, **kwargs)
+    second = walk_forward_optimize(seed=11, **kwargs)
+    assert first.best_params == second.best_params
+    assert [fold.objective_value for fold in first.folds] == [fold.objective_value for fold in second.folds]

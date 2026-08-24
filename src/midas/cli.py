@@ -730,6 +730,13 @@ def _validate_optimize_options(
     help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
 )
 @click.option(
+    "--seed",
+    default=42,
+    show_default=True,
+    type=int,
+    help="Sampler seed. Same seed + same inputs reproduces the search exactly; vary it to measure search noise.",
+)
+@click.option(
     "--objective",
     type=click.Choice(get_args(Objective.__value__)),
     default=DEFAULT_OBJECTIVE,
@@ -749,6 +756,7 @@ def optimize(
     walk_forward: bool,
     wf_min_train_pct: float | None,
     wf_min_test_days: int | None,
+    seed: int,
     objective: Objective,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
@@ -786,6 +794,7 @@ def optimize(
             forecast_scaling=forecast_scaling,
             objective=objective,
             tax_config=tax_config,
+            seed=seed,
             output=output,
             walk_forward=walk_forward,
             train_pct=train_pct,
@@ -811,6 +820,7 @@ def _run_optimizer_and_write(
     forecast_scaling: ForecastScaling,
     objective: Objective,
     tax_config: TaxConfig | None,
+    seed: int,
     output: str,
     walk_forward: bool,
     train_pct: float,
@@ -844,6 +854,7 @@ def _run_optimizer_and_write(
             forecast_scaling=forecast_scaling,
             objective=objective,
             tax_config=tax_config,
+            seed=seed,
         )
         write_strategies_yaml(
             wf_result.best_params,
@@ -869,6 +880,7 @@ def _run_optimizer_and_write(
             forecast_scaling=forecast_scaling,
             objective=objective,
             tax_config=tax_config,
+            seed=seed,
         )
         write_strategies_yaml(
             result.best_params,
