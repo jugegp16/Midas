@@ -803,3 +803,75 @@ class TestChandelierIncrementalATR:
                 fresh = ChandelierStop(window=10, multiplier=3.0)
                 history = self._history(df, n)
                 assert cached._stop_level(ticker, history) == pytest.approx(fresh._stop_level(ticker, history))
+
+
+class TestParabolicSARIncremental:
+    """The engine feeds ParabolicSARExit a one-bar-longer history every day; the
+    SAR recursion must advance incrementally while staying byte-identical to the
+    from-scratch computation, and must fall back whenever the incoming history
+    is not a superset of what it already consumed."""
+
+    @staticmethod
+    def _series(seed: int = 13, days: int = 80, base: float = 100.0) -> pd.DataFrame:
+        rng = np.random.default_rng(seed)
+        return make_price_series(date(2024, 1, 2), days, base, list(rng.normal(0.0, 0.02, days)))
+
+    @staticmethod
+    def _answer(rule: ParabolicSARExit, df: pd.DataFrame, n: int, ticker: str = "TEST"):
+        history = PriceHistory.from_dataframe(df.iloc[:n])
+        return rule._compute_incremental(ticker, history.high, history.low)
+
+    def test_growing_history_matches_from_scratch(self) -> None:
+        df = self._series()
+        cached = ParabolicSARExit()
+        for n in range(2, 81):
+            history = PriceHistory.from_dataframe(df.iloc[:n])
+            expected = ParabolicSARExit()._compute(history.high, history.low)
+            assert self._answer(cached, df, n) == pytest.approx(expected)
+
+    def test_mutated_last_bar_is_not_served_stale(self) -> None:
+        df = self._series()
+        cached = ParabolicSARExit()
+        self._answer(cached, df, 50)
+        bumped = df.iloc[:50].copy()
+        bumped.iloc[-1, bumped.columns.get_loc("low")] *= 0.80
+        bumped.iloc[-1, bumped.columns.get_loc("high")] *= 0.85
+        history = PriceHistory.from_dataframe(bumped)
+        expected = ParabolicSARExit()._compute(history.high, history.low)
+        assert cached._compute_incremental("TEST", history.high, history.low) == pytest.approx(expected)
+
+    def test_shrunk_or_replaced_history_resets_the_cache(self) -> None:
+        df = self._series()
+        other = self._series(seed=99, days=60, base=250.0)
+        cached = ParabolicSARExit()
+        self._answer(cached, df, 70)
+        for source, n in ((df, 40), (other, 40)):
+            history = PriceHistory.from_dataframe(source.iloc[:n])
+            expected = ParabolicSARExit()._compute(history.high, history.low)
+            assert cached._compute_incremental("TEST", history.high, history.low) == pytest.approx(expected)
+
+    def test_tickers_are_cached_independently(self) -> None:
+        df_a = self._series(seed=3)
+        df_b = self._series(seed=4, base=400.0)
+        cached = ParabolicSARExit()
+        for n in (30, 31, 32):
+            for ticker, df in (("AAA", df_a), ("BBB", df_b)):
+                history = PriceHistory.from_dataframe(df.iloc[:n])
+                expected = ParabolicSARExit()._compute(history.high, history.low)
+                assert cached._compute_incremental(ticker, history.high, history.low) == pytest.approx(expected)
+
+    def test_trend_flip_survives_incremental_advance(self) -> None:
+        """A flip is the state transition most likely to break caching: it
+        resets ep/af and swaps direction mid-recursion."""
+        rise = [0.02] * 40
+        fall = [-0.03] * 40
+        df = make_price_series(date(2024, 1, 2), 80, 100.0, rise + fall)
+        cached = ParabolicSARExit()
+        flips = set()
+        for n in range(2, 81):
+            history = PriceHistory.from_dataframe(df.iloc[:n])
+            expected = ParabolicSARExit()._compute(history.high, history.low)
+            got = cached._compute_incremental("TEST", history.high, history.low)
+            assert got == pytest.approx(expected)
+            flips.add(got[1])
+        assert flips == {True, False}  # the scenario really did flip
