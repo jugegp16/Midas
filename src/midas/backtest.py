@@ -16,13 +16,17 @@ from midas.allocator import AllocationResult, Allocator, AllocatorRiskTelemetry
 from midas.data.price_history import PriceHistory
 from midas.live_state import aggregate_cost_basis, consume_lots_fifo, resolve_purchase_date
 from midas.metrics import (
+    BLOCK_COUNT,
     compute_annualized_return,
+    compute_block_returns,
     compute_cagr,
+    compute_inflow_adjusted_returns,
     compute_max_drawdown,
     compute_sharpe,
     compute_sortino,
     compute_strategy_stats,
     compute_trade_stats,
+    compute_ulcer_index,
 )
 from midas.models import (
     AllocationConstraints,
@@ -120,6 +124,13 @@ class _Decision:
         )
 
 
+# The per-bar covariance fit behind vol attribution is the hottest line in a
+# backtest. Sampling every Nth held bar keeps the time-average faithful while
+# cutting the fits ~Nx; attribution shares move imperceptibly (they are
+# already averages over hundreds of bars).
+VOL_CONTRIB_SAMPLE_STRIDE = 5
+
+
 @dataclass
 class _SimState:
     """Mutable simulation state carried across trading days."""
@@ -148,11 +159,13 @@ class _SimState:
     # ticker, averaged over vol_contrib_bars when the result is built.
     vol_contrib_sums: dict[str, float] = field(default_factory=dict)
     vol_contrib_bars: int = 0
+    vol_contrib_ticks: int = 0  # held bars seen; every Nth is sampled for attribution
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
     restriction_tracker: RestrictionTracker | None = None
     twr_base_value: float = 0.0  # portfolio value after last cash infusion
+    inflows: dict[date, float] = field(default_factory=dict)  # external capital per day (infusions + activations)
     twr_periods: list[float] = field(default_factory=list)  # sub-period returns
     twr_split_idx: int | None = None  # index into twr_periods at train/test split
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
@@ -293,6 +306,7 @@ class BacktestEngine:
         log_fn: Callable[[str], None] | None = None,
         execution_mode: ExecutionMode = "next_open",
         tax_config: TaxConfig | None = None,
+        track_vol_contribution: bool = True,
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -303,6 +317,9 @@ class BacktestEngine:
         self._log = log_fn or (lambda _msg: None)
         self._execution_mode: ExecutionMode = execution_mode
         self._tax_config = tax_config
+        # Off in optimizer trials: attribution feeds only the report table,
+        # and its per-bar covariance fit is ~30% of a trial's runtime.
+        self._track_vol_contribution = track_vol_contribution
 
     def run(
         self,
@@ -634,6 +651,7 @@ class BacktestEngine:
                 pre_activation_value = state.portfolio_value(_close_prices(current_data))
                 state.close_twr_period(pre_activation_value)
                 state.twr_base_value = pre_activation_value + added_value
+                state.inflows[day] = state.inflows.get(day, 0.0) + added_value
 
                 state.positions[ticker] = shares
                 state.lots[ticker] = [
@@ -712,6 +730,7 @@ class BacktestEngine:
         state.close_twr_period(pre_infusion_value)
         state.cash += infusion.amount
         state.twr_base_value = pre_infusion_value + infusion.amount
+        state.inflows[day] = state.inflows.get(day, 0.0) + infusion.amount
         infusion.advance()
 
     def _update_high_water_marks(
@@ -1104,9 +1123,14 @@ class BacktestEngine:
             train_days = 0
             test_days = 0
         cagr = compute_cagr(starting_val, final_value, total_days)
-        max_drawdown = compute_max_drawdown(equity_curve)
-        sharpe = compute_sharpe(equity_curve)
-        sortino = compute_sortino(equity_curve)
+        # Every risk figure reads the inflow-adjusted series: a deposit is not
+        # return, and measured on the raw curve it would also mask drawdown depth.
+        adjusted_returns = compute_inflow_adjusted_returns(equity_curve, state.inflows)
+        max_drawdown = compute_max_drawdown(adjusted_returns)
+        sharpe = compute_sharpe(adjusted_returns)
+        sortino = compute_sortino(adjusted_returns)
+        ulcer = compute_ulcer_index(adjusted_returns)
+        block_returns = compute_block_returns(adjusted_returns, BLOCK_COUNT)
         win_rate, profit_factor, avg_win, avg_loss = compute_trade_stats(state.trades, state.basis_per_sell)
         # Annualize both sides of the efficiency ratio so train and test windows
         # of different lengths compare apples-to-apples (matches the walk-forward
@@ -1140,6 +1164,8 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            ulcer_index=round(ulcer, 6),
+            block_returns=[round(block, 6) for block in block_returns],
             total_days=total_days,
             train_days=train_days,
             test_days=test_days,
@@ -1294,10 +1320,13 @@ class BacktestEngine:
         window, same skip semantics as ``_apply_vol_target``.
         """
         risk_config = self._allocator.risk_config
-        if risk_config is None:
+        if risk_config is None or not self._track_vol_contribution:
             return
         held = [ticker for ticker, shares in state.positions.items() if shares > 0]
         if not held:
+            return
+        state.vol_contrib_ticks += 1
+        if (state.vol_contrib_ticks - 1) % VOL_CONTRIB_SAMPLE_STRIDE:
             return
         lookback = risk_config.vol_lookback_days
         end_prices: dict[str, float] = {}

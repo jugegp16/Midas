@@ -21,6 +21,7 @@ from midas.metrics import (
     TRADING_DAYS_PER_YEAR,
     compute_annualized_return,
     compute_cagr,
+    compute_inflow_adjusted_returns,
     compute_max_drawdown,
     compute_sharpe,
     compute_sortino,
@@ -762,6 +763,11 @@ def _curve(values: list[float], start: date = date(2024, 1, 1)) -> list[tuple[da
     return [(date.fromordinal(start.toordinal() + i), v) for i, v in enumerate(values)]
 
 
+def _returns(values: list[float]) -> list[float]:
+    """Simple daily returns of a list of equity values (what the engine feeds the risk metrics)."""
+    return compute_inflow_adjusted_returns(_curve(values), {})
+
+
 def _sell(d: date, ticker: str, shares: float, price: float, strategy: str = "S1") -> TradeRecord:
     return TradeRecord(
         date=d, ticker=ticker, direction=Direction.SELL, shares=shares, price=price, strategy_name=strategy
@@ -864,22 +870,22 @@ def test_annualized_return_extrapolates_short_windows_aggressively() -> None:
 
 
 def test_max_drawdown_monotone_up_is_zero() -> None:
-    assert compute_max_drawdown(_curve([100, 110, 120, 130])) == 0.0
+    assert compute_max_drawdown(_returns([100, 110, 120, 130])) == 0.0
 
 
 def test_max_drawdown_monotone_down() -> None:
     # 100 → 50 = 50% drawdown
-    assert compute_max_drawdown(_curve([100, 90, 75, 50])) == 0.5
+    assert compute_max_drawdown(_returns([100, 90, 75, 50])) == 0.5
 
 
 def test_max_drawdown_peak_then_recover() -> None:
     # peak 120 → trough 60 = 50%
-    dd = compute_max_drawdown(_curve([100, 120, 90, 60, 80, 110]))
+    dd = compute_max_drawdown(_returns([100, 120, 90, 60, 80, 110]))
     assert math.isclose(dd, 0.5, abs_tol=1e-9)
 
 
 def test_max_drawdown_single_point() -> None:
-    assert compute_max_drawdown(_curve([100])) == 0.0
+    assert compute_max_drawdown(_returns([100])) == 0.0
 
 
 def test_max_drawdown_empty() -> None:
@@ -890,30 +896,27 @@ def test_max_drawdown_empty() -> None:
 
 
 def test_sharpe_flat_curve_is_zero() -> None:
-    assert compute_sharpe(_curve([100, 100, 100, 100])) == 0.0
+    assert compute_sharpe(_returns([100, 100, 100, 100])) == 0.0
 
 
 def test_sharpe_too_few_points() -> None:
-    assert compute_sharpe(_curve([100, 101])) == 0.0
+    assert compute_sharpe(_returns([100, 101])) == 0.0
     assert compute_sharpe([]) == 0.0
 
 
 def test_sharpe_positive_when_mean_positive() -> None:
     # Mix of up and down days with positive bias
-    curve = _curve([100, 102, 101, 103, 102, 104, 103, 105])
-    s = compute_sharpe(curve)
+    s = compute_sharpe(_returns([100, 102, 101, 103, 102, 104, 103, 105]))
     assert s > 0
 
 
 def test_sharpe_negative_when_mean_negative() -> None:
-    curve = _curve([100, 98, 99, 97, 98, 96, 97, 95])
-    assert compute_sharpe(curve) < 0
+    assert compute_sharpe(_returns([100, 98, 99, 97, 98, 96, 97, 95])) < 0
 
 
 def test_sharpe_annualization_factor() -> None:
     # Returns with positive mean & nonzero std should scale by sqrt(252).
-    curve = _curve([100, 101, 102, 103])  # roughly +1%/day with shrinking returns
-    s = compute_sharpe(curve)
+    s = compute_sharpe(_returns([100, 101, 102, 103]))  # roughly +1%/day with shrinking returns
     # mean ≈ 0.0099, std small but nonzero — annualized factor present
     assert s > math.sqrt(TRADING_DAYS_PER_YEAR) * 0.5
 
@@ -923,29 +926,26 @@ def test_sharpe_annualization_factor() -> None:
 
 def test_sortino_no_downside_returns_zero_not_inf() -> None:
     # All-up curve → no negative returns → undefined → 0.0 (NOT inf)
-    curve = _curve([100, 101, 102, 103, 104])
-    result = compute_sortino(curve)
+    result = compute_sortino(_returns([100, 101, 102, 103, 104]))
     assert result == 0.0
     assert not math.isinf(result)
 
 
 def test_sortino_flat_returns_zero() -> None:
-    assert compute_sortino(_curve([100, 100, 100, 100])) == 0.0
+    assert compute_sortino(_returns([100, 100, 100, 100])) == 0.0
 
 
 def test_sortino_too_few_points() -> None:
-    assert compute_sortino(_curve([100, 101])) == 0.0
+    assert compute_sortino(_returns([100, 101])) == 0.0
     assert compute_sortino([]) == 0.0
 
 
 def test_sortino_negative_when_mean_negative() -> None:
-    curve = _curve([100, 98, 99, 97, 98, 96, 97, 95])
-    assert compute_sortino(curve) < 0
+    assert compute_sortino(_returns([100, 98, 99, 97, 98, 96, 97, 95])) < 0
 
 
 def test_sortino_positive_when_mean_positive_with_some_downside() -> None:
-    curve = _curve([100, 102, 101, 103, 102, 104, 103, 105])
-    assert compute_sortino(curve) > 0
+    assert compute_sortino(_returns([100, 102, 101, 103, 102, 104, 103, 105])) > 0
 
 
 # --- compute_trade_stats ---
@@ -2040,3 +2040,125 @@ def test_vol_contribution_is_time_averaged_not_end_snapshot() -> None:
     assert contributions.get("CRASH", 0.0) > 0.05
     assert contributions.get("KEEP", 0.0) > 0.0
     assert sum(contributions.values()) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_ulcer_and_block_returns_ignore_cash_infusions() -> None:
+    """Deposits are not performance: with flat prices and biweekly infusions the
+    equity climbs on deposits alone — corrected metrics must read it as zero."""
+    from midas.models import CashInfusion
+
+    prices = make_price_series(date(2024, 1, 2), 120, 100.0, [0.0] * 120, name="TEST")
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)],
+        available_cash=1000.0,
+        cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 1, 15), frequency="biweekly"),
+    )
+    engine = _build_engine()
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert result.equity_curve[-1][1] > result.equity_curve[0][1]  # deposits landed
+    assert result.sharpe_ratio == pytest.approx(0.0, abs=1e-9)
+    assert result.sortino_ratio == pytest.approx(0.0, abs=1e-9)
+    assert result.max_drawdown == pytest.approx(0.0, abs=1e-9)
+    assert result.ulcer_index == pytest.approx(0.0, abs=1e-9)
+    for block in result.block_returns:
+        assert block == pytest.approx(0.0, abs=1e-9)
+
+
+def test_cash_infusions_do_not_mask_drawdown() -> None:
+    """Deposits landing during a slide must not hide the slide.
+
+    The funded run's drawdown is legitimately shallower than the unfunded
+    one — idle deposits dilute the equity share — but it must sit far above
+    what the raw, deposit-inflated curve shows.
+    """
+    from midas.metrics import _drawdown_series
+    from midas.models import CashInfusion
+
+    prices = make_price_series(date(2024, 1, 2), 120, 100.0, [-0.003] * 120, name="TEST")
+    holdings = [Holding(ticker="TEST", shares=10, cost_basis=100.0)]
+    engine = _build_engine()
+    plain = engine.run(
+        PortfolioConfig(holdings=holdings, available_cash=1000.0),
+        {"TEST": prices},
+        min(prices.index),
+        max(prices.index),
+    )
+    funded = engine.run(
+        PortfolioConfig(
+            holdings=holdings,
+            available_cash=1000.0,
+            cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 1, 15), frequency="biweekly"),
+        ),
+        {"TEST": prices},
+        min(prices.index),
+        max(prices.index),
+    )
+    raw_masked = max(_drawdown_series(funded.equity_curve))
+    assert plain.max_drawdown > 0.10
+    assert raw_masked < 0.02  # deposits outrun the slide on the raw curve
+    assert 0.05 < funded.max_drawdown < plain.max_drawdown
+    assert funded.sharpe_ratio < 0
+
+
+def _vol_attribution_scenario() -> tuple[PortfolioConfig, dict[str, pd.DataFrame], date, date]:
+    from midas.models import RiskConfig  # noqa: F401  (used by callers)
+
+    start = date(2024, 1, 2)
+    rng = np.random.default_rng(7)
+    prices = make_price_series(
+        start=start, days=120, base_price=100.0, daily_returns=list(rng.normal(0.0005, 0.01, 120))
+    )
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=50.0, cost_basis=100.0)],
+        available_cash=1_000.0,
+    )
+    return portfolio, {"TEST": prices}, start, prices.index[-1]
+
+
+def _vol_engine(**engine_kwargs) -> BacktestEngine:
+    from midas.models import RiskConfig
+
+    return BacktestEngine(
+        allocator=Allocator(
+            [], AllocationConstraints(), 1, risk_config=RiskConfig(weighting="equal", vol_lookback_days=10)
+        ),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=AllocationConstraints(),
+        enable_split=False,
+        **engine_kwargs,
+    )
+
+
+def test_vol_attribution_can_be_switched_off_without_changing_results() -> None:
+    """Optimizer trials skip the report-only attribution; everything else is identical."""
+    portfolio, price_data, start, end = _vol_attribution_scenario()
+    tracked = _vol_engine().run(portfolio, price_data, start, end)
+    untracked = _vol_engine(track_vol_contribution=False).run(portfolio, price_data, start, end)
+
+    assert tracked.risk_metrics is not None and tracked.risk_metrics.per_ticker_vol_contribution
+    assert untracked.risk_metrics is not None
+    assert untracked.risk_metrics.per_ticker_vol_contribution == {}
+    assert untracked.twr == tracked.twr
+    assert untracked.equity_curve == tracked.equity_curve
+
+
+def test_vol_attribution_samples_bars_instead_of_every_bar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The covariance fit is the single hottest per-bar cost; a stride sample
+    keeps the time-average while cutting the fits ~5x."""
+    import midas.backtest as backtest_module
+
+    calls = []
+    real = backtest_module.per_ticker_vol_contribution
+
+    def counting(weights, log_returns):
+        calls.append(1)
+        return real(weights, log_returns)
+
+    monkeypatch.setattr(backtest_module, "per_ticker_vol_contribution", counting)
+    portfolio, price_data, start, end = _vol_attribution_scenario()
+    result = _vol_engine().run(portfolio, price_data, start, end)
+
+    assert result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution
+    n_bars = len(result.equity_curve)
+    assert 0 < len(calls) <= n_bars // backtest_module.VOL_CONTRIB_SAMPLE_STRIDE + 1

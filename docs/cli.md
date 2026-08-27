@@ -33,6 +33,80 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
+| `--objective` | `calmar` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
+
+### Objectives
+
+Every trial is scored on the **training window only** — the first
+`--train-pct` of trading days in standard mode, each fold's anchored
+train window in walk-forward — so no objective ever sees the test
+period. The best parameters are then re-run over the full range with the
+split for the printed train/test comparison, and the optimized YAML opens
+with a `# optimized with --objective …` comment recording the choice.
+
+- `calmar` (default): training return divided by max drawdown. Chosen as
+  the default from a five-objective walk-forward study: it was the only
+  objective that never lost badly to buy-and-hold on any basket/strategy
+  combination — the property a sight-unseen default needs. The ratio is
+  floored at a 1% drawdown so a drawdown-free window stays finite. Max
+  drawdown is a single worst event per window, so `calmar` is noisier
+  than a mean/σ ratio — in practice that noise cost it nothing.
+- `sharpe`: annualized Sharpe of the training equity curve. Strong on
+  symmetric (mean-reversion) strategies, but it penalizes upside
+  volatility, which guts right-skewed strategies whose edge lives in a
+  few big winners.
+- `gross`: raw time-weighted return. The historical objective, kept for
+  comparison and for portfolios where return is genuinely all that
+  matters — but it overfits harder the more trials you give it.
+- `net`: time-weighted return after capital-gains tax, using the
+  portfolio's `tax:` block. A high-turnover strategy that wins gross can
+  lose its edge after short-term gains; `net` lets the search see that.
+  Refuses to start without a `tax:` block (and offers the one-time setup
+  prompt when the portfolio file is silent on tax). The after-tax TWR is
+  exact only without mid-period cash infusions; with them the objective
+  mixes contribution timing into the tax drag it scores.
+- `ulcer`: training return divided by the Ulcer Index — the RMS of
+  drawdown depth across every bar (Martin ratio). Calmar's shape without
+  its single-worst-event noise: long shallow bleeds count, one historical
+  spike does not dominate. Floored at 0.5%.
+- `robust`: the lower-quartile return across 8 contiguous blocks of the
+  training window. A consistency objective rather than a risk ratio: a
+  parameter set that made all its money in one lucky streak scores
+  terribly even if its total return and drawdown look fine.
+
+Every risk figure — Sharpe, Sortino, max drawdown, Ulcer Index, and the
+block returns, in the optimizer and in the backtest report alike — is
+computed on an inflow-adjusted return series: cash infusions and
+deferred position activations are stripped out, so deposits are never
+counted as performance and never mask drawdown depth.
+
+### Trial budget and search noise
+
+Walk-forward divides `-n` across folds, so a 10-year range (16 folds) at
+the default `-n 200` gives **12 trials per fold** — far too few for the
+sampler to settle. Measured on `etf.yaml` + balanced-growth, varying only
+`--seed`:
+
+| trials/fold | OOS CAGR across 5 seeds | spread |
+|---|---|---|
+| 30 | 7.0 – 14.7% | 7.6 pts |
+| 100 | 9.5 – 12.4% | 2.9 pts |
+
+The median barely moved (12.5% → 11.6%), so a small budget is noisy
+rather than biased — but the noise is larger than the differences people
+usually want to read from these runs (objective choice moved medians by
+2–3 points). Below 100 trials per fold the report says so explicitly.
+Use `-n 100 × folds` or more for a result you intend to act on, and vary
+`--seed` when you need to know how much of a difference is real.
+
+Train/test returns and the efficiency ratio stay return-based under every
+objective, so they remain comparable across runs. When the portfolio has a
+`tax:` block, the walk-forward report adds an after-tax OOS column and an
+after-tax OOS CAGR so `net` can be judged on its own terms — with one
+caveat: each fold is a fresh backtest, so lots re-enter at the fold start
+and every gain inside a short fold is short-term. Per-fold after-tax
+figures overstate tax drag relative to a continuous run; compare
+objectives against each other, not against the continuous backtest.
 
 ## backtest
 

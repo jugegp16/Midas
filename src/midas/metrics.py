@@ -7,9 +7,10 @@ the output data structures only.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -18,6 +19,10 @@ from midas.models import Direction, TradeRecord
 TRADING_DAYS_PER_YEAR = 252
 DAYS_PER_YEAR = 365.25  # average calendar days/year (accounts for leap years)
 SHORT_WINDOW_THRESHOLD_DAYS = 365  # windows below this are "sub-one-year" for UX warnings
+# Contiguous equal blocks the training equity path is split into for the
+# robustness objective: coarse enough that a block is a meaningful stretch,
+# fine enough that one lucky streak cannot carry the score.
+BLOCK_COUNT = 8
 
 
 @dataclass
@@ -51,10 +56,22 @@ def _drawdown_series(equity_curve: Sequence[tuple[date, float]]) -> list[float]:
     return result
 
 
-def _daily_returns(equity_curve: Sequence[tuple[date, float]]) -> list[float]:
-    """Simple daily returns between consecutive equity points with positive base."""
-    values = [val for _, val in equity_curve]
-    return [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values)) if values[i - 1] > 0]
+def _drawdown_depths(daily_returns: Sequence[float]) -> list[float]:
+    """Drawdown from running peak at each point of a curve rebuilt from *daily_returns*.
+
+    The starting point is at its own peak, so the list has one more entry
+    than there are returns. Rebuilding from returns (rather than reading
+    the raw equity curve) is what lets inflow-adjusted returns yield an
+    inflow-clean drawdown path.
+    """
+    value = 1.0
+    peak = 1.0
+    depths = [0.0]
+    for ret in daily_returns:
+        value *= 1.0 + ret
+        peak = max(peak, value)
+        depths.append((peak - value) / peak if peak > 0 else 0.0)
+    return depths
 
 
 # ---------------------------------------------------------------------------
@@ -109,17 +126,78 @@ def compute_annualized_return(cumulative_return: float, days: int) -> float:
     return float(growth ** (1.0 / years) - 1.0)
 
 
-def compute_max_drawdown(equity_curve: Sequence[tuple[date, float]]) -> float:
-    """Maximum peak-to-trough percentage decline."""
-    dd = _drawdown_series(equity_curve)
-    return max(dd) if len(dd) >= 2 else 0.0
-
-
-def compute_sharpe(equity_curve: Sequence[tuple[date, float]]) -> float:
-    """Annualized Sharpe ratio (risk-free = 0) from daily returns."""
-    if len(equity_curve) < 3:
+def compute_max_drawdown(daily_returns: Sequence[float]) -> float:
+    """Maximum peak-to-trough decline of the path compounded from *daily_returns*."""
+    if not daily_returns:
         return 0.0
-    daily_returns = _daily_returns(equity_curve)
+    return max(_drawdown_depths(daily_returns))
+
+
+def compute_inflow_adjusted_returns(
+    equity_curve: Sequence[tuple[date, float]],
+    inflows: Mapping[date, float],
+) -> list[float]:
+    """Daily returns of *equity_curve* with external deposits stripped out.
+
+    A cash infusion (or a deferred position activating) raises equity without
+    being performance; metrics computed off the raw curve would count it as
+    return and mask drawdown depth. Each day's inflow is subtracted from that
+    day's value before the ratio.
+
+    Args:
+        equity_curve: Daily ``(date, portfolio_value)`` points.
+        inflows: External capital added per date (missing dates mean zero).
+
+    Returns:
+        One return per curve segment (``len(equity_curve) - 1`` values).
+    """
+    returns: list[float] = []
+    for (_, prev_value), (day, value) in itertools.pairwise(equity_curve):
+        if prev_value <= 0:
+            returns.append(0.0)
+            continue
+        returns.append((value - inflows.get(day, 0.0)) / prev_value - 1.0)
+    return returns
+
+
+def compute_ulcer_index(daily_returns: Sequence[float]) -> float:
+    """Ulcer Index: RMS of drawdown depth across the whole return path.
+
+    Unlike max drawdown (one worst event), this weights every underwater bar
+    by its depth, so long shallow bleeds count and a single spike does not
+    dominate.
+    """
+    if not daily_returns:
+        return 0.0
+    depths = _drawdown_depths(daily_returns)
+    return math.sqrt(sum(depth * depth for depth in depths) / len(depths))
+
+
+def compute_block_returns(daily_returns: Sequence[float], n_blocks: int) -> list[float]:
+    """Compound *daily_returns* into up to *n_blocks* contiguous equal-size blocks.
+
+    Blocks differ by at most one bar (earlier blocks take the remainder).
+    Fewer bars than blocks yields one block per bar.
+
+    Returns:
+        One compounded return per block; empty when there are no returns.
+    """
+    if not daily_returns:
+        return []
+    n_blocks = min(n_blocks, len(daily_returns))
+    base, remainder = divmod(len(daily_returns), n_blocks)
+    blocks: list[float] = []
+    start = 0
+    for i in range(n_blocks):
+        size = base + (1 if i < remainder else 0)
+        block = daily_returns[start : start + size]
+        start += size
+        blocks.append(math.prod(1.0 + ret for ret in block) - 1.0)
+    return blocks
+
+
+def compute_sharpe(daily_returns: Sequence[float]) -> float:
+    """Annualized Sharpe ratio (risk-free = 0) of *daily_returns*."""
     if len(daily_returns) < 2:
         return 0.0
     mean_ret = sum(daily_returns) / len(daily_returns)
@@ -130,17 +208,14 @@ def compute_sharpe(equity_curve: Sequence[tuple[date, float]]) -> float:
     return (mean_ret / std_ret) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
-def compute_sortino(equity_curve: Sequence[tuple[date, float]]) -> float:
-    """Annualized Sortino ratio (risk-free = 0, downside deviation only).
+def compute_sortino(daily_returns: Sequence[float]) -> float:
+    """Annualized Sortino ratio (risk-free = 0, downside deviation only) of *daily_returns*.
 
     When there is no downside (no negative daily returns) the metric is
     undefined. We return 0.0 as a sentinel rather than `inf` so that callers
     averaging across multiple windows (e.g. walk-forward folds) aren't
     poisoned by a single zero-downside fold.
     """
-    if len(equity_curve) < 3:
-        return 0.0
-    daily_returns = _daily_returns(equity_curve)
     if len(daily_returns) < 2:
         return 0.0
     mean_ret = sum(daily_returns) / len(daily_returns)

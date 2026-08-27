@@ -21,6 +21,16 @@ def forecast_scaling_error(value: object) -> str:
     )
 
 
+type Objective = Literal["gross", "sharpe", "net", "calmar", "ulcer", "robust"]
+DEFAULT_OBJECTIVE: Objective = "calmar"
+
+
+def objective_error(value: object) -> str:
+    """One error message for every layer that validates an optimizer objective."""
+    allowed = ", ".join(repr(v) for v in get_args(Objective.__value__))
+    return f"objective must be one of {allowed}, got {value!r}"
+
+
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
 DEFAULT_SOFTMAX_TEMPERATURE = 0.5

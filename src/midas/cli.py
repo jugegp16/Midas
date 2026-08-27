@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import click
 import pandas as pd
@@ -19,9 +19,12 @@ from midas.config import load_portfolio, load_strategies
 from midas.data import CachedYFinanceProvider
 from midas.metrics import SHORT_WINDOW_THRESHOLD_DAYS
 from midas.models import (
+    DEFAULT_OBJECTIVE,
     AlertsConfig,
     AllocationConstraints,
     Direction,
+    ForecastScaling,
+    Objective,
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
@@ -726,6 +729,22 @@ def _validate_optimize_options(
     type=int,
     help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
 )
+@click.option(
+    "--seed",
+    default=42,
+    show_default=True,
+    type=int,
+    help="Sampler seed. Same seed + same inputs reproduces the search exactly; vary it to measure search noise.",
+)
+@click.option(
+    "--objective",
+    type=click.Choice(get_args(Objective.__value__)),
+    default=DEFAULT_OBJECTIVE,
+    show_default=True,
+    help="What trials maximize on the training window: calmar (return over max drawdown), "
+    "sharpe (annualized Sharpe), gross (raw return), net (return after tax; needs a tax: block), "
+    "ulcer (return over Ulcer Index), robust (lower-quartile block return).",
+)
 def optimize(
     portfolio: str,
     strategies: str | None,
@@ -737,22 +756,16 @@ def optimize(
     walk_forward: bool,
     wf_min_train_pct: float | None,
     wf_min_test_days: int | None,
+    seed: int,
+    objective: Objective,
 ) -> None:
     """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
-    from midas.optimizer import (
-        WF_MIN_TEST_DAYS,
-        WF_MIN_TRAIN_PCT,
-        max_warmup_for_search,
-        walk_forward_optimize,
-        write_strategies_yaml,
-    )
-    from midas.optimizer import (
-        optimize as run_optimize,
-    )
+    from midas.optimizer import max_warmup_for_search
 
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
 
     port = load_portfolio(Path(portfolio))
+    tax_config = _tax_config_for_objective(port, Path(portfolio), objective)
 
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
@@ -768,6 +781,63 @@ def optimize(
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
     price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
 
+    try:
+        _run_optimizer_and_write(
+            port,
+            price_data,
+            start_d,
+            end_d,
+            strategy_names=strategy_names,
+            n_trials=n_trials,
+            min_cash_pct=min_cash_pct,
+            risk_config=risk_config,
+            forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
+            seed=seed,
+            output=output,
+            walk_forward=walk_forward,
+            train_pct=train_pct,
+            wf_min_train_pct=wf_min_train_pct,
+            wf_min_test_days=wf_min_test_days,
+        )
+    except ValueError as exc:
+        # The optimizer rejects windows it cannot split (e.g. a train_pct that
+        # leaves no training days once the trading calendar is known).
+        raise click.ClickException(str(exc)) from exc
+
+
+def _run_optimizer_and_write(
+    port: PortfolioConfig,
+    price_data: dict[str, pd.DataFrame],
+    start_d: date,
+    end_d: date,
+    *,
+    strategy_names: list[str] | None,
+    n_trials: int,
+    min_cash_pct: float,
+    risk_config: RiskConfig | None,
+    forecast_scaling: ForecastScaling,
+    objective: Objective,
+    tax_config: TaxConfig | None,
+    seed: int,
+    output: str,
+    walk_forward: bool,
+    train_pct: float,
+    wf_min_train_pct: float | None,
+    wf_min_test_days: int | None,
+) -> None:
+    """Run the chosen optimizer mode, write the strategies YAML, and print its report."""
+    from midas.optimizer import (
+        WF_MIN_TEST_DAYS,
+        WF_MIN_TRAIN_PCT,
+        walk_forward_optimize,
+        write_strategies_yaml,
+    )
+    from midas.optimizer import (
+        optimize as run_optimize,
+    )
+
     if walk_forward:
         wf_result = walk_forward_optimize(
             portfolio=port,
@@ -782,6 +852,9 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
+            seed=seed,
         )
         write_strategies_yaml(
             wf_result.best_params,
@@ -789,6 +862,7 @@ def optimize(
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
         )
         _print_walk_forward_report(wf_result, output)
     else:
@@ -804,6 +878,9 @@ def optimize(
             log_fn=print_status,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
+            tax_config=tax_config,
+            seed=seed,
         )
         write_strategies_yaml(
             result.best_params,
@@ -811,30 +888,62 @@ def optimize(
             min_cash_pct=min_cash_pct,
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
+            objective=objective,
         )
         _print_optimize_report(result, train_pct, output)
 
 
+def _tax_config_for_objective(port: PortfolioConfig, portfolio_path: Path, objective: Objective) -> TaxConfig | None:
+    """Resolve the tax config the optimizer runs with.
+
+    Any declared tax config is passed through so the final report carries
+    after-tax figures under every objective. ``net`` additionally needs one:
+    offer the one-time interactive setup when the file is silent on tax, and
+    fail before any prices are fetched when it still isn't configured.
+
+    Raises:
+        click.ClickException: ``--objective net`` with after-tax accounting off.
+    """
+    if objective != "net":
+        return port.tax_config
+    tax_config = _ensure_tax_config(port, portfolio_path)
+    if tax_config is None:
+        raise click.ClickException(
+            f"--objective net requires a tax: block in {portfolio_path} (after-tax accounting is off). "
+            "Add one, or pick another --objective."
+        )
+    return tax_config
+
+
 def _print_fold_table(folds: Sequence[FoldResult]) -> None:
     """Render the per-fold walk-forward results table."""
-    # Per-fold results — wider since this table has 9 columns.
+    # Per-fold results — wider since this table has 9 columns (10 with tax).
     fold_table = make_wide_table("Walk-Forward Analysis", width=140)
     fold_table.add_column("Fold", justify="center", style="bold")
     fold_table.add_column("IS Period")
     fold_table.add_column("OOS Period")
     fold_table.add_column("IS Return (Annualized)", justify="right")
     fold_table.add_column("OOS Return (Annualized)", justify="right")
+    taxed = any(fold.after_tax_test_return is not None for fold in folds)
+    if taxed:
+        fold_table.add_column("OOS After-Tax (Annualized)", justify="right")
     fold_table.add_column("Max DD", justify="right")
     fold_table.add_column("Sharpe", justify="right")
     fold_table.add_column("Sortino", justify="right")
     fold_table.add_column("Win Rate", justify="right")
     for fold in folds:
+        after_tax = (
+            [color_signed(fold.after_tax_test_return) if fold.after_tax_test_return is not None else "—"]
+            if taxed
+            else []
+        )
         fold_table.add_row(
             str(fold.fold),
             f"{fold.train_start} → {fold.train_end}",
             f"{fold.test_start} → {fold.test_end}",
             color_signed(fold.train_return),
             color_signed(fold.test_return),
+            *after_tax,
             f"[red]{fold.max_drawdown:.2%}[/red]",
             color_signed(fold.sharpe_ratio, fmt=".2f"),
             color_signed(fold.sortino_ratio, fmt=".2f"),
@@ -857,12 +966,35 @@ def _print_short_fold_note(folds: Sequence[FoldResult]) -> None:
     )
 
 
+def _print_low_trials_note(wf_result: WalkForwardResult) -> None:
+    """Warn when the per-fold trial budget leaves results inside sampler noise."""
+    from midas.optimizer import MIN_TRIALS_PER_FOLD
+
+    n_folds = len(wf_result.folds)
+    if not n_folds:
+        return
+    per_fold = wf_result.total_trials // n_folds
+    if per_fold >= MIN_TRIALS_PER_FOLD:
+        return
+    suggested = MIN_TRIALS_PER_FOLD * n_folds
+    console.print(
+        f"[yellow]Note: {per_fold} trials per fold is below the {MIN_TRIALS_PER_FOLD} "
+        f"needed for the search to settle — results at this budget are dominated by "
+        f"sampler noise, and re-running with a different --seed can move OOS return "
+        f"by several points. Use -n {suggested} or more for a decision you intend to "
+        f"act on.[/yellow]",
+        justify="center",
+    )
+
+
 def _print_wf_aggregate(wf_result: WalkForwardResult) -> None:
     """Render the aggregate walk-forward metrics table."""
     # Aggregate metrics — same layout as the backtest summary tables.
     n_folds = len(wf_result.folds)
     agg = make_metric_table("Walk-Forward Aggregate")
     agg.add_row("Annualized OOS Return (CAGR)", color_signed(wf_result.annualized_return))
+    if wf_result.after_tax_annualized_return is not None:
+        agg.add_row("Annualized OOS Return After-Tax", color_signed(wf_result.after_tax_annualized_return))
     agg.add_row(
         "Per-Fold OOS Mean ± Std (Annualized)",
         f"{wf_result.mean_test_return:.2%} ± {wf_result.std_test_return:.2%}",
@@ -890,8 +1022,15 @@ def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> Non
     console.print()
     _print_fold_table(wf_result.folds)
     _print_short_fold_note(wf_result.folds)
+    _print_low_trials_note(wf_result)
     _print_wf_aggregate(wf_result)
-    print_run_info([("Total Trials", str(wf_result.total_trials)), ("Output", output)])
+    print_run_info(
+        [
+            ("Objective", wf_result.objective),
+            ("Total Trials", str(wf_result.total_trials)),
+            ("Output", output),
+        ]
+    )
     print_params_table(
         "Deployed Parameters (from latest fold)",
         wf_result.best_params,
@@ -901,7 +1040,7 @@ def _print_walk_forward_report(wf_result: WalkForwardResult, output: str) -> Non
 
 def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str) -> None:
     """Render the single-run optimization console report."""
-    from midas.optimizer import ALLOCATION_KEY
+    from midas.optimizer import ALLOCATION_KEY, format_objective
 
     console.print()
 
@@ -909,8 +1048,10 @@ def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str
     assert result.best_result is not None
     print_backtest_summary(result.best_result)
 
+    best = format_objective(result.best_objective_value, result.objective)
     print_run_info(
         [
+            ("Objective", f"{result.objective} (best in-sample: {best})"),
             ("Trials", str(result.trials_run)),
             ("Train/Test Split", f"{train_pct:.0%} / {1 - train_pct:.0%}" if train_pct < 1.0 else "100% / 0%"),
             ("Output", output),
