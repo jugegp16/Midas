@@ -28,6 +28,7 @@ from midas.models import (
     Objective,
     PortfolioConfig,
     RiskConfig,
+    StrategyConfig,
     TaxConfig,
     objective_error,
 )
@@ -405,7 +406,7 @@ def _run_trial(
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
     track_vol_contribution: bool = True,
-    exit_params: dict[str, dict[str, float]] | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
 ) -> tuple[TrialMetrics, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
@@ -438,7 +439,10 @@ def _run_trial(
         if exits:
             msg = "strategy_params contains exit rules but exit_params is also given"
             raise ValueError(msg)
-        _, exits = _instantiate_strategies({name: dict(params) for name, params in exit_params.items()})
+        # Exit params are numeric by construction; float() keeps the shared
+        # instantiation path typed and fails loudly on anything else.
+        numeric_exits = {name: {k: float(v) for k, v in params.items()} for name, params in exit_params.items()}
+        _, exits = _instantiate_strategies(numeric_exits)
 
     allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
     order_sizer = OrderSizer()
@@ -530,7 +534,7 @@ def format_objective(value: float, objective: Objective) -> str:
 
 def _require_split_consistency(
     search_globals: bool,
-    exit_params: dict[str, dict[str, float]] | None,
+    exit_params: dict[str, dict[str, float | int | str]] | None,
     constraints: AllocationConstraints | None,
 ) -> None:
     """Reject the contradictory combination of searching and fixing the same knobs.
@@ -569,7 +573,7 @@ def _init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
-    exit_params: dict[str, dict[str, float]] | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise standard-optimizer workers with the train-window trial state."""
@@ -612,7 +616,7 @@ def _wf_init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
-    exit_params: dict[str, dict[str, float]] | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
@@ -785,7 +789,7 @@ def optimize(
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
     search_globals: bool = False,
-    exit_params: dict[str, dict[str, float]] | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
@@ -1020,7 +1024,7 @@ def walk_forward_optimize(
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
     search_globals: bool = False,
-    exit_params: dict[str, dict[str, float]] | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
@@ -1185,6 +1189,8 @@ def write_strategies_yaml(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     objective: Objective | None = None,
+    exit_configs: list[StrategyConfig] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
@@ -1207,11 +1213,21 @@ def write_strategies_yaml(
         objective: When given, recorded as a leading comment so the file says
             what it was optimized for. A comment, never a key — the loader
             must not see it as config.
+        exit_configs: Policy-owned exit rules, appended to the strategies
+            list verbatim (never optimized).
+        constraints: Policy-owned allocator globals; when given, their
+            values are emitted instead of anything sampled.
     """
     output: dict[str, object] = {}
 
-    # Emit global allocation knobs as top-level keys
-    if ALLOCATION_KEY in params:
+    if constraints is not None:
+        # Policy-owned globals round-trip from the operator's config.
+        output["softmax_temperature"] = round(constraints.softmax_temperature, 4)
+        output["min_buy_delta"] = round(constraints.min_buy_delta, 4)
+        if constraints.max_position_pct is not None:
+            output["max_position_pct"] = round(constraints.max_position_pct, 4)
+    elif ALLOCATION_KEY in params:
+        # Legacy search_globals path: emit the sampled values.
         for key, val in params[ALLOCATION_KEY].items():
             output[key] = round(val, 4)
 
@@ -1243,6 +1259,12 @@ def write_strategies_yaml(
         if clean_params:
             entry["params"] = clean_params
         strategies.append(entry)
+
+    for cfg in exit_configs or []:
+        exit_entry: dict[str, object] = {"name": cfg.name}
+        if cfg.params:
+            exit_entry["params"] = dict(cfg.params)
+        strategies.append(exit_entry)
 
     output["strategies"] = strategies
 

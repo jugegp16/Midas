@@ -33,11 +33,15 @@ def fake_prices(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(midas.cli, "_stdin_is_interactive", lambda: False)
 
 
-def _invoke(tmp_path: Path, portfolio_text: str, *extra: str):
+def _invoke(tmp_path: Path, portfolio_text: str, *extra: str, strategies_text: str | None = None):
     portfolio = tmp_path / "portfolio.yaml"
     portfolio.write_text(portfolio_text)
     out = tmp_path / "optimized.yaml"
     args = ["optimize", "-p", str(portfolio), "--start", "2023-01-02", "--end", "2024-06-01", "-o", str(out), "-n", "2"]
+    if strategies_text is not None:
+        strategies = tmp_path / "strats.yaml"
+        strategies.write_text(strategies_text)
+        args += ["-s", str(strategies)]
     return CliRunner().invoke(cli, [*args, *extra]), out
 
 
@@ -127,3 +131,49 @@ def test_walk_forward_is_quiet_when_trials_per_fold_is_adequate(tmp_path: Path, 
     result, _ = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--walk-forward", "-n", "400", "--objective", "gross")
     assert result.exit_code == 0, result.output
     assert "trials per fold" not in result.output
+
+
+STRATS_WITH_EXITS = """\
+softmax_temperature: 0.4
+min_buy_delta: 0.03
+max_position_pct: 0.5
+min_cash_pct: 0.05
+strategies:
+  - name: MeanReversion
+    weight: 1.0
+    params: {window: 20, threshold: 0.05}
+  - name: StopLoss
+    params: {loss_threshold: 0.08}
+"""
+
+
+def test_optimize_keeps_exits_and_globals_policy_owned(tmp_path: Path, fake_prices: None) -> None:
+    result, out = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "gross", strategies_text=STRATS_WITH_EXITS)
+    assert result.exit_code == 0, result.output
+    data = yaml.safe_load(out.read_text())
+    names = [s["name"] for s in data["strategies"]]
+    assert "MeanReversion" in names and "StopLoss" in names
+    stop = next(s for s in data["strategies"] if s["name"] == "StopLoss")
+    assert stop["params"] == {"loss_threshold": 0.08}  # verbatim, not optimized
+    assert data["softmax_temperature"] == 0.4  # policy-owned, round-tripped
+    assert data["max_position_pct"] == 0.5
+
+
+def test_search_globals_flag_restores_legacy_output(tmp_path: Path, fake_prices: None) -> None:
+    result, out = _invoke(tmp_path, PORTFOLIO_NO_TAX, "--objective", "gross", "--search-globals")
+    assert result.exit_code == 0, result.output
+    data = yaml.safe_load(out.read_text())
+    assert "softmax_temperature" in data  # searched value emitted, as before
+
+
+def test_search_globals_rejects_strategy_file_with_exits(tmp_path: Path, fake_prices: None) -> None:
+    result, _ = _invoke(
+        tmp_path,
+        PORTFOLIO_NO_TAX,
+        "--objective",
+        "gross",
+        "--search-globals",
+        strategies_text=STRATS_WITH_EXITS,
+    )
+    assert result.exit_code != 0
+    assert "search-globals" in result.output

@@ -730,6 +730,13 @@ def _validate_optimize_options(
     help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
 )
 @click.option(
+    "--search-globals",
+    is_flag=True,
+    default=False,
+    help="Legacy full search space: exit-rule parameters and allocator globals become searchable. "
+    "Incompatible with a strategies file that pins exit rules.",
+)
+@click.option(
     "--seed",
     default=42,
     show_default=True,
@@ -756,11 +763,20 @@ def optimize(
     walk_forward: bool,
     wf_min_train_pct: float | None,
     wf_min_test_days: int | None,
+    search_globals: bool,
     seed: int,
     objective: Objective,
 ) -> None:
-    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
+    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE).
+
+    By default only entry-signal parameters and weights are searched; exit
+    rules and allocator globals are policy-owned and pass through the search
+    untouched. Without -s, all entry signals are searched and no exit rules
+    run — pin exits in a strategies file for any run you intend to act on.
+    """
     from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
 
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
 
@@ -768,14 +784,26 @@ def optimize(
     tax_config = _tax_config_for_objective(port, Path(portfolio), objective)
 
     strategy_names: list[str] | None = None
-    min_cash_pct = AllocationConstraints().min_cash_pct
-    forecast_scaling = AllocationConstraints().forecast_scaling
+    strat_constraints = AllocationConstraints()
     risk_config: RiskConfig = RiskConfig()
+    exit_configs: list[StrategyConfig] = []
     if strategies:
         strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
-        strategy_names = [cfg.name for cfg in strat_configs]
-        min_cash_pct = strat_constraints.min_cash_pct
-        forecast_scaling = strat_constraints.forecast_scaling
+        entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+        exit_configs = [c for c in strat_configs if c not in entry_configs]
+        if search_globals:
+            if exit_configs:
+                raise click.UsageError(
+                    "--search-globals searches exit parameters; remove the pinned exit rules "
+                    f"({', '.join(c.name for c in exit_configs)}) from the strategies file"
+                )
+            strategy_names = [cfg.name for cfg in strat_configs]
+        else:
+            strategy_names = [cfg.name for cfg in entry_configs]
+    min_cash_pct = strat_constraints.min_cash_pct
+    forecast_scaling = strat_constraints.forecast_scaling
+    exit_params = None if search_globals else {c.name: dict(c.params) for c in exit_configs}
+    constraints = None if search_globals else strat_constraints
 
     start_d, end_d = _to_date(start), _to_date(end)
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
@@ -795,6 +823,10 @@ def optimize(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
+            exit_configs=exit_configs,
             output=output,
             walk_forward=walk_forward,
             train_pct=train_pct,
@@ -821,6 +853,10 @@ def _run_optimizer_and_write(
     objective: Objective,
     tax_config: TaxConfig | None,
     seed: int,
+    search_globals: bool,
+    exit_params: dict[str, dict[str, float | int | str]] | None,
+    constraints: AllocationConstraints | None,
+    exit_configs: list[StrategyConfig],
     output: str,
     walk_forward: bool,
     train_pct: float,
@@ -855,6 +891,9 @@ def _run_optimizer_and_write(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
         )
         write_strategies_yaml(
             wf_result.best_params,
@@ -863,6 +902,8 @@ def _run_optimizer_and_write(
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
             objective=objective,
+            exit_configs=exit_configs,
+            constraints=constraints,
         )
         _print_walk_forward_report(wf_result, output)
     else:
@@ -881,6 +922,9 @@ def _run_optimizer_and_write(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
         )
         write_strategies_yaml(
             result.best_params,
@@ -889,6 +933,8 @@ def _run_optimizer_and_write(
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
             objective=objective,
+            exit_configs=exit_configs,
+            constraints=constraints,
         )
         _print_optimize_report(result, train_pct, output)
 
