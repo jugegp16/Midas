@@ -1,7 +1,7 @@
 # Policy engine: ensemble deployment, validated re-fit, live monitoring — design
 
-**Date:** 2026-08-29 (v3 after second external review pass)
-**Status:** Draft — for review
+**Date:** 2026-08-29 (v3.1 — open questions resolved)
+**Status:** Approved
 **Supersedes:** the 2026-08-23 comparison-harness draft (absorbed here)
 **Delivery:** one PR, phased commits (decision: no sub-issues)
 **Evidence:** `docs/experiments/2026-08-24-seed-budget-grid/` (lab notes +
@@ -114,16 +114,22 @@ space, incompatible with `deployment: ensemble`.
 
 ## Component 1 — ensemble deployment (forecast averaging)
 
-**Membership.** K entry-parameter sets, stratified top-K/R per restart.
-**Dedupe is behavioral, not textual:** candidate members are deduplicated
-by the hash of their training-window target series, since two tuples
-differing only in a never-binding parameter are the same member and
-tuple-dedupe would double-weight them. Selection walks down each
-restart's ranking until K/R behaviorally distinct members are found.
+**Membership.** K entry-parameter sets (default `ensemble_size: 20` —
+a weak prior; a K ∈ {4, 12, 20, 40} sweep is queued as post-landing
+follow-up), stratified top-K/R per restart. **Dedupe is behavioral, not
+textual:** candidate members are deduplicated by the hash of their
+training-window target series **rounded to 4 decimals** (decided: exact
+float hashing would treat 1e-12 jitter as distinct members), since two
+tuples differing only in a never-binding parameter are the same member
+and tuple-dedupe would double-weight them. Selection walks down each
+restart's ranking until K/R behaviorally distinct members are found; a
+test pins that near-identical members collapse.
 
 **Blending.** Each member produces blended per-ticker entry scores
-(through quantile normalization); the ensemble averages the scores
-(flat mean); then **one** policy-level pass of softmax, caps, risk
+(through quantile normalization); the ensemble averages the scores —
+**flat mean** (decided: score-weighting would re-trust the in-sample
+score differences the ensemble exists to distrust, and top-K scores are
+compressed together anyway; a sweep can revisit); then **one** policy-level pass of softmax, caps, risk
 overlay, and exit clamps runs on the blend. Stops keep their max-loss
 guarantee; risk targets are hit exactly once; `clamp_attribution`,
 sizing, trade log, and alerts are unchanged.
@@ -229,8 +235,10 @@ one or more portfolios, with `--seeds` replication.
 
 **Landing experiments — criteria pre-registered here, before running:**
 
-1. `deployment: best` vs `ensemble` (vs `spp`-median if cheap — open
-   question 3). **Ensemble becomes the default only if** its block-
+1. `deployment: best` vs `ensemble` vs a **sampled SPP approximation**
+   (median deployment of a random sample of the trial pool — full SPP
+   requires evaluating the whole pool and is dropped; the sample rides
+   only if it fits the overnight budget). **Ensemble becomes the default only if** its block-
    bootstrap OOS CAGR interval is at least as good as `best`'s on both
    baskets **and** it does not increase turnover-driven after-tax drag by
    more than 1 pt on either. Equal-return-lower-drag also adopts. Any
@@ -342,12 +350,14 @@ Unchanged from v2: default flips without measurement, drift-triggered
 Monte Carlo, #54/#89/#90 themselves (#54's altitude change gets a
 comment; its build stays out).
 
-## Open questions
+## Resolved decisions (2026-08-29)
 
-1. Member weighting: flat mean drafted; score-weighted comparable later.
-2. `ensemble_size` default (20 drafted) — measurable, not decidable.
-3. Is `spp`-median cheap enough for landing experiment 1? It requires
-   scoring the whole pool's deployments, not just top-K.
-4. Behavioral dedupe granularity: target-series hash on the training
-   window is drafted; a tolerance (near-identical series) may be needed
-   if float jitter defeats exact hashing.
+1. Member weighting: **flat mean** (rationale inline in Component 1).
+2. `ensemble_size`: **20**, held as a weak prior; K sweep queued
+   post-landing.
+3. SPP in landing experiment 1: **sampled approximation only**, and only
+   if it fits the overnight budget; full SPP dropped.
+4. Behavioral dedupe: **target series rounded to 4 decimals** before
+   hashing, with a fallback to tolerance comparison if under-dedupe
+   shows up in practice; collapse of near-identical members is pinned by
+   test.
