@@ -1598,3 +1598,128 @@ def test_dry_run_writes_no_trade_log_on_fills(tmp_path: Path, make_provider: Pro
         assert engine._state.available_cash == 1_500.0  # in-memory fill applied
 
     assert not (tmp_path / "state.yaml.trades.csv").exists()
+
+
+# ---------------------------------------------------------------------------
+# Monitor integration (policy-engine phase 6).
+# ---------------------------------------------------------------------------
+
+
+def _monitor_baselines(worst_dd: float = 0.15):
+    from midas.baselines import Baselines, FoldRecord
+
+    daily = [0.001] * 63
+    fold = FoldRecord(
+        fold=1,
+        test_start=date(2026, 1, 2),
+        test_end=date(2026, 3, 31),
+        daily_returns=daily,
+        return_raw=0.065,
+        return_annualized=0.28,
+        drawdown=worst_dd,
+        after_tax_return_raw=None,
+        adopted=True,
+    )
+    return Baselines(
+        folds=[fold],
+        aggregate_oos_cagr=0.28,
+        policy_hash="p" * 64,
+        input_hash="i" * 64,
+        validation_start=date(2016, 1, 4),
+        validation_end=date(2026, 3, 31),
+        cadence_days=63,
+    )
+
+
+class _CapturingReporter:
+    def __init__(self) -> None:
+        self.reports = []
+
+    def post_report(self, report) -> bool:
+        self.reports.append(report)
+        return True
+
+
+def _monitor_engine(tmp_path: Path, make_provider, *, worst_dd: float = 0.15, anchor=None):
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    reporter = _CapturingReporter()
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        reporter=reporter,
+        baselines=_monitor_baselines(worst_dd),
+        monitor_input_hash="i" * 64,
+        monitor_anchor=anchor or date(2026, 5, 1),
+    )
+    return engine, reporter
+
+
+def test_report_includes_monitor_lines(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, reporter = _monitor_engine(tmp_path, make_provider)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash
+    engine._send_report(date(2026, 5, 7), 101_000.0)
+    assert reporter.reports, "report not delivered"
+    lines = reporter.reports[-1].monitor_lines
+    assert any("fold-window day 1/63" in line for line in lines)
+    assert any("normal" in line for line in lines)
+
+
+def test_manual_deposit_does_not_read_as_return(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, _reporter = _monitor_engine(tmp_path, make_provider)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash - 1_000.0  # manual +1000 deposit
+    engine._send_report(date(2026, 5, 7), 101_000.0)
+    ret = engine._state.monitor_returns[-1]
+    assert abs(ret) < 1e-9  # the 1k equity gain was the deposit, not performance
+
+
+def test_new_fit_anchor_resets_window(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.live_state import load_state, save_atomic
+
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    state_path = tmp_path / "state.yaml"
+    # Seed a state with an old anchor and a stale window.
+    seeder = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=state_path,
+    )
+    seeder.close()
+    state = load_state(state_path)
+    state.monitor_anchor = date(2026, 4, 1)
+    state.monitor_returns = [0.01, 0.02]
+    state.monitor_dd_warned = True
+    save_atomic(state, state_path)
+
+    engine, _ = _monitor_engine(tmp_path, make_provider, anchor=date(2026, 5, 1))
+    assert engine._state.monitor_anchor == date(2026, 5, 1)
+    assert engine._state.monitor_returns == []
+    assert engine._state.monitor_dd_warned is False
+
+
+def test_breach_warns_once_and_rearms_after_recovery(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, reporter = _monitor_engine(tmp_path, make_provider, worst_dd=0.01)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash
+    engine._send_report(date(2026, 5, 7), 95_000.0)  # -5% day: breaches 1% worst-dd
+    first_lines = reporter.reports[-1].monitor_lines
+    assert any("BREACH" in line for line in first_lines)
+    assert any("first breach" in line for line in first_lines)
+    assert engine._state.monitor_dd_warned is True
+
+    engine._state.last_report_equity = 95_000.0
+    engine._send_report(date(2026, 5, 8), 94_500.0)  # still underwater
+    second_lines = reporter.reports[-1].monitor_lines
+    assert any("BREACH" in line for line in second_lines)
+    assert not any("first breach" in line for line in second_lines)  # edge, not level

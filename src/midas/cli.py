@@ -400,6 +400,43 @@ def live(
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
     provider = CachedYFinanceProvider()
 
+    # Monitor wiring: only when the strategies file is policy-driven and has
+    # been validated. Missing pieces disable the monitor silently.
+    live_baselines = None
+    live_input_hash: str | None = None
+    live_anchor: date | None = None
+    if strategies:
+        from midas.artifacts import read_members
+        from midas.baselines import read_baselines
+        from midas.config import load_policy
+        from midas.policy import input_fingerprint
+        from midas.strategies import STRATEGY_REGISTRY
+        from midas.strategies.base import EntrySignal
+
+        strategies_file = Path(strategies)
+        live_policy = load_policy(strategies_file)
+        live_baselines = read_baselines(strategies_file)
+        members = read_members(strategies_file)
+        if live_policy is not None and live_baselines is not None:
+            live_exit_params = {
+                c.name: dict(c.params)
+                for c in strat_configs or []
+                if not issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)
+            }
+            live_input_hash = input_fingerprint(
+                policy=live_policy,
+                tickers=[h.ticker for h in port.holdings],
+                constraints=constraints,
+                exit_params=live_exit_params,
+                risk_config=risk_config,
+                min_cash_pct=constraints.min_cash_pct,
+                forecast_scaling=constraints.forecast_scaling,
+                tax_config=port.tax_config,
+            )
+            live_anchor = members.as_of if members is not None else None
+        else:
+            live_baselines = None
+
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
@@ -422,6 +459,9 @@ def live(
         realert_hours=alerts_cfg.realert_hours,
         reporter=reporter,
         market_hours_only=not ignore_market_hours,
+        baselines=live_baselines,
+        monitor_input_hash=live_input_hash,
+        monitor_anchor=live_anchor,
     ) as engine:
         engine.run()
 

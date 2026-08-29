@@ -348,6 +348,7 @@ class DailyReport:
     expired: int
     cppi_scale: float
     vol_target_scale: float
+    monitor_lines: tuple[str, ...] = ()
 
 
 def _positions_table(positions: tuple[ReportPosition, ...]) -> str:
@@ -408,6 +409,8 @@ def report_embed(report: DailyReport) -> dict[str, Any]:
                 "inline": False,
             }
         )
+    if report.monitor_lines:
+        fields.append({"name": "Monitor", "value": "\n".join(report.monitor_lines), "inline": False})
     return {
         "title": f"End of day — {report.session_date.isoformat()}",
         "color": COLOR_REPORT,

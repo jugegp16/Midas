@@ -20,6 +20,7 @@ except ImportError:  # Windows
 
 from midas.alerts import DailyReport, DiscordReporter, OrderConfirmer, ReportPosition, report_embed
 from midas.allocator import AllocationResult, Allocator
+from midas.baselines import Baselines
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
@@ -47,6 +48,7 @@ from midas.models import (
     PortfolioConfig,
     TradeRecord,
 )
+from midas.monitor import monitor_lines
 from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
@@ -129,6 +131,9 @@ class LiveEngine:
         realert_hours: float = DEFAULT_REALERT_HOURS,
         reporter: DiscordReporter | None = None,
         market_hours_only: bool = True,
+        baselines: Baselines | None = None,
+        monitor_input_hash: str | None = None,
+        monitor_anchor: date | None = None,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -219,6 +224,19 @@ class LiveEngine:
             self._pending_ttl = timedelta(hours=pending_ttl_hours)
             self._realert_cooldown = timedelta(hours=realert_hours)
             self._reporter = reporter
+            self._baselines = baselines
+            self._monitor_input_hash = monitor_input_hash
+            # Inflows the engine itself credited since the last report; a
+            # restart mid-session forgets them (accepted: one day's monitor
+            # return reads slightly high on that rare path).
+            self._session_inflows = 0.0
+            if monitor_anchor is not None and self._state.monitor_anchor != monitor_anchor:
+                # A new fit opened a new window — adoption or not, the fit
+                # date is the anchor (a declined proposal still closed one).
+                self._state.monitor_anchor = monitor_anchor
+                self._state.monitor_returns = []
+                self._state.monitor_dd_warned = False
+                self._save_state()
             self._market_hours_only = market_hours_only
             # Equity observation and the ET session it belongs to: a report
             # must never be built from another session's equity (a machine
@@ -264,6 +282,10 @@ class LiveEngine:
         Dry runs read real state for a realistic starting book but every
         fill, cooldown, and report anchor stays in memory only.
         """
+        # Sync the fill-explained cash level: every engine-owned mutation is
+        # followed by a save, so an unexplained delta at report time is an
+        # out-of-band edit (a manual deposit or withdrawal).
+        self._state.expected_cash = self._state.available_cash
         if self._dry_run:
             return
         save_atomic(self._state, self._state_path)
@@ -389,8 +411,35 @@ class LiveEngine:
             return
         self._send_report(session_date, self._last_equity)
 
+    def _monitor_report_lines(self, equity: float) -> tuple[str, ...]:
+        """Advance the monitor window one session and render its lines.
+
+        The day's return is TWR: engine-credited infusions and any
+        unexplained cash delta (a manual deposit or withdrawal made outside
+        the engine) are excluded, so deposits never read as performance.
+        """
+        if self._baselines is None:
+            return ()
+        previous = self._state.last_report_equity
+        expected = self._state.expected_cash
+        unexplained = (self._state.available_cash - expected) if expected is not None else 0.0
+        inflow = self._session_inflows + unexplained
+        if previous is not None and previous > 0:
+            self._state.monitor_returns.append((equity - inflow) / previous - 1.0)
+        self._session_inflows = 0.0
+        lines, breached = monitor_lines(
+            self._baselines,
+            self._state.monitor_returns,
+            current_input_hash=self._monitor_input_hash or "",
+        )
+        if breached and not self._state.monitor_dd_warned:
+            lines.append("first breach of the validated worst-fold drawdown — review before acting")
+        self._state.monitor_dd_warned = breached
+        return tuple(lines)
+
     def _send_report(self, session_date: date, equity: float) -> None:
         """Assemble and deliver the report; persist the equity anchor."""
+        monitor = self._monitor_report_lines(equity)
         report = DailyReport(
             session_date=session_date,
             equity=equity,
@@ -411,6 +460,7 @@ class LiveEngine:
             expired=self._state.tally_expired,
             cppi_scale=self._last_risk_telemetry[0],
             vol_target_scale=self._last_risk_telemetry[1],
+            monitor_lines=monitor,
         )
         # Persist the anchor BEFORE delivery: a Discord failure must not
         # re-arm the report and double-post on a later tick, and the
@@ -543,6 +593,7 @@ class LiveEngine:
             and today >= self._state.cash_infusion_next_date
         ):
             self._state.available_cash += infusion.amount
+            self._session_inflows += infusion.amount
             # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
             infusion.next_date = self._state.cash_infusion_next_date
             infusion.advance()
