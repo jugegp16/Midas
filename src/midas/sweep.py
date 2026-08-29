@@ -9,10 +9,28 @@ and refuses to print an unqualified verdict from a single portfolio.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date
 from statistics import NormalDist
+
+import pandas as pd
+
+from midas.baselines import Baselines
+from midas.metrics import compute_sharpe
+from midas.models import (
+    DEFAULT_MIN_CASH_PCT,
+    AllocationConstraints,
+    ForecastScaling,
+    PortfolioConfig,
+    RiskConfig,
+    TaxConfig,
+)
+from midas.policy import Policy
+from midas.validator import validate_policy
 
 TRADING_DAYS_PER_YEAR = 252
 EULER_MASCHERONI = 0.5772156649015329
@@ -78,3 +96,173 @@ def deflated_sharpe_ratio(
         return 0.0
     z = (observed_sharpe - expected_max) * math.sqrt(n_obs - 1) / math.sqrt(denom)
     return min(max(normal.cdf(z), 0.0), 1.0)
+
+
+@dataclass(frozen=True)
+class SweepCell:
+    """One validation run: a variant on a portfolio under one seed base."""
+
+    variant: str
+    portfolio: str
+    seed_base: int
+    aggregate_oos_cagr: float
+    oos_sharpe: float
+    daily_returns: list[float]
+    n_folds: int
+
+
+@dataclass(frozen=True)
+class SweepReport:
+    """All cells of a sweep plus what was withheld from it."""
+
+    cells: list[SweepCell]
+    holdout_trimmed_to: date | None = None
+
+    def summary_lines(self) -> list[str]:
+        """Per-(variant, portfolio) means with noise floors and a verdict."""
+        lines: list[str] = []
+        portfolios = sorted({cell.portfolio for cell in self.cells})
+        variants = sorted({cell.variant for cell in self.cells})
+        single_portfolio = len(portfolios) == 1
+        widest_floor = 0.0
+        means: dict[tuple[str, str], float] = {}
+        for portfolio in portfolios:
+            for variant in variants:
+                cells = [c for c in self.cells if c.portfolio == portfolio and c.variant == variant]
+                if not cells:
+                    continue
+                cagrs = [c.aggregate_oos_cagr for c in cells]
+                mean = sum(cagrs) / len(cagrs)
+                spread = max(cagrs) - min(cagrs) if len(cagrs) > 1 else 0.0
+                widest_floor = max(widest_floor, spread)
+                means[(portfolio, variant)] = mean
+                path = [r for c in cells for r in c.daily_returns]
+                boot = stationary_bootstrap(path, n_resamples=500, seed=0)
+                ci = ""
+                if boot:
+                    boot.sort()
+                    lo = boot[int(0.025 * len(boot))]
+                    hi = boot[int(0.975 * len(boot)) - 1]
+                    ci = f"  bootstrap95% [{lo:+.2%}, {hi:+.2%}]"
+                sharpe_var = _variance([c.oos_sharpe for c in cells])
+                n_trials = max(1, sum(c.n_folds for c in cells))
+                dsr = deflated_sharpe_ratio(
+                    sum(c.oos_sharpe for c in cells) / len(cells),
+                    n_trials=n_trials,
+                    sharpe_variance=max(sharpe_var, 0.01),
+                    n_obs=max(len(path), 2),
+                )
+                lines.append(
+                    f"{portfolio}/{variant}: mean OOS CAGR {mean:+.2%} across {len(cells)} seed(s), "
+                    f"spread {spread:.2%}{ci}  DSR~{dsr:.2f} (proxy: trials from folds, "
+                    f"SR var from seeds)"
+                )
+        for portfolio in portfolios:
+            variant_means = [means[(portfolio, v)] for v in variants if (portfolio, v) in means]
+            if len(variant_means) > 1:
+                diff = max(variant_means) - min(variant_means)
+                qualifier = " (on these windows)" if single_portfolio else ""
+                if diff < widest_floor:
+                    lines.append(
+                        f"{portfolio}: variant spread {diff:.2%} vs seed noise {widest_floor:.2%} — "
+                        f"not resolvable at this budget{qualifier}"
+                    )
+                else:
+                    lines.append(
+                        f"{portfolio}: variant spread {diff:.2%} exceeds seed noise {widest_floor:.2%}{qualifier}"
+                    )
+        return lines
+
+
+def make_variants(policy: Policy, vary: str, values: Sequence[str]) -> list[tuple[str, Policy]]:
+    """Build named policy variants along one field.
+
+    Raises:
+        ValueError: When *vary* is not a policy field (the message lists
+            the valid ones) or a value fails the field's parsing.
+    """
+    field_names = {f.name for f in dataclasses.fields(Policy)}
+    if vary not in field_names:
+        msg = f"cannot vary {vary!r}; policy fields: {sorted(field_names)} (e.g. objective)"
+        raise ValueError(msg)
+    if not values:
+        return [("base", policy)]
+    int_fields = {"budget", "restarts", "base_seed", "ensemble_size", "cadence_days"}
+    variants: list[tuple[str, Policy]] = []
+    for value in values:
+        parsed: object = int(value) if vary in int_fields else value
+        # dataclasses.replace re-runs Policy.__post_init__, so invalid values
+        # fail loudly there; the dict indirection is untypeable for mypy.
+        replaced = dataclasses.replace(policy, **{vary: parsed})  # type: ignore[arg-type]
+        variants.append((str(value), replaced))
+    return variants
+
+
+def run_sweep(
+    portfolios: Mapping[str, PortfolioConfig],
+    price_data_by_portfolio: Mapping[str, dict[str, pd.DataFrame]],
+    start: date,
+    end: date,
+    policy: Policy,
+    vary: str,
+    values: Sequence[str],
+    seeds: int,
+    *,
+    constraints: AllocationConstraints,
+    exit_params: dict[str, dict[str, float | int | str]],
+    risk_config: RiskConfig | None = None,
+    min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
+    forecast_scaling: ForecastScaling = "none",
+    tax_config: TaxConfig | None = None,
+    strategy_names: list[str] | None = None,
+    log_fn: Callable[[str], None] | None = None,
+    validate: Callable[..., Baselines] = validate_policy,
+    holdout_trimmed_to: date | None = None,
+) -> SweepReport:
+    """Fan the validator over variants x portfolios x seed replications.
+
+    Replication *i* runs the policy with ``base_seed + i``; restart seeds
+    then hash from that base with each fold's as_of, so replications never
+    collide with restarts.
+    """
+    log = log_fn or (lambda _msg: None)
+    cells: list[SweepCell] = []
+    for variant_name, variant in make_variants(policy, vary, values):
+        for portfolio_name, portfolio in portfolios.items():
+            for i in range(seeds):
+                seeded = dataclasses.replace(variant, base_seed=variant.base_seed + i)
+                log(f"sweep: {variant_name} on {portfolio_name}, seed base {seeded.base_seed}")
+                baselines = validate(
+                    portfolio,
+                    price_data_by_portfolio[portfolio_name],
+                    start,
+                    end,
+                    seeded,
+                    constraints=constraints,
+                    exit_params=exit_params,
+                    risk_config=risk_config,
+                    min_cash_pct=min_cash_pct,
+                    forecast_scaling=forecast_scaling,
+                    tax_config=tax_config,
+                    strategy_names=strategy_names,
+                )
+                path = [r for fold in baselines.folds for r in fold.daily_returns]
+                cells.append(
+                    SweepCell(
+                        variant=variant_name,
+                        portfolio=portfolio_name,
+                        seed_base=seeded.base_seed,
+                        aggregate_oos_cagr=baselines.aggregate_oos_cagr,
+                        oos_sharpe=compute_sharpe(path),
+                        daily_returns=path,
+                        n_folds=len(baselines.folds),
+                    )
+                )
+    return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to)
+
+
+def _variance(values: Sequence[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    return sum((v - mean) ** 2 for v in values) / (len(values) - 1)
