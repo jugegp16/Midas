@@ -21,3 +21,4 @@ CLAUDE.md
 /sample-portfolios/
 *.state.yaml
 *.state.yaml.lock
+.DS_Store

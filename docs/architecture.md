@@ -58,6 +58,15 @@ Tickers fall into two buckets:
 
 #### Phase 1.5: Score Normalization (optional)
 
+**Ensemble members** -- The allocator can hold K entry-parameter sets
+("members"). Each member's signals are scored and quantile-normalized
+independently; the ensemble's blended score is the flat mean across
+members (a member with no opinion contributes zero once any member
+scores a ticker). Softmax, position caps, the risk overlay, and exit
+rules then run exactly once on the blended scores — members differ only
+in forecasts, never in sizing or exits. An ensemble of one is
+byte-identical to the single-set path.
+
 With `forecast_scaling: quantile`, each entry-rule instance's positive scores are rank-transformed across the tickers it scored on that bar — its strongest pick becomes 1.0, its weakest positive `1/n` — before the weighted average in Phase 1 blends them. This gives every rule equal say regardless of its raw score distribution. Zeros and abstentions are untouched. The default `none` skips the transform entirely. See [Strategies](strategies.md#score-normalization-forecast_scaling) for details.
 
 #### Phase 2: Softmax Budget Allocation
