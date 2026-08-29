@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import sys
 from collections.abc import Sequence
-from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, get_args
 
@@ -1440,6 +1440,136 @@ def sweep(
 
     for line in report.summary_lines():
         click.echo(line)
+
+
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]), help="Earliest data to fit on.")
+@click.option(
+    "--as-of",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Fit on data strictly before this date (default: today).",
+)
+@click.option(
+    "--state",
+    "state_file",
+    default=None,
+    type=click.Path(),
+    help="Live state file (read-only) for degradation evidence.",
+)
+@click.option("--adopt", is_flag=True, default=False, help="Deploy the latest recorded fit instead of fitting.")
+def refit(
+    portfolio: str, strategies: str, start: date, as_of: date | None, state_file: str | None, adopt: bool
+) -> None:
+    """Cadence re-fit: always record, propose adoption only on degradation.
+
+    The fit lands in history unconditionally; the members sidecar changes
+    only through adoption — a Discord confirmation in live's confirm tier,
+    or an explicit --adopt here. Parameters never change silently.
+    """
+    from midas.artifacts import _deserialize as _read_fit
+    from midas.artifacts import (
+        clear_proposal,
+        deploy_fit,
+        list_fits,
+        read_members,
+        record_fit,
+        write_proposal,
+    )
+    from midas.baselines import read_baselines
+    from midas.config import load_policy
+    from midas.fitter import fit_as_of
+    from midas.live_state import load_state
+    from midas.monitor import monitor_lines
+    from midas.optimizer import max_warmup_for_search
+    from midas.policy import input_fingerprint
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+    from midas.validator import trigger_fired
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — refit is policy-driven.")
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    current_hash = input_fingerprint(
+        policy=policy,
+        tickers=[h.ticker for h in port.holdings],
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+    )
+    incumbent = read_members(strategies_path)
+    if incumbent is not None and incumbent.input_hash != current_hash:
+        raise click.ClickException(
+            "deployed members were fitted under a different configuration — no valid incumbent; "
+            "run midas fit for a fresh deployment"
+        )
+
+    if adopt:
+        entries = list_fits(strategies_path)
+        if not entries:
+            raise click.ClickException("no fit history to adopt from — run refit (or midas fit) first")
+        latest = _read_fit(entries[-1])
+        deploy_fit(strategies_path, latest)
+        clear_proposal(strategies_path)
+        click.echo(f"Adopted fit of {latest.as_of.isoformat()} ({len(latest.members)} member(s)).")
+        return
+
+    start_d = _to_date(start)
+    as_of_d = _to_date(as_of) if as_of is not None else date.today()
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, as_of_d, warmup_bars=warmup_bars)
+
+    result = fit_as_of(
+        port,
+        price_data,
+        as_of_d,
+        policy,
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+        incumbent=incumbent,
+        strategy_names=strategy_names,
+        log_fn=print_status,
+    )
+    record_fit(strategies_path, result)
+    click.echo(f"Recorded fit of {result.as_of.isoformat()} ({len(result.members)} member(s)); not deployed.")
+
+    baselines = read_baselines(strategies_path)
+    state = load_state(Path(state_file)) if state_file and Path(state_file).exists() else None
+    if baselines is None or state is None or not state.monitor_returns:
+        click.echo("No degradation evidence available (missing baselines or monitor window) — no proposal.")
+        return
+    if trigger_fired(baselines.folds, state.monitor_returns, policy.adopt_trigger):
+        evidence, _breached = monitor_lines(baselines, state.monitor_returns, current_input_hash=baselines.input_hash)
+        write_proposal(
+            strategies_path,
+            fit_as_of=result.as_of,
+            input_hash=result.input_hash,
+            evidence=evidence,
+            created_at=datetime.now(UTC),
+        )
+        click.echo("Degradation trigger FIRED — proposal written. Confirm in Discord or run: midas refit --adopt")
+    else:
+        click.echo("Trigger silent — incumbent stays deployed.")
 
 
 @cli.command(name="strategies")
