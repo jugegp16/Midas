@@ -1,8 +1,8 @@
 # Policy engine: ensemble deployment, validated re-fit, live monitoring — design
 
-**Date:** 2026-08-29 (v3.1 — open questions resolved)
+**Date:** 2026-08-29 (v4 after third external review pass)
 **Status:** Approved
-**Supersedes:** the 2026-08-23 comparison-harness draft (absorbed here)
+**Supersedes:** the comparison-harness draft (v1 of this file, commit `7587245` — never merged separately)
 **Delivery:** one PR, phased commits (decision: no sub-issues)
 **Evidence:** `docs/experiments/2026-08-24-seed-budget-grid/` (lab notes +
 verified-regenerable results), the multi-seed table on issue #49,
@@ -82,6 +82,20 @@ policy:
   `hash(base_seed, f, r)` — the current `seed + fold` and `base_seed + i`
   schemes collide across folds/restarts and would correlate the recorded
   noise floors.
+
+**Definitions that would otherwise bite in implementation:**
+
+- **`as_of` is exclusive.** A fit sees bars strictly before `as_of`;
+  `fitted_as_of` in the sidecar records the last bar actually consumed.
+  The validator's `fold_train_end` and the monitor's window epoch use the
+  same convention — one rule, no off-by-one between folds and live.
+- **Policy hash** = SHA-256 of the canonical JSON (sorted keys) of the
+  policy fields that affect behavior *under the active deployment mode* —
+  `ensemble_size` is excluded when `deployment: best`, so editing an
+  inert field never invalidates baselines.
+- **`--objective` vs `policy.objective`:** the policy file wins; passing
+  the CLI flag when a policy block exists is a loud error, not a silent
+  override.
 
 **The coherence principle (hard constraint).** One function executes a
 fit; the validator calls it per fold — including the adoption rule and a
@@ -205,6 +219,20 @@ if the adopt trigger fired during the previous fold.
   parameter switches their real turnover and tax cost.) The synthetic
   switching-charge fallback from v2 is demoted to a rejected alternative:
   it fixes switching cost but not the ramp-in bias.
+- **Adoption triggers are evaluated daily inside folds**, from the
+  fold's per-day path — live evaluates the trigger nightly, so a
+  fold-end-only evaluation would validate a coarser procedure than the
+  one live runs.
+- **A reserved holdout the sweeps never touch:** the final
+  `holdout_days` (default: two years) of the date range are excluded
+  from every sweep and every policy-selection decision. Sweeping policy
+  hyper-parameters (`objective`, `budget`, `ensemble_size`, cadence,
+  triggers) on the same folds repeatedly makes the "OOS" distribution
+  in-sample *for the policy* — second-order overfitting. The chosen
+  policy is evaluated on the holdout **once**, that number goes in the
+  landing record, and the baselines carry a flag stating whether they
+  are pre- or post-holdout. Monitor percentiles from swept folds are
+  labeled "policy-selected (optimistic)".
 - **Path dependence, disclosed:** with adoption modeled, every fold's
   deployment depends on all earlier adoption decisions. Fold 0 has no
   incumbent and always deploys. Baselines from different validation
@@ -233,20 +261,24 @@ one or more portfolios, with `--seeds` replication.
   (`--force` to override).
 - Cost preflight printed before running.
 
-**Landing experiments — criteria pre-registered here, before running:**
+**Landing experiments — criteria pre-registered here, before running;
+results are committed under `docs/experiments/<date>-policy-landing/`,
+never only in the PR description:**
 
-1. `deployment: best` vs `ensemble` vs a **sampled SPP approximation**
+1. **Hold vs re-fit — the premise test runs first.** Optimize-once-and-
+   hold is expressible in this framework (one fit, no adoption — the
+   frozen variant), so the claim that motivates Components 2/5 is tested
+   rather than assumed, and the practitioner warning that re-fitting slow
+   signals is noise-chasing gets its day in court.
+2. `deployment: best` vs `ensemble` vs a **sampled SPP approximation**
    (median deployment of a random sample of the trial pool — full SPP
    requires evaluating the whole pool and is dropped; the sample rides
-   only if it fits the overnight budget). **Ensemble becomes the default only if** its block-
-   bootstrap OOS CAGR interval is at least as good as `best`'s on both
-   baskets **and** it does not increase turnover-driven after-tax drag by
-   more than 1 pt on either. Equal-return-lower-drag also adopts. Any
-   other outcome: `best` stays default, results recorded.
-2. Re-fit policy: degradation-gated adoption vs never-adopt (frozen).
-   **Scheduled re-fit ships enabled only if** adoption does not lose to
-   frozen on after-tax OOS CAGR on both baskets; otherwise Component 5
-   ships behind a flag, default off, with the numbers in the PR.
+   only if it fits the overnight budget).
+   **Ensemble becomes the default only if** its block-bootstrap OOS
+   interval is at least as good as `best`'s on both baskets and after-tax
+   drag rises ≤ 1 pt (as pre-registered in v3). Experiment 1's criterion:
+   **scheduled re-fit ships enabled only if** adoption does not lose to
+   frozen on after-tax OOS CAGR on both baskets.
 
 Compute honesty (measured 0.16 s/trial, 7-year window, ~5-worker pool;
 full-history trials run longer): one fit ≈ 8,000 trials ≈ 5–10 min wall;
@@ -310,8 +342,22 @@ drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
   require a restart, members do not).
 - Adoption writes the members sidecar (never the human YAML), records
   the outgoing members to `strategies.fits/`, and reloads.
-- `--no-refit` disables; dry-run never refits. Enablement gated on the
-  landing experiment 2 criterion and on #54.
+- **Opt-in until its gates clear:** the flag is `--refit` (default
+  off) — shipping default-on while the spec says enablement waits on #54
+  and the landing criterion would ship a state declared unsafe. Polarity
+  flips to `--no-refit` in the follow-up that lands #54, if experiment 1
+  supports it. Dry-run never refits.
+- **Live tiers:** confirm mode works as specified. **Terminal-only mode
+  never auto-adopts** — the proposal prints to the terminal and expires;
+  adopting from that tier is an explicit `midas refit --adopt` run by
+  the operator. Parameters changing silently is prohibited in every
+  tier, including the one with no confirmation channel.
+- **Portfolio identity is checked before anything else:** `refit` and
+  the monitor both refuse on an input-hash mismatch (tickers, tax, risk,
+  policy) against the sidecar/baselines. A mismatch means there is no
+  valid incumbent; the defined path is a fresh `midas fit` plus
+  operator-confirmed initial deployment — never a silent adoption or an
+  `enqueue_trial` against parameters from a different portfolio.
 
 ## Coherence gaps (disclosed)
 
@@ -321,6 +367,11 @@ drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
    fold — the natural continuation of the anchored scheme.
 3. Live fills at operator-confirmed prices; the validator uses the
    configured slippage model.
+4. Cached price series are split/dividend-adjusted as of download date,
+   so a `fit_as_of(2018)` sees today's back-adjustment (and the basket
+   itself was chosen with hindsight). This predates this design, but a
+   document promoting the OOS distribution to a live forecast owns it as
+   a caveat on the baselines.
 
 ## Build order inside the single PR
 
@@ -341,7 +392,39 @@ drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
    confirmation, reload-on-adoption.
 
 Landing experiments run after 5; their pre-registered criteria decide
-the defaults; results go in the PR description.
+the defaults; results are committed under
+`docs/experiments/<date>-policy-landing/`.
+
+## Kill criteria (what result abandons what)
+
+- **Ensemble:** no OOS gain over `best` within the bootstrap interval
+  *and* higher turnover → `best` stays default; ensemble code remains as
+  a policy option, not pursued further.
+- **Scheduled re-fit:** frozen wins experiment 1 on after-tax OOS on
+  both baskets → Component 5 stays flag-off and the adoption machinery
+  is dormant until new evidence.
+- **Monitor thresholds:** the warning rule is replayed against the
+  validation folds themselves; if it false-alarms on more than ~1 in 5
+  normal folds, thresholds are retuned before live use — an alarm that
+  cries wolf weekly is worse than none.
+- **Restart selection:** if the selected run's OOS rank (recorded every
+  fit) accumulates below median, the `best` rule reverts to
+  single-seeded fits and the restart budget moves into `budget`.
+
+## Review surface (what the tests must pin, since the golden stays green)
+
+The K=1 identity property keeps the existing golden test green through
+the entire PR — which means it catches nothing in any new path. The
+review surface is the new tests, so each phase's must-pins are named
+here: K=2 golden scenario (blend path end to end); entry-only search
+space and policy-owned pass-through; behavioral-dedupe collapse of
+near-identical members; fitter determinism and restart-0-only warm
+start; carried-portfolio fold transitions (lots, HWM, cash survive);
+adoption-trigger daily evaluation and its epoch alignment with the
+monitor (the `as_of` convention above, off-by-one pinned from both
+sides); TWR window vs infusions; edge-triggered warning reset;
+input-hash refusal paths (monitor and refit); proposal TTL expiry and
+the terminal-tier no-auto-adopt rule.
 
 ## Out of scope
 
@@ -355,7 +438,7 @@ comment; its build stays out).
 1. Member weighting: **flat mean** (rationale inline in Component 1).
 2. `ensemble_size`: **20**, held as a weak prior; K sweep queued
    post-landing.
-3. SPP in landing experiment 1: **sampled approximation only**, and only
+3. SPP in landing experiment 2: **sampled approximation only**, and only
    if it fits the overnight budget; full SPP dropped.
 4. Behavioral dedupe: **target series rounded to 4 decimals** before
    hashing, with a fallback to tolerance comparison if under-dedupe
