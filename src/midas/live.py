@@ -135,6 +135,8 @@ class LiveEngine:
         monitor_input_hash: str | None = None,
         monitor_anchor: date | None = None,
         strategies_path: Path | None = None,
+        refit_spawner: Callable[[], None] | None = None,
+        cadence_days: int | None = None,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -230,6 +232,9 @@ class LiveEngine:
             self._strategies_path = strategies_path
             self._loaded_fit_as_of: date | None = None
             self._proposal_ttl = timedelta(hours=pending_ttl_hours)
+            self._refit_spawner = refit_spawner
+            self._cadence_days = cadence_days
+            self._refit_spawned_on: date | None = None
             # Inflows the engine itself credited since the last report; a
             # restart mid-session forgets them (accepted: one day's monitor
             # return reads slightly high on that rare path).
@@ -337,6 +342,7 @@ class LiveEngine:
                         # 16:00 — the report must still go out before the
                         # overnight sleep.
                         self._maybe_send_report(now)
+                        self._maybe_spawn_refit(now)
                     except Exception:
                         logger.exception("end-of-day report failed; continuing")
                     self._sleep_until_open(now)
@@ -415,6 +421,32 @@ class LiveEngine:
         if self._last_equity is None or self._last_equity_session != session_date:
             return
         self._send_report(session_date, self._last_equity)
+
+    def _maybe_spawn_refit(self, now: datetime) -> None:
+        """Spawn the re-fit process once per session when the fit is stale.
+
+        The fit itself runs in its own process (midas refit): live is
+        single-threaded, holds the state lock, and must keep polling
+        reactions — a crash in a 10-minute fit must never take the trading
+        loop with it. Cadence is measured in calendar days approximating
+        trading days (cadence * 7/5).
+        """
+        if self._refit_spawner is None or self._cadence_days is None or self._strategies_path is None:
+            return
+        today = now.date()
+        if self._refit_spawned_on == today:
+            return
+        from midas.artifacts import read_members
+
+        members = read_members(self._strategies_path)
+        if members is None:
+            return
+        stale_after = int(self._cadence_days * 7 / 5)
+        if (today - members.as_of).days < stale_after:
+            return
+        self._refit_spawned_on = today
+        print_status(f"Fit of {members.as_of.isoformat()} is past cadence — spawning midas refit.")
+        self._refit_spawner()
 
     def _handle_policy_artifacts(self, now: datetime) -> None:
         """Reload members on sidecar change; surface and settle adoption proposals.

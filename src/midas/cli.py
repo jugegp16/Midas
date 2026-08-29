@@ -366,6 +366,13 @@ def backtest(
     help="Observe signals with in-memory fills: no state file, trade log, or Discord writes.",
 )
 @click.option(
+    "--refit",
+    "refit_enabled",
+    is_flag=True,
+    default=False,
+    help="Spawn midas refit at the policy cadence after the close report (adoption still needs ✅ or --adopt).",
+)
+@click.option(
     "--ignore-market-hours",
     is_flag=True,
     help="Poll 24/7 instead of only during US equity sessions (debugging).",
@@ -375,6 +382,7 @@ def live(
     strategies: str | None,
     interval: int,
     dry_run: bool,
+    refit_enabled: bool,
     ignore_market_hours: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
@@ -405,6 +413,9 @@ def live(
     live_baselines = None
     live_input_hash: str | None = None
     live_anchor: date | None = None
+    live_strategies_path: Path | None = None
+    live_cadence: int | None = None
+    refit_spawner = None
     if strategies:
         from midas.artifacts import read_members
         from midas.baselines import read_baselines
@@ -436,6 +447,34 @@ def live(
             live_anchor = members.as_of if members is not None else None
         else:
             live_baselines = None
+        if live_policy is not None:
+            live_strategies_path = strategies_file
+            live_cadence = live_policy.cadence_days
+            if refit_enabled and not dry_run:
+                import subprocess
+                import sys
+
+                refit_cmd = [
+                    sys.executable,
+                    "-m",
+                    "midas",
+                    "refit",
+                    "-p",
+                    portfolio,
+                    "-s",
+                    strategies,
+                    "--state",
+                    str(state_path),
+                ]
+
+                def _spawn_refit(cmd: list[str] = refit_cmd) -> None:
+                    # Detached: a crash in a 10-minute fit must never touch
+                    # the trading loop; results arrive via the sidecars.
+                    subprocess.Popen(cmd, start_new_session=True)
+
+                refit_spawner = _spawn_refit
+    if refit_enabled and refit_spawner is None:
+        raise click.UsageError("--refit requires a strategies file with a policy: block")
 
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
@@ -462,6 +501,9 @@ def live(
         baselines=live_baselines,
         monitor_input_hash=live_input_hash,
         monitor_anchor=live_anchor,
+        strategies_path=live_strategies_path,
+        refit_spawner=refit_spawner,
+        cadence_days=live_cadence if refit_enabled else None,
     ) as engine:
         engine.run()
 

@@ -1872,3 +1872,59 @@ def test_terminal_tier_never_auto_adopts(tmp_path: Path, make_provider: Provider
     engine._handle_policy_artifacts(now)
     engine._handle_policy_artifacts(now)
     assert read_members(strategies).as_of == date(2026, 5, 1)  # never deployed
+
+
+def test_refit_spawner_fires_once_when_sidecar_stale(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 1, 5)))  # months stale vs cadence 40
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+    )
+    now = datetime(2026, 5, 7, 21, 0, tzinfo=UTC)
+    engine._maybe_spawn_refit(now)
+    engine._maybe_spawn_refit(now)  # same session: no double spawn
+    assert spawns == [1]
+
+
+def test_refit_spawner_quiet_when_fresh_or_unconfigured(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))  # fresh vs cadence 40
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+    )
+    engine._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
+    assert spawns == []
+    # No spawner configured: must be a silent no-op even when stale.
+    engine2 = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state2.yaml",
+        strategies_path=strategies,
+    )
+    engine2._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
