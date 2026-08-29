@@ -72,6 +72,9 @@ class OrderConfirmer(Protocol):
             order will be re-proposed and re-posted on a later tick).
         """
 
+    def post_message(self, embed: dict[str, Any]) -> str | None:
+        """Post a plain informational embed (no reactions seeded); None on failure."""
+
     def poll_decision(self, message_id: str) -> Decision:
         """Return the operator's decision on a posted order, if any yet."""
 
@@ -238,6 +241,14 @@ class DiscordConfirmer:
             return self._client.create_message(self._channel_id, {"embeds": [order_embed(order, timestamp)]})
         except DiscordApiError as exc:
             logger.error("Discord alert post failed (%s); will retry on a later tick", exc)
+            return None
+
+    def post_message(self, embed: dict[str, Any]) -> str | None:
+        """Post a plain informational embed (proposals); None on failure."""
+        try:
+            return self._client.create_message(self._channel_id, {"embeds": [embed]})
+        except DiscordApiError as exc:
+            logger.error("Discord message post failed (%s); will retry on a later tick", exc)
             return None
 
     def poll_decision(self, message_id: str) -> Decision:

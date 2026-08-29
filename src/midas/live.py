@@ -134,6 +134,7 @@ class LiveEngine:
         baselines: Baselines | None = None,
         monitor_input_hash: str | None = None,
         monitor_anchor: date | None = None,
+        strategies_path: Path | None = None,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -226,6 +227,9 @@ class LiveEngine:
             self._reporter = reporter
             self._baselines = baselines
             self._monitor_input_hash = monitor_input_hash
+            self._strategies_path = strategies_path
+            self._loaded_fit_as_of: date | None = None
+            self._proposal_ttl = timedelta(hours=pending_ttl_hours)
             # Inflows the engine itself credited since the last report; a
             # restart mid-session forgets them (accepted: one day's monitor
             # return reads slightly high on that rare path).
@@ -338,6 +342,7 @@ class LiveEngine:
                     self._sleep_until_open(now)
                     continue
                 try:
+                    self._handle_policy_artifacts(self._now())
                     self._tick(tickers)
                 except Exception:
                     # A live process watching real money must not die
@@ -410,6 +415,101 @@ class LiveEngine:
         if self._last_equity is None or self._last_equity_session != session_date:
             return
         self._send_report(session_date, self._last_equity)
+
+    def _handle_policy_artifacts(self, now: datetime) -> None:
+        """Reload members on sidecar change; surface and settle adoption proposals.
+
+        The sidecar watch is the single adoption mechanism: a ✅ here, a
+        ``midas refit --adopt`` in a terminal, or an offline adoption all
+        converge on "the members sidecar changed", and the allocator swap
+        happens on the next tick. Terminal tier never auto-adopts — the
+        proposal prints once with the --adopt instruction and expires.
+        """
+        if self._strategies_path is None:
+            return
+        from midas.artifacts import clear_proposal, deploy_fit, read_fit_entry, read_members, read_proposal
+        from midas.optimizer import _instantiate_strategies
+
+        members = read_members(self._strategies_path)
+        if members is not None and members.members and members.as_of != self._loaded_fit_as_of:
+            member_entries = [_instantiate_strategies(member)[0] for member in members.members]
+            self._allocator = Allocator(
+                [],
+                self._constraints,
+                self._portfolio.active_ticker_count(),
+                risk_config=self._allocator.risk_config,
+                members=member_entries,
+            )
+            self._loaded_fit_as_of = members.as_of
+            print_status(f"Members reloaded: fit of {members.as_of.isoformat()} ({len(members.members)} member(s))")
+
+        proposal = read_proposal(self._strategies_path)
+        if proposal is None:
+            if self._state.proposal_posted_at is not None:
+                self._state.proposal_message_id = None
+                self._state.proposal_fit_as_of = None
+                self._state.proposal_posted_at = None
+                self._save_state()
+            return
+
+        if self._state.proposal_posted_at is None:
+            embed = {
+                "title": f"Parameter change proposal — fit of {proposal.fit_as_of.isoformat()}",
+                "description": (
+                    "\n".join(proposal.evidence)
+                    + "\n\nImplied trades are estimates at proposal-time prices."
+                    + "\n✅ adopts · ❌ keeps the incumbent"
+                ),
+                "color": 0xFEE75C,
+            }
+            if self._confirmer is not None:
+                message_id = self._confirmer.post_message(embed)
+                if message_id is None:
+                    return  # transport failure; retry next tick
+                self._state.proposal_message_id = message_id
+            else:
+                print_status(
+                    f"Adoption proposal (fit of {proposal.fit_as_of.isoformat()}): " + "; ".join(proposal.evidence)
+                )
+                print_status("Terminal mode never auto-adopts — run: midas refit --adopt")
+                self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = proposal.fit_as_of
+            self._state.proposal_posted_at = now
+            self._save_state()
+            return
+
+        if now - self._state.proposal_posted_at > self._proposal_ttl:
+            if self._confirmer is not None and self._state.proposal_message_id is not None:
+                self._confirmer.mark_expired(self._state.proposal_message_id)
+            clear_proposal(self._strategies_path)
+            print_status("Adoption proposal expired — will be re-raised at the next cadence fit.")
+            self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = None
+            self._state.proposal_posted_at = None
+            self._save_state()
+            return
+
+        if self._confirmer is None or self._state.proposal_message_id is None:
+            return
+        decision = self._confirmer.poll_decision(self._state.proposal_message_id)
+        if decision == "confirmed":
+            fit = read_fit_entry(self._strategies_path, proposal.fit_as_of, proposal.input_hash)
+            if fit is None:
+                logger.error("confirmed proposal's fit not found in history; clearing")
+            else:
+                deploy_fit(self._strategies_path, fit)
+                self._confirmer.mark_booked(self._state.proposal_message_id, "adopted")
+                print_status(f"Adoption confirmed — deployed fit of {fit.as_of.isoformat()}.")
+        elif decision == "declined":
+            self._confirmer.mark_declined(self._state.proposal_message_id)
+            print_status("Adoption declined — incumbent stays deployed.")
+        else:
+            return
+        clear_proposal(self._strategies_path)
+        self._state.proposal_message_id = None
+        self._state.proposal_fit_as_of = None
+        self._state.proposal_posted_at = None
+        self._save_state()
 
     def _monitor_report_lines(self, equity: float) -> tuple[str, ...]:
         """Advance the monitor window one session and render its lines.

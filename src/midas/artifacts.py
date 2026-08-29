@@ -154,6 +154,14 @@ def read_proposal(strategies_path: Path) -> Proposal | None:
     )
 
 
+def read_fit_entry(strategies_path: Path, fit_as_of: date, input_hash: str) -> FitResult | None:
+    """Load one fit from history by its identity, or None when absent."""
+    entry = fits_dir(strategies_path) / f"{fit_as_of.isoformat()}-{input_hash[:8]}.yaml"
+    if not entry.exists():
+        return None
+    return _deserialize(entry)
+
+
 def clear_proposal(strategies_path: Path) -> None:
     """Remove the pending proposal, if any."""
     proposal_path(strategies_path).unlink(missing_ok=True)

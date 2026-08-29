@@ -569,6 +569,7 @@ class FakeConfirmer:
 
     def __init__(self) -> None:
         self.posted: list[Order] = []
+        self.messages: list[dict] = []
         self.decisions: dict[str, str | None] = {}
         self.booked: list[tuple[str, str]] = []
         self.declined: list[str] = []
@@ -580,6 +581,13 @@ class FakeConfirmer:
 
     def post_order(self, order: Order, timestamp: datetime) -> str | None:
         self.posted.append(order)
+        if self.fail_posts:
+            return None
+        self._counter += 1
+        return f"msg-{self._counter}"
+
+    def post_message(self, embed: dict) -> str | None:
+        self.messages.append(embed)
         if self.fail_posts:
             return None
         self._counter += 1
@@ -1723,3 +1731,144 @@ def test_breach_warns_once_and_rearms_after_recovery(tmp_path: Path, make_provid
     second_lines = reporter.reports[-1].monitor_lines
     assert any("BREACH" in line for line in second_lines)
     assert not any("first breach" in line for line in second_lines)  # edge, not level
+
+
+# ---------------------------------------------------------------------------
+# Adoption proposals and member reload (policy-engine phase 7).
+# ---------------------------------------------------------------------------
+
+
+def _phase7_fit(as_of, window: int = 20):
+    from midas.fitter import FitResult
+
+    return FitResult(
+        members=[{"MeanReversion": {"window": float(window), "threshold": 0.05, "_weight": 1.0}}],
+        member_scores=[1.0],
+        restart_bests=[1.0],
+        as_of=as_of,
+        policy_hash="p" * 64,
+        input_hash="i" * 64,
+    )
+
+
+def _phase7_engine(tmp_path: Path, make_provider, *, confirmer=None):
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        confirmer=confirmer,
+        strategies_path=strategies,
+    )
+    return engine, strategies
+
+
+def test_member_reload_swaps_allocator_on_sidecar_change(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    before = engine._allocator
+    deploy_fit(strategies, _phase7_fit(date(2026, 6, 1), window=40))
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before
+    windows = [s._window for s in engine._allocator.strategies]  # MeanReversion window
+    assert windows == [40]
+
+
+def test_proposal_posts_once_in_confirm_tier(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies,
+        fit_as_of=challenger.as_of,
+        input_hash=challenger.input_hash,
+        evidence=["drawdown breach"],
+        created_at=now,
+    )
+    engine._handle_policy_artifacts(now)
+    engine._handle_policy_artifacts(now)
+    assert len(confirmer.messages) == 1
+    assert engine._state.proposal_message_id is not None
+
+
+def test_confirmed_proposal_deploys_and_clears(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    confirmer.decisions[engine._state.proposal_message_id] = "confirmed"
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 6, 1)
+    assert read_proposal(strategies) is None
+    assert engine._state.proposal_message_id is None
+
+
+def test_declined_proposal_clears_without_deploying(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    confirmer.decisions[engine._state.proposal_message_id] = "declined"
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 5, 1)  # incumbent kept
+    assert read_proposal(strategies) is None
+
+
+def test_stale_proposal_expires(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    posted = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=posted
+    )
+    engine._handle_policy_artifacts(posted)
+    engine._handle_policy_artifacts(posted + timedelta(hours=9))  # past default 8h TTL
+    assert read_proposal(strategies) is None
+    assert engine._state.proposal_message_id is None
+
+
+def test_terminal_tier_never_auto_adopts(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, record_fit, write_proposal
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=None)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 5, 1)  # never deployed

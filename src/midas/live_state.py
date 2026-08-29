@@ -137,6 +137,11 @@ class LiveState:
     monitor_returns: list[float] = field(default_factory=list)
     monitor_dd_warned: bool = False
     expected_cash: float | None = None
+    # Pending adoption proposal: the posted message (None in terminal tier),
+    # which fit it refers to, and when it was surfaced (drives TTL expiry).
+    proposal_message_id: str | None = None
+    proposal_fit_as_of: date | None = None
+    proposal_posted_at: datetime | None = None
     tally_posted: int = 0
     tally_confirmed: int = 0
     tally_declined: int = 0
@@ -187,6 +192,15 @@ def save_atomic(state: LiveState, path: Path) -> None:
         "last_report": (
             {"date": state.last_report_date, "equity": state.last_report_equity}
             if state.last_report_date is not None
+            else None
+        ),
+        "proposal": (
+            {
+                "message_id": state.proposal_message_id,
+                "fit_as_of": state.proposal_fit_as_of.isoformat() if state.proposal_fit_as_of else None,
+                "posted_at": state.proposal_posted_at.isoformat() if state.proposal_posted_at else None,
+            }
+            if state.proposal_posted_at is not None
             else None
         ),
         "monitor": (
@@ -290,6 +304,9 @@ def load_state(path: Path) -> LiveState:
 
     monitor = raw.get("monitor") or {}
     monitor_anchor_raw = monitor.get("anchor")
+    proposal = raw.get("proposal") or {}
+    proposal_fit_raw = proposal.get("fit_as_of")
+    proposal_posted_raw = proposal.get("posted_at")
 
     return LiveState(
         available_cash=float(raw["available_cash"]),
@@ -305,6 +322,11 @@ def load_state(path: Path) -> LiveState:
         monitor_returns=[float(r) for r in monitor.get("returns") or []],
         monitor_dd_warned=bool(monitor.get("dd_warned", False)),
         expected_cash=(float(monitor["expected_cash"]) if monitor.get("expected_cash") is not None else None),
+        proposal_message_id=proposal.get("message_id"),
+        proposal_fit_as_of=(date.fromisoformat(proposal_fit_raw) if isinstance(proposal_fit_raw, str) else None),
+        proposal_posted_at=(
+            datetime.fromisoformat(proposal_posted_raw) if isinstance(proposal_posted_raw, str) else None
+        ),
         tally_posted=int(tally.get("posted", 0)),
         tally_confirmed=int(tally.get("confirmed", 0)),
         tally_declined=int(tally.get("declined", 0)),
