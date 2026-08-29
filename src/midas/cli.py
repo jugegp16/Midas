@@ -1489,7 +1489,12 @@ def sweep(
 @click.option(
     "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
 )
-@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]), help="Earliest data to fit on.")
+@click.option(
+    "--start",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Earliest data to fit on (default: ten years before --as-of).",
+)
 @click.option(
     "--as-of",
     default=None,
@@ -1505,7 +1510,7 @@ def sweep(
 )
 @click.option("--adopt", is_flag=True, default=False, help="Deploy the latest recorded fit instead of fitting.")
 def refit(
-    portfolio: str, strategies: str, start: date, as_of: date | None, state_file: str | None, adopt: bool
+    portfolio: str, strategies: str, start: date | None, as_of: date | None, state_file: str | None, adopt: bool
 ) -> None:
     """Cadence re-fit: always record, propose adoption only on degradation.
 
@@ -1572,8 +1577,8 @@ def refit(
         click.echo(f"Adopted fit of {latest.as_of.isoformat()} ({len(latest.members)} member(s)).")
         return
 
-    start_d = _to_date(start)
     as_of_d = _to_date(as_of) if as_of is not None else date.today()
+    start_d = _to_date(start) if start is not None else as_of_d - timedelta(days=3653)
     warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
     price_data = _fetch_prices(port, start_d, as_of_d, warmup_bars=warmup_bars)
 
