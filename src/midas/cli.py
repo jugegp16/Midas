@@ -1201,6 +1201,77 @@ def fit(portfolio: str, strategies: str, start: date, as_of: date | None, rollba
     click.echo(f"  history: {entry.name} ({len(list_fits(strategies_path))} fits recorded)")
 
 
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option(
+    "--min-train-pct", default=0.60, show_default=True, help="Initial training reserve before the first fold."
+)
+def validate(portfolio: str, strategies: str, start: date, end: date, min_train_pct: float) -> None:
+    """Run the policy over history exactly as live would, and write baselines.
+
+    Executes cadence-driven folds with fits, degradation-gated adoption,
+    and a carried portfolio; the resulting per-fold distribution is what
+    the live monitor compares against.
+    """
+    from midas.baselines import baselines_path, write_baselines
+    from midas.config import load_policy
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+    from midas.validator import validate_policy
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — validate is policy-driven.")
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    start_d, end_d = _to_date(start), _to_date(end)
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
+
+    try:
+        baselines = validate_policy(
+            port,
+            price_data,
+            start_d,
+            end_d,
+            policy,
+            constraints=strat_constraints,
+            exit_params=exit_params,
+            risk_config=risk_config,
+            min_cash_pct=strat_constraints.min_cash_pct,
+            forecast_scaling=strat_constraints.forecast_scaling,
+            tax_config=port.tax_config,
+            strategy_names=strategy_names,
+            min_train_pct=min_train_pct,
+            log_fn=print_status,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    write_baselines(strategies_path, baselines)
+    for fold in baselines.folds:
+        marker = "adopted" if fold.adopted else "held"
+        click.echo(
+            f"  fold {fold.fold}: {fold.test_start} → {fold.test_end}  "
+            f"{fold.return_annualized:+.2%} ann.  dd {fold.drawdown:.2%}  [{marker}]"
+        )
+    click.echo(f"Aggregate OOS CAGR: {baselines.aggregate_oos_cagr:+.2%} over {len(baselines.folds)} folds.")
+    click.echo(f"Baselines written: {baselines_path(strategies_path).name}")
+
+
 @cli.command(name="strategies")
 def list_strategies() -> None:
     """List all available strategies."""
