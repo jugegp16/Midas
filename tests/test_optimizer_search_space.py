@@ -147,3 +147,47 @@ def test_search_globals_rejects_fixed_exits_and_constraints() -> None:
             search_globals=True,
             exit_params={"StopLoss": {"loss_threshold": 0.08}},
         )
+
+
+def test_enqueued_params_run_first_and_flatten_round_trips() -> None:
+    from midas.optimizer import flatten_params, optimize
+
+    portfolio, price_data, start, end = _data()
+    fixed = {"MeanReversion": {"window": 20.0, "threshold": 0.05, "_weight": 1.0}}
+    result = optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=3,
+        objective="gross",
+        exit_params={},
+        constraints=AllocationConstraints(),
+        enqueue=[flatten_params(fixed)],
+        record_top=3,
+    )
+    # The enqueued combination must appear among the recorded trials.
+    assert any(params == fixed for _score, params in result.top_trials)
+
+
+def test_record_top_caps_and_orders_best_first() -> None:
+    from midas.optimizer import optimize
+
+    portfolio, price_data, start, end = _data()
+    result = optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=6,
+        objective="gross",
+        exit_params={},
+        constraints=AllocationConstraints(),
+        record_top=4,
+    )
+    scores = [score for score, _ in result.top_trials]
+    assert len(result.top_trials) == 4
+    assert scores == sorted(scores, reverse=True)
+    assert result.top_trials[0][0] == result.best_objective_value

@@ -9,7 +9,7 @@ import os
 import statistics
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, get_args
 
@@ -268,6 +268,7 @@ class OptimizeResult:
     best_test_return: float
     trials_run: int
     best_result: BacktestResult | None = None
+    top_trials: list[tuple[float, dict[str, dict[str, float]]]] = field(default_factory=list)
 
 
 @dataclass
@@ -341,6 +342,15 @@ def _snap_high(lo: float, hi: float, step: float) -> float:
 def _pool_workers(n_trials: int) -> int:
     """Worker-pool size: half the CPUs, capped by the trial count, at least one."""
     return min((os.cpu_count() or 4) // 2, n_trials) or 1
+
+
+def flatten_params(params: dict[str, dict[str, float]]) -> dict[str, float]:
+    """Nested optimizer params -> flat Optuna param names (``Strategy__param``).
+
+    The inverse of what ``_suggest_params`` builds; used to enqueue known
+    parameter sets (warm starts) into a study.
+    """
+    return {f"{strategy}__{param}": value for strategy, block in params.items() for param, value in block.items()}
 
 
 def _suggest_params(
@@ -791,6 +801,8 @@ def optimize(
     search_globals: bool = False,
     exit_params: dict[str, dict[str, float | int | str]] | None = None,
     constraints: AllocationConstraints | None = None,
+    enqueue: list[dict[str, float]] | None = None,
+    record_top: int = 0,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -828,6 +840,8 @@ def optimize(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
+    for flat in enqueue or []:
+        study.enqueue_trial(flat)
 
     # -- Objective that runs in the main process but farms backtest to pool --
     pool = ProcessPoolExecutor(
@@ -891,6 +905,12 @@ def optimize(
         f"Win rate: {best_result.win_rate:.2%}"
     )
 
+    top_trials: list[tuple[float, dict[str, dict[str, float]]]] = []
+    if record_top > 0:
+        completed = [t for t in study.trials if t.value is not None and "params" in t.user_attrs]
+        ranked = sorted(completed, key=lambda t: (-(t.value or 0.0), t.number))
+        top_trials = [(float(t.value or 0.0), t.user_attrs["params"]) for t in ranked[:record_top]]
+
     return OptimizeResult(
         best_params=best_params,
         objective=objective,
@@ -900,6 +920,7 @@ def optimize(
         best_test_return=round(best_result.test_return, 4),
         trials_run=len(study.trials),
         best_result=best_result,
+        top_trials=top_trials,
     )
 
 
