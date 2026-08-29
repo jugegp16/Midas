@@ -405,24 +405,40 @@ def _run_trial(
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
     track_vol_contribution: bool = True,
+    exit_params: dict[str, dict[str, float]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> tuple[TrialMetrics, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
     Returns the scoring metrics alongside the full result. Callers that want
     in-sample-only metrics must pass a train-only window with
     ``enable_split=False``; the metrics cover whatever window was run.
-    """
-    # Extract global allocation knobs
-    global_params = strategy_params.get(ALLOCATION_KEY, {})
-    entries, exits = _instantiate_strategies(strategy_params)
 
-    constraints = AllocationConstraints(
-        max_position_pct=global_params.get("max_position_pct"),
-        min_cash_pct=min_cash_pct,
-        softmax_temperature=global_params.get("softmax_temperature", 0.5),
-        min_buy_delta=global_params.get("min_buy_delta", 0.02),
-        forecast_scaling=forecast_scaling,
-    )
+    When ``constraints`` is given it is used as-is (policy-owned) instead of
+    being built from sampled globals; when ``exit_params`` is given, those
+    exit rules run with exactly those parameters and ``strategy_params``
+    must carry entries only. With both ``None``, globals and exits are read
+    from ``strategy_params`` — the ``search_globals`` legacy path.
+
+    Raises:
+        ValueError: If ``strategy_params`` contains exit rules while
+            ``exit_params`` is also given.
+    """
+    global_params = strategy_params.get(ALLOCATION_KEY, {})
+    if constraints is None:
+        constraints = AllocationConstraints(
+            max_position_pct=global_params.get("max_position_pct"),
+            min_cash_pct=min_cash_pct,
+            softmax_temperature=global_params.get("softmax_temperature", 0.5),
+            min_buy_delta=global_params.get("min_buy_delta", 0.02),
+            forecast_scaling=forecast_scaling,
+        )
+    entries, exits = _instantiate_strategies(strategy_params)
+    if exit_params is not None:
+        if exits:
+            msg = "strategy_params contains exit rules but exit_params is also given"
+            raise ValueError(msg)
+        _, exits = _instantiate_strategies({name: dict(params) for name, params in exit_params.items()})
 
     allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
     order_sizer = OrderSizer()
@@ -537,6 +553,8 @@ def _init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
+    exit_params: dict[str, dict[str, float]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise standard-optimizer workers with the train-window trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
@@ -556,6 +574,8 @@ def _init_worker(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
 
@@ -576,6 +596,8 @@ def _wf_init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
+    exit_params: dict[str, dict[str, float]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -586,6 +608,8 @@ def _wf_init_worker(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
 
@@ -607,6 +631,8 @@ def _wf_trial_worker(
         forecast_scaling=worker_state.get("forecast_scaling", "none"),
         tax_config=worker_state.get("tax_config"),
         track_vol_contribution=False,
+        exit_params=worker_state.get("exit_params"),
+        constraints=worker_state.get("constraints"),
     )
     return metrics
 
