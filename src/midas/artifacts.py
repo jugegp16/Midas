@@ -9,9 +9,10 @@ rename), mirroring the price cache.
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
-from datetime import date
+from dataclasses import asdict, dataclass
+from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -28,18 +29,33 @@ def fits_dir(strategies_path: Path) -> Path:
     return strategies_path.with_name(f"{strategies_path.stem}.fits")
 
 
-def write_fit(strategies_path: Path, fit: FitResult) -> Path:
-    """Record *fit* in history and make it the deployed members.
+def record_fit(strategies_path: Path, fit: FitResult) -> Path:
+    """Append *fit* to history WITHOUT deploying it.
 
-    Returns the history entry path. A rerun of the identical fit (same
-    as_of, same inputs) overwrites its own history entry rather than
-    duplicating it.
+    A rerun of the identical fit (same as_of, same inputs) overwrites its
+    own history entry rather than duplicating it. Re-fit uses this: the
+    fit always runs, deployment waits for adoption.
     """
     history_dir = fits_dir(strategies_path)
     history_dir.mkdir(parents=True, exist_ok=True)
     entry = history_dir / f"{fit.as_of.isoformat()}-{fit.input_hash[:8]}.yaml"
     _atomic_write(entry, _serialize(fit))
+    return entry
+
+
+def deploy_fit(strategies_path: Path, fit: FitResult) -> None:
+    """Make *fit* the deployed members (sidecar only; history untouched)."""
     _atomic_write(members_path(strategies_path), _serialize(fit))
+
+
+def write_fit(strategies_path: Path, fit: FitResult) -> Path:
+    """Record *fit* in history and make it the deployed members.
+
+    The explicit-operator path (``midas fit``): fitting by hand IS the
+    adoption decision, so record and deploy compose.
+    """
+    entry = record_fit(strategies_path, fit)
+    deploy_fit(strategies_path, fit)
     return entry
 
 
@@ -87,6 +103,60 @@ def rollback(strategies_path: Path, steps: int = 1) -> FitResult:
     restored = _deserialize(entries[target])
     _atomic_write(members_path(strategies_path), _serialize(restored))
     return restored
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """A pending adoption: a recorded fit awaiting the operator's decision."""
+
+    fit_as_of: date
+    input_hash: str
+    evidence: list[str]
+    created_at: datetime
+    status: Literal["pending"] = "pending"
+
+
+def proposal_path(strategies_path: Path) -> Path:
+    """The pending-adoption proposal beside the strategies file."""
+    return strategies_path.with_name(f"{strategies_path.stem}.proposal.yaml")
+
+
+def write_proposal(
+    strategies_path: Path,
+    *,
+    fit_as_of: date,
+    input_hash: str,
+    evidence: list[str],
+    created_at: datetime,
+) -> None:
+    """Atomically write a pending adoption proposal."""
+    payload = {
+        "fit_as_of": fit_as_of.isoformat(),
+        "input_hash": input_hash,
+        "evidence": list(evidence),
+        "created_at": created_at.isoformat(),
+        "status": "pending",
+    }
+    _atomic_write(proposal_path(strategies_path), yaml.dump(payload, default_flow_style=False, sort_keys=False))
+
+
+def read_proposal(strategies_path: Path) -> Proposal | None:
+    """The pending proposal, or None."""
+    path = proposal_path(strategies_path)
+    if not path.exists():
+        return None
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return Proposal(
+        fit_as_of=date.fromisoformat(str(raw["fit_as_of"])),
+        input_hash=str(raw["input_hash"]),
+        evidence=[str(line) for line in raw.get("evidence") or []],
+        created_at=datetime.fromisoformat(str(raw["created_at"])),
+    )
+
+
+def clear_proposal(strategies_path: Path) -> None:
+    """Remove the pending proposal, if any."""
+    proposal_path(strategies_path).unlink(missing_ok=True)
 
 
 def _serialize(fit: FitResult) -> str:
