@@ -1,5 +1,0 @@
-Fetching data for PLTR, INCY, NVDA, CEG, AAPL, META (with 160-day warmup buffer 
-from 2015-11-12)...
-=== fold 1: train 2016-04-20..2022-04-13 | test 2022-04-14..2022-07-21
-  seed  42 n=666   train  2077.27%  oos   -7.78%
-  seed  42 n=2000  train  2862.45%  oos    7.22%

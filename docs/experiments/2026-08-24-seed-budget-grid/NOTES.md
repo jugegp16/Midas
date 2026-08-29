@@ -5,6 +5,10 @@ Provenance: these runs were executed during the objective-framework work
 number is re-derivable. The original raw logs were lost to tmp cleanup;
 the tables below are transcribed from the working session, and
 `fold_grid.py` in this directory regenerates `results.json` for the grid.
+Regenerated 2026-08-29 on master + the v2 spec branch: all 24 cells
+reproduced the transcribed values exactly (max deviation < 1e-11) — the
+seeded deterministic search plus the covered-window price cache make the
+record fully re-derivable, not merely transcribed.
 Related recorded evidence: the 30-run multi-seed study table lives in the
 correction comment on issue #49; the trial-budget table is in
 `docs/cli.md` ("Trial budget and search noise") and commit `ee0c93e`.
