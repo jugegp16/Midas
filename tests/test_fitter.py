@@ -97,3 +97,50 @@ def test_incumbent_members_are_enqueued_into_restart_zero_only(monkeypatch) -> N
     fit_as_of(portfolio, price_data, date(2023, 10, 2), SMALL, incumbent=first, **kwargs)
     assert calls[0] is not None and len(calls[0]) == 1  # restart 0: the incumbent member
     assert all(c is None for c in calls[1:])  # other restarts stay independent
+
+
+def test_ensemble_mode_returns_stratified_members() -> None:
+    portfolio, price_data = _data()
+    policy = Policy(objective="gross", budget=8, restarts=2, ensemble_size=4, deployment="ensemble")
+    result = fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        policy,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+    )
+    assert 1 <= len(result.members) <= 4
+    assert len(result.member_scores) == len(result.members)
+    assert len({str(m) for m in result.members}) == len(result.members)  # distinct
+    assert result.member_scores == sorted(result.member_scores, reverse=True)
+
+
+def test_ensemble_dedupe_collapses_identical_behavior(monkeypatch) -> None:
+    """Force every candidate to one behavioral key: at most one member may
+    survive per restart stratum."""
+    import midas.fitter as fitter_module
+
+    monkeypatch.setattr(fitter_module, "behavioral_key", lambda series: ("same",))
+    portfolio, price_data = _data()
+    policy = Policy(objective="gross", budget=8, restarts=2, ensemble_size=4, deployment="ensemble")
+    result = fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        policy,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+    )
+    assert len(result.members) == 1  # one global behavior -> one member total
+
+
+def test_ensemble_mode_is_deterministic() -> None:
+    portfolio, price_data = _data()
+    policy = Policy(objective="gross", budget=8, restarts=2, ensemble_size=4, deployment="ensemble")
+    kwargs = dict(constraints=AllocationConstraints(), exit_params={}, strategy_names=["MeanReversion"])
+    a = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
+    b = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
+    assert a.members == b.members and a.member_scores == b.member_scores
