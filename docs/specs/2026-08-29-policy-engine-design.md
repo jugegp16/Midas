@@ -412,6 +412,10 @@ the defaults; results are committed under
 - **Trigger arming thresholds:** the drawdown arm needs ≥1 completed
   fold, the percentile arm ≥5; both latch over the full daily path
   (phase 4).
+- **The sweep compares; `midas validate` writes baselines** — splitting
+  the comparator from the evidence writer keeps "selected variant" out of
+  the sweep's job description (phase 5). Sweep DSR proxies (trial count
+  from folds, SR variance from seeds) are printed on the line itself.
 
 ## Kill criteria (what result abandons what)
 

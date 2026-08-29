@@ -313,6 +313,52 @@ When a strategies file has a `policy:` block, `optimize --objective`
 refuses to run — the policy's objective governs, and a flag that silently
 disagreed with it would validate one procedure and deploy another.
 
+## validate
+
+Run the strategies file's `policy:` block over history exactly as live
+would — cadence folds, one fit per fold, degradation-gated adoption, a
+portfolio carried across fold boundaries — and write the baselines
+artifact (`<name>.baselines.json`) that the live monitor compares
+against.
+
+```bash
+uv run midas validate -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --end 2026-08-01
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `-s`, `--strategies` | required | Strategies YAML with a `policy:` block |
+| `--start` / `--end` | required | Validation range |
+| `--min-train-pct` | 0.60 | Initial training reserve before the first fold |
+
+## sweep
+
+Compare policy variants with seed replication and statistics that respect
+the measured noise: per-cell means with the seed spread as an OOS-unit
+noise floor, a stationary-block-bootstrap confidence interval, a Deflated
+Sharpe Ratio line that names its proxies, and a verdict that refuses to
+resolve differences inside the noise. Single-portfolio verdicts are
+qualified with "(on these windows)".
+
+```bash
+uv run midas sweep -p etf.yaml -p test.yaml -s strategies.yaml \
+  --start 2016-01-01 --end 2026-08-01 \
+  --vary deployment --value best --value ensemble --seeds 3
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required, repeatable | Each portfolio is validated side by side, never pooled into one error bar |
+| `--vary` / `--value` | `objective` / none | Policy field and variant values; no values sweeps seeds only |
+| `--seeds` | 3 | Replications per cell (`base_seed + i`) |
+| `--holdout-days` | 730 | Withheld from the end of the range so policy selection cannot overfit the folds it reports |
+| `--use-holdout` | off | One-shot holdout report; single variant only |
+| `--budget` + `--force` | policy's | Overriding the deployment budget breaks coherence and must be forced |
+
+The sweep prints a trial-count preflight before running. It compares; it
+does not write artifacts — produce baselines with `validate`.
+
 ## doctor
 
 Check that configured integrations actually work, with a fix hint for

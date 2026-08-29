@@ -47,6 +47,7 @@ from midas.output import (
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
+from midas.sweep import run_sweep
 from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
 from midas.trade_log import LoggedTrade, TradeLogError, read_trades
 
@@ -1270,6 +1271,135 @@ def validate(portfolio: str, strategies: str, start: date, end: date, min_train_
         )
     click.echo(f"Aggregate OOS CAGR: {baselines.aggregate_oos_cagr:+.2%} over {len(baselines.folds)} folds.")
     click.echo(f"Baselines written: {baselines_path(strategies_path).name}")
+
+
+@cli.command()
+@click.option(
+    "--portfolio",
+    "-p",
+    "portfolios",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Portfolio YAML; repeatable — each is validated side by side.",
+)
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--vary", default="objective", show_default=True, help="Policy field the variants differ along.")
+@click.option("--value", "values", multiple=True, help="One variant per value; omit to sweep seeds only.")
+@click.option("--seeds", default=3, show_default=True, help="Seed replications per cell (base_seed + i).")
+@click.option(
+    "--holdout-days", default=730, show_default=True, help="Calendar days withheld from the end of the range."
+)
+@click.option("--use-holdout", is_flag=True, default=False, help="One-shot holdout report; single variant only.")
+@click.option("--budget", default=None, type=int, help="Override the policy budget (requires --force).")
+@click.option("--force", is_flag=True, default=False, help="Allow a budget that differs from the policy's.")
+@click.option("--min-train-pct", default=0.60, show_default=True)
+def sweep(
+    portfolios: tuple[str, ...],
+    strategies: str,
+    start: date,
+    end: date,
+    vary: str,
+    values: tuple[str, ...],
+    seeds: int,
+    holdout_days: int,
+    use_holdout: bool,
+    budget: int | None,
+    force: bool,
+    min_train_pct: float,
+) -> None:
+    """Compare policy variants with seed replication and honest statistics.
+
+    Differences inside the seed noise floor print as not resolvable; a
+    single-portfolio verdict is qualified with "(on these windows)". The
+    final --holdout-days are withheld from every sweep so policy selection
+    cannot overfit the same folds it reports.
+    """
+    import dataclasses as _dc
+
+    from midas.config import load_policy
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — sweep is policy-driven.")
+    if budget is not None and budget != policy.budget:
+        if not force:
+            raise click.UsageError(
+                "validating at a different budget than deployment breaks coherence; pass --force to accept"
+            )
+        policy = _dc.replace(policy, budget=budget)
+    if use_holdout and len(values) > 1:
+        raise click.UsageError("--use-holdout is a one-shot report: exactly one variant allowed")
+
+    start_d, end_d = _to_date(start), _to_date(end)
+    holdout_boundary: date | None = None
+    if use_holdout:
+        click.echo("HOLDOUT REPORT — one shot; do not iterate on this.")
+    else:
+        holdout_boundary = end_d - timedelta(days=holdout_days)
+        if holdout_boundary <= start_d:
+            raise click.UsageError("holdout leaves no sweep range; shrink --holdout-days")
+        click.echo(f"holdout: withholding {holdout_boundary} → {end_d} from the sweep")
+        end_d = holdout_boundary
+
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    ports: dict[str, PortfolioConfig] = {}
+    price_by_port: dict[str, dict[str, pd.DataFrame]] = {}
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, 1)
+    for path_str in portfolios:
+        path = Path(path_str)
+        port = load_portfolio(path)
+        ports[path.stem] = port
+        price_by_port[path.stem] = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
+
+    n_variants = max(len(values), 1)
+    approx_days = max((end_d - start_d).days * 5 // 7, 1)
+    approx_folds = max(int(approx_days * (1 - min_train_pct)) // policy.cadence_days, 1)
+    total_trials = n_variants * len(ports) * seeds * approx_folds * policy.restarts * policy.budget
+    click.echo(
+        f"preflight: {n_variants} variant(s) x {len(ports)} portfolio(s) x {seeds} seed(s) x "
+        f"~{approx_folds} fold(s) x {policy.restarts} restart(s) x {policy.budget} trials "
+        f"≈ {total_trials:,} trials"
+    )
+
+    try:
+        report = run_sweep(
+            ports,
+            price_by_port,
+            start_d,
+            end_d,
+            policy,
+            vary,
+            list(values),
+            seeds,
+            constraints=strat_constraints,
+            exit_params=exit_params,
+            risk_config=risk_config,
+            min_cash_pct=strat_constraints.min_cash_pct,
+            forecast_scaling=strat_constraints.forecast_scaling,
+            tax_config=next(iter(ports.values())).tax_config if len(ports) == 1 else None,
+            strategy_names=strategy_names,
+            log_fn=print_status,
+            holdout_trimmed_to=holdout_boundary,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for line in report.summary_lines():
+        click.echo(line)
 
 
 @cli.command(name="strategies")
