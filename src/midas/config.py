@@ -234,6 +234,23 @@ def load_strategies(
     """
     raw = _load_yaml(path)
 
+    known_keys = {
+        "strategies",
+        "min_cash_pct",
+        "softmax_temperature",
+        "min_buy_delta",
+        "max_position_pct",
+        "forecast_scaling",
+        "risk",
+    }
+    unknown = set(raw) - known_keys
+    if unknown:
+        # A typo'd policy-owned knob would otherwise fall back to its default
+        # silently — a silently different engine now that the search never
+        # covers these knobs.
+        msg = f"strategies file has unrecognized keys {sorted(unknown)}; known keys: {sorted(known_keys)}"
+        raise ValueError(msg)
+
     configs = [
         StrategyConfig(
             name=strat["name"],

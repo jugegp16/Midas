@@ -450,3 +450,21 @@ def test_load_portfolio_alerts_renamed_channel_keys_raise(tmp_path: Path) -> Non
         path.write_text(base + f"alerts:\n  {old_key}: 123\n")
         with pytest.raises(ValueError, match=new_key):
             load_portfolio(path)
+
+
+def test_load_strategies_rejects_unknown_top_level_keys(tmp_path: Path) -> None:
+    path = tmp_path / "s.yaml"
+    path.write_text("strategies:\n  - name: MeanReversion\nsoftmax_temp: 0.4\n")  # typo'd key
+    with pytest.raises(ValueError, match="softmax_temp"):
+        load_strategies(path)
+
+
+def test_load_strategies_accepts_all_known_keys(tmp_path: Path) -> None:
+    path = tmp_path / "s.yaml"
+    path.write_text(
+        "strategies:\n  - name: MeanReversion\n"
+        "min_cash_pct: 0.05\nsoftmax_temperature: 0.4\nmin_buy_delta: 0.02\n"
+        "max_position_pct: 0.5\nforecast_scaling: quantile\nrisk:\n  weighting: equal\n"
+    )
+    _configs, constraints, _risk = load_strategies(path)
+    assert constraints.softmax_temperature == 0.4
