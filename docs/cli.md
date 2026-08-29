@@ -33,7 +33,20 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
+| `--search-globals` | off | Legacy full search space: exit-rule parameters and allocator globals become searchable again. Incompatible with a strategies file that pins exits. |
 | `--objective` | `calmar` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
+
+### What gets searched
+
+By default the optimizer searches **entry-signal parameters and weights
+only**. Exit rules, `softmax_temperature`, `min_buy_delta`,
+`max_position_pct`, `min_cash_pct`, `forecast_scaling`, and `risk:` are
+policy-owned: the strategies file sets them, every trial runs them
+unchanged, and the optimized YAML round-trips them verbatim. This
+roughly triples search density at a fixed trial budget and keeps exactly
+one sizing and exit configuration in play. Without `-s`, all entry
+signals are searched and no exit rules run — pin exits in a strategies
+file for any run you intend to act on.
 
 ### Objectives
 
