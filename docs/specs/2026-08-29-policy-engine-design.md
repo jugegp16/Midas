@@ -412,6 +412,11 @@ the defaults; results are committed under
 - **Trigger arming thresholds:** the drawdown arm needs ≥1 completed
   fold, the percentile arm ≥5; both latch over the full daily path
   (phase 4).
+- **The sidecar watch is the single adoption mechanism** (phase 7): ✅,
+  `refit --adopt`, and offline deploys all converge on "the members
+  sidecar changed"; live hot-reloads members (policy-owned knobs still
+  require a restart). `record_fit`/`deploy_fit` split so re-fit records
+  without deploying; `midas fit` composes both.
 - **The sweep compares; `midas validate` writes baselines** — splitting
   the comparator from the evidence writer keeps "selected variant" out of
   the sweep's job description (phase 5). Sweep DSR proxies (trial count

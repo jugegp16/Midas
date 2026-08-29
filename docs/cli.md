@@ -156,6 +156,7 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `--interval` | 60 | Poll interval in seconds |
 | `--dry-run` | off | Observe signals with in-memory fills — never writes state, trade log, or Discord |
 | `--ignore-market-hours` | off | Poll 24/7 instead of only during US equity sessions (debugging) |
+| `--refit` | off | Spawn `midas refit` at the policy cadence after the close report (adoption still needs ✅ or `--adopt`) |
 
 ### Market hours
 
@@ -334,6 +335,37 @@ policy:
 When a strategies file has a `policy:` block, `optimize --objective`
 refuses to run — the policy's objective governs, and a flag that silently
 disagreed with it would validate one procedure and deploy another.
+
+## refit
+
+Cadence re-fit: always record, deploy only through adoption.
+
+```bash
+uv run midas refit -p portfolio.yaml -s strategies.yaml            # fit + maybe propose
+uv run midas refit -p portfolio.yaml -s strategies.yaml --adopt    # deploy latest fit
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p` / `-s` | required | Portfolio / strategies (with `policy:` block) |
+| `--start` | as-of − 10y | Earliest data to fit on |
+| `--as-of` | today | Fit on data strictly before this date |
+| `--state` | none | Live state file (read-only) for degradation evidence |
+| `--adopt` | off | Deploy the latest recorded fit and clear any proposal |
+
+The fit lands in `<name>.fits/` unconditionally; the deployed members
+change only through adoption. When the live monitor window (from
+`--state`) breaches the validated baselines, a proposal is written:
+live's confirm tier posts it to Discord for a ✅/❌ (estimates marked;
+expires after `pending_ttl_hours`; re-raised only by the next cadence
+fit), while terminal-only live prints it once with the `--adopt`
+instruction — **no tier ever adopts silently**. Any adoption path —
+✅, `--adopt`, or an offline deploy — converges on the members sidecar,
+which live watches every tick and hot-reloads from. A mismatched input
+hash (portfolio or policy changed since the deployment) refuses with
+the fresh-`midas fit` path. `live --refit` (opt-in) spawns this command
+in a detached process once per session after the close report when the
+deployed fit is older than `cadence_days`.
 
 ## validate
 
