@@ -130,6 +130,13 @@ class LiveState:
     # transitions that record the underlying pending-order lifecycle;
     # reset when a report goes out. (In 24/7 debug mode no report ever
     # fires, so these accumulate meaninglessly — harmless.)
+    # Monitor window: daily TWR returns since the last fit anchor, plus the
+    # edge-trigger flag and the fill-explained cash level (manual deposits
+    # show up as unexplained deltas and are excluded from returns).
+    monitor_anchor: date | None = None
+    monitor_returns: list[float] = field(default_factory=list)
+    monitor_dd_warned: bool = False
+    expected_cash: float | None = None
     tally_posted: int = 0
     tally_confirmed: int = 0
     tally_declined: int = 0
@@ -180,6 +187,16 @@ def save_atomic(state: LiveState, path: Path) -> None:
         "last_report": (
             {"date": state.last_report_date, "equity": state.last_report_equity}
             if state.last_report_date is not None
+            else None
+        ),
+        "monitor": (
+            {
+                "anchor": state.monitor_anchor.isoformat() if state.monitor_anchor else None,
+                "returns": [float(r) for r in state.monitor_returns],
+                "dd_warned": state.monitor_dd_warned,
+                "expected_cash": state.expected_cash,
+            }
+            if state.monitor_anchor is not None or state.monitor_returns
             else None
         ),
         "intent_cooldowns": [
@@ -271,6 +288,9 @@ def load_state(path: Path) -> LiveState:
         equity_raw = last_report.get("equity")
         last_report_equity = float(equity_raw) if equity_raw is not None else None
 
+    monitor = raw.get("monitor") or {}
+    monitor_anchor_raw = monitor.get("anchor")
+
     return LiveState(
         available_cash=float(raw["available_cash"]),
         cash_infusion_next_date=next_date,
@@ -281,6 +301,10 @@ def load_state(path: Path) -> LiveState:
         intent_cooldowns=intent_cooldowns,
         last_report_date=last_report_date,
         last_report_equity=last_report_equity,
+        monitor_anchor=(date.fromisoformat(monitor_anchor_raw) if isinstance(monitor_anchor_raw, str) else None),
+        monitor_returns=[float(r) for r in monitor.get("returns") or []],
+        monitor_dd_warned=bool(monitor.get("dd_warned", False)),
+        expected_cash=(float(monitor["expected_cash"]) if monitor.get("expected_cash") is not None else None),
         tally_posted=int(tally.get("posted", 0)),
         tally_confirmed=int(tally.get("confirmed", 0)),
         tally_declined=int(tally.get("declined", 0)),

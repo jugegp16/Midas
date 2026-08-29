@@ -550,3 +550,34 @@ class TestPendingOrderPersistence:
 
         with pytest.raises(StateFileError, match="pending_orders"):
             load_state(path)
+
+
+def test_monitor_fields_roundtrip(tmp_path: Path) -> None:
+    from datetime import date as _date
+
+    state = LiveState(
+        available_cash=100.0,
+        cash_infusion_next_date=None,
+        monitor_anchor=_date(2026, 8, 1),
+        monitor_returns=[0.001, -0.002],
+        monitor_dd_warned=True,
+        expected_cash=123.45,
+    )
+    path = tmp_path / "state.yaml"
+    save_atomic(state, path)
+    loaded = load_state(path)
+    assert loaded.monitor_anchor == _date(2026, 8, 1)
+    assert loaded.monitor_returns == [0.001, -0.002]
+    assert loaded.monitor_dd_warned is True
+    assert loaded.expected_cash == 123.45
+
+
+def test_monitor_fields_default_when_absent(tmp_path: Path) -> None:
+    state = LiveState(available_cash=100.0, cash_infusion_next_date=None)
+    path = tmp_path / "state.yaml"
+    save_atomic(state, path)
+    loaded = load_state(path)
+    assert loaded.monitor_anchor is None
+    assert loaded.monitor_returns == []
+    assert loaded.monitor_dd_warned is False
+    assert loaded.expected_cash is None
