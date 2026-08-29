@@ -267,6 +267,52 @@ real session against the same state file.)
 > webhook-based delivery was removed and is rejected at config load —
 > delete the webhook in Discord and switch to the bot setup above.
 
+## fit
+
+Fit deployable members per the strategies file's `policy:` block — the
+policy-driven entry point that the walk-forward validator and live re-fit
+share (`optimize` remains the low-level single-search tool).
+
+```bash
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --as-of 2026-08-01
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --rollback 1
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `-s`, `--strategies` | required | Strategies YAML containing a `policy:` block |
+| `--start` | required | Earliest data to fit on |
+| `--as-of` | today | Fit on data strictly before this date (exclusive) |
+| `--rollback` | 0 | Restore the members deployed N fits ago instead of fitting |
+
+The fit runs `policy.restarts` independent seeded searches (seeds derive
+from the base seed, the as-of date, and the restart index, so identical
+inputs reproduce identical members anywhere) and selects per
+`policy.deployment`: `best` keeps the single best trial across restarts;
+`ensemble` keeps a stratified, behaviorally deduplicated top-K. The
+currently deployed members warm-start restart 0 of the next fit.
+
+Artifacts are machine-owned and live beside the strategies file, which
+`fit` never edits: `<name>.members.yaml` (the deployed members) and
+`<name>.fits/` (every fit, so `--rollback` always has history).
+
+```yaml
+policy:
+  objective: calmar      # what fits maximize
+  budget: 2000           # trials per restart
+  restarts: 4
+  base_seed: 42
+  deployment: best       # best | ensemble
+  ensemble_size: 20
+  cadence_days: 63       # re-fit interval (used by the validator and live)
+```
+
+When a strategies file has a `policy:` block, `optimize --objective`
+refuses to run — the policy's objective governs, and a flag that silently
+disagreed with it would validate one procedure and deploy another.
+
 ## doctor
 
 Check that configured integrations actually work, with a fix hint for

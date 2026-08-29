@@ -752,7 +752,9 @@ def _validate_optimize_options(
     "sharpe (annualized Sharpe), gross (raw return), net (return after tax; needs a tax: block), "
     "ulcer (return over Ulcer Index), robust (lower-quartile block return).",
 )
+@click.pass_context
 def optimize(
+    ctx: click.Context,
     portfolio: str,
     strategies: str | None,
     start: date,
@@ -779,6 +781,15 @@ def optimize(
     from midas.strategies.base import EntrySignal
 
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
+
+    if strategies and ctx.get_parameter_source("objective") == click.core.ParameterSource.COMMANDLINE:
+        from midas.config import load_policy
+
+        if load_policy(Path(strategies)) is not None:
+            raise click.UsageError(
+                "the strategies file has a policy: block whose objective governs; "
+                "--objective would silently disagree with it — edit the policy instead"
+            )
 
     port = load_portfolio(Path(portfolio))
     tax_config = _tax_config_for_objective(port, Path(portfolio), objective)
@@ -1104,6 +1115,90 @@ def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str
         ]
     )
     print_params_table("Optimized Parameters", result.best_params, global_key=ALLOCATION_KEY)
+
+
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]), help="Earliest data to fit on.")
+@click.option(
+    "--as-of",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Fit on data strictly before this date (default: today).",
+)
+@click.option("--rollback", default=0, type=int, help="Restore the members deployed N fits ago instead of fitting.")
+def fit(portfolio: str, strategies: str, start: date, as_of: date | None, rollback: int) -> None:
+    """Fit deployable members per the strategies file's policy block.
+
+    Writes the machine-owned members sidecar and a fits/ history entry;
+    the strategies YAML itself is never modified. The current sidecar (if
+    any) warm-starts restart 0 of the new fit.
+    """
+    from midas.artifacts import list_fits, read_members, write_fit
+    from midas.artifacts import rollback as rollback_fit
+    from midas.config import load_policy
+    from midas.fitter import fit_as_of
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+
+    strategies_path = Path(strategies)
+    if rollback > 0:
+        try:
+            restored = rollback_fit(strategies_path, steps=rollback)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Rolled back {rollback} fit(s): deployed members from {restored.as_of.isoformat()}.")
+        return
+
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(
+            f"{strategies_path} has no policy: block — fit is policy-driven; add one (see docs/cli.md)."
+        )
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    start_d = _to_date(start)
+    as_of_d = _to_date(as_of) if as_of is not None else date.today()
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, as_of_d, warmup_bars=warmup_bars)
+
+    incumbent = read_members(strategies_path)
+    print_status(
+        f"Fitting as of {as_of_d} — objective {policy.objective}, {policy.restarts} restarts x "
+        f"{policy.budget} trials, deployment {policy.deployment}"
+        + (" (warm-starting from deployed members)" if incumbent else "")
+    )
+    result = fit_as_of(
+        port,
+        price_data,
+        as_of_d,
+        policy,
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+        incumbent=incumbent,
+        strategy_names=strategy_names,
+        log_fn=print_status,
+    )
+    entry = write_fit(strategies_path, result)
+    bests = ", ".join(f"{b:.4g}" for b in result.restart_bests)
+    click.echo(f"Fitted {len(result.members)} member(s) as of {result.as_of.isoformat()}.")
+    click.echo(f"  restart bests ({policy.objective}): {bests}")
+    click.echo(f"  members sidecar: {strategies_path.stem}.members.yaml")
+    click.echo(f"  history: {entry.name} ({len(list_fits(strategies_path))} fits recorded)")
 
 
 @cli.command(name="strategies")
