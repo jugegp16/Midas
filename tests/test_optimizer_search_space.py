@@ -89,3 +89,61 @@ def test_run_trial_policy_constraints_change_the_outcome() -> None:
         entries_only, portfolio, price_data, start, end, enable_split=False, exit_params={}, constraints=tight
     )
     assert r_loose.equity_curve != r_tight.equity_curve
+
+
+def test_optimize_default_searches_entries_only() -> None:
+    portfolio, price_data, start, end = _data()
+    from midas.optimizer import optimize
+
+    result = optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=4,
+        objective="gross",
+        exit_params={"StopLoss": {"loss_threshold": 0.08}},
+        constraints=AllocationConstraints(max_position_pct=0.5),
+    )
+    assert set(result.best_params) == {"MeanReversion"}
+    assert ALLOCATION_KEY not in result.best_params
+    # The final re-run honored the fixed exits too (coherence with trials).
+    assert result.best_result is not None
+    sell_sources = {t.strategy_name for t in result.best_result.trades if t.direction.value == "SELL"}
+    assert sell_sources <= {"StopLoss"}
+
+
+def test_optimize_search_globals_matches_legacy_space() -> None:
+    portfolio, price_data, start, end = _data()
+    from midas.optimizer import optimize
+
+    result = optimize(
+        portfolio=portfolio,
+        price_data=price_data,
+        start=start,
+        end=end,
+        strategy_names=["MeanReversion"],
+        n_trials=4,
+        objective="gross",
+        search_globals=True,
+    )
+    assert ALLOCATION_KEY in result.best_params
+
+
+def test_search_globals_rejects_fixed_exits_and_constraints() -> None:
+    portfolio, price_data, start, end = _data()
+    from midas.optimizer import optimize
+
+    with pytest.raises(ValueError, match="search_globals"):
+        optimize(
+            portfolio=portfolio,
+            price_data=price_data,
+            start=start,
+            end=end,
+            strategy_names=["MeanReversion"],
+            n_trials=2,
+            objective="gross",
+            search_globals=True,
+            exit_params={"StopLoss": {"loss_threshold": 0.08}},
+        )

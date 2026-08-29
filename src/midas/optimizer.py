@@ -528,6 +528,22 @@ def format_objective(value: float, objective: Objective) -> str:
     return f"{value:.2%}" if objective in ("gross", "net", "robust") else f"{value:.2f}"
 
 
+def _require_split_consistency(
+    search_globals: bool,
+    exit_params: dict[str, dict[str, float]] | None,
+    constraints: AllocationConstraints | None,
+) -> None:
+    """Reject the contradictory combination of searching and fixing the same knobs.
+
+    Raises:
+        ValueError: When ``search_globals`` is combined with fixed exits or
+            constraints.
+    """
+    if search_globals and (exit_params is not None or constraints is not None):
+        msg = "search_globals searches what exit_params/constraints would fix; pass one or the other"
+        raise ValueError(msg)
+
+
 def _require_tax_for_net(objective: Objective, tax_config: TaxConfig | None) -> None:
     """Fail before any work starts when ``net`` has nothing to tax.
 
@@ -768,6 +784,9 @@ def optimize(
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
+    search_globals: bool = False,
+    exit_params: dict[str, dict[str, float]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -784,8 +803,11 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
     _require_tax_for_net(objective, tax_config)
+    _require_split_consistency(search_globals, exit_params, constraints)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
+    names, ranges = _prepare_names_and_ranges(
+        strategy_names, min_cash_pct, portfolio.active_ticker_count(), search_globals=search_globals
+    )
     train_end = train_window_end(_trading_days(price_data, start, end), train_pct)
 
     max_workers = _pool_workers(n_trials)
@@ -807,7 +829,18 @@ def optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, train_end, min_cash_pct, risk_config, forecast_scaling, tax_config),
+        initargs=(
+            portfolio,
+            price_data,
+            start,
+            train_end,
+            min_cash_pct,
+            risk_config,
+            forecast_scaling,
+            tax_config,
+            exit_params,
+            constraints,
+        ),
     )
 
     try:
@@ -844,6 +877,8 @@ def optimize(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
     log(
@@ -984,6 +1019,9 @@ def walk_forward_optimize(
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
+    search_globals: bool = False,
+    exit_params: dict[str, dict[str, float]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -999,8 +1037,11 @@ def walk_forward_optimize(
     """
     log = log_fn or (lambda _: None)
     _require_tax_for_net(objective, tax_config)
+    _require_split_consistency(search_globals, exit_params, constraints)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
+    names, ranges = _prepare_names_and_ranges(
+        strategy_names, min_cash_pct, portfolio.active_ticker_count(), search_globals=search_globals
+    )
     trading_days = _trading_days(price_data, start, end)
 
     fold_boundaries = _fold_boundaries(len(trading_days), min_train_pct, min_test_days)
@@ -1024,7 +1065,16 @@ def walk_forward_optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_wf_init_worker,
-        initargs=(portfolio, price_data, min_cash_pct, risk_config, forecast_scaling, tax_config),
+        initargs=(
+            portfolio,
+            price_data,
+            min_cash_pct,
+            risk_config,
+            forecast_scaling,
+            tax_config,
+            exit_params,
+            constraints,
+        ),
     )
 
     try:
@@ -1086,6 +1136,8 @@ def walk_forward_optimize(
                 forecast_scaling=forecast_scaling,
                 tax_config=tax_config,
                 track_vol_contribution=False,
+                exit_params=exit_params,
+                constraints=constraints,
             )
             test_twr = test_metrics.twr
 
