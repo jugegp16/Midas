@@ -77,6 +77,13 @@ switches pay their real turnover and tax cost and no fold ramps in from
 cash. Output is the baselines artifact (per-day fold paths, provenance
 hashes) that the monitor and sweep consume.
 
+**Live monitor** -- The close-of-day report ranks the live trailing
+fold-window against the validation baselines: cumulative TWR at the same
+day offset (bootstrap distribution, not fold-count percentiles), window
+drawdown against the validated worst fold, deposits excluded from
+returns, warnings edge-triggered, and comparisons refused outright on an
+input-hash mismatch.
+
 With `forecast_scaling: quantile`, each entry-rule instance's positive scores are rank-transformed across the tickers it scored on that bar — its strongest pick becomes 1.0, its weakest positive `1/n` — before the weighted average in Phase 1 blends them. This gives every rule equal say regardless of its raw score distribution. Zeros and abstentions are untouched. The default `none` skips the transform entirely. See [Strategies](strategies.md#score-normalization-forecast_scaling) for details.
 
 #### Phase 2: Softmax Budget Allocation

@@ -185,6 +185,28 @@ alerts channel action-only — and falls back to the alerts channel
 otherwise. Terminal always gets it. The day-over-day anchor persists in
 the state file, so the delta survives restarts.
 
+### Validation monitor
+
+When the strategies file has a `policy:` block and has been validated
+(`midas validate` wrote `<name>.baselines.json`), the end-of-day report
+gains monitor lines comparing the live trailing fold-window against the
+validation distribution:
+
+```
+fold-window day 23/63: +2.8% TWR (pre-tax) — p41 of validation distribution
+drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
+```
+
+The window anchors on the members sidecar's fit date (a declined proposal
+still closed a window), compares cumulative TWR at the same day offset as
+the folds (no annualizing of partial windows), and excludes deposits from
+returns — engine-credited infusions and any cash change the engine didn't
+make itself are treated as inflows. A breach of the validated worst-fold
+drawdown warns once per episode (edge-triggered) and the engine takes no
+action itself: notify-and-act. A baselines artifact whose configuration
+hash no longer matches the running setup prints one "stale" line and
+refuses percentages rather than comparing against a different engine.
+
 ### Discord push notifications + fill confirmation
 
 Live alerts can be pushed to a Discord channel, and — this is the
