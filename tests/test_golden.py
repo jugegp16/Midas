@@ -25,15 +25,18 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from midas.allocator import Allocator
 from midas.backtest import DEFAULT_TRAIN_PCT, BacktestEngine
-from midas.cli import _build_components
+from midas.cli import _build_components, _build_strategy
 from midas.config import load_portfolio, load_strategies
-from midas.models import Direction, HoldingPeriod
+from midas.models import Direction, HoldingPeriod, StrategyConfig
 from midas.order_sizer import OrderSizer
 from midas.results import BacktestResult, write_backtest_results
+from midas.strategies.base import EntrySignal
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "golden"
 EXPECTED_DIR = FIXTURE_DIR / "expected"
+EXPECTED_K2_DIR = FIXTURE_DIR / "expected_k2"
 TICKERS = ("AAA", "BBB", "CCC")
 SIM_START = date(2024, 1, 2)
 SIM_END = date(2025, 12, 30)
@@ -148,10 +151,10 @@ def _compare_csv(expected_path: Path, actual_path: Path) -> list[str]:
     return mismatches
 
 
-def _compare_outputs(actual_dir: Path) -> list[str]:
+def _compare_outputs(actual_dir: Path, expected_dir: Path = EXPECTED_DIR) -> list[str]:
     mismatches: list[str] = []
     for filename in OUTPUT_FILES:
-        expected_path = EXPECTED_DIR / filename
+        expected_path = expected_dir / filename
         actual_path = actual_dir / filename
         if not expected_path.exists():
             mismatches.append(f"{MISSING_GOLDEN_PREFIX}{filename} — bless with --update-golden")
@@ -210,6 +213,79 @@ def test_golden_backtest(tmp_path: Path, update_golden: bool) -> None:
     assert not mismatches, "golden mismatch (bless intended changes with --update-golden):\n" + "\n".join(
         mismatches[:40]
     )
+
+
+def _k2_members(
+    strat_configs: list[StrategyConfig],
+) -> list[list[tuple[EntrySignal, float]]]:
+    """Member A: fixture entries verbatim. Member B: same entries, jittered.
+
+    The jitter (+5 window bars, smaller momentum scale) makes member B
+    behaviorally distinct, so the K=2 outputs must differ from the K=1
+    goldens — a blend averaging a member with itself would be caught.
+    """
+    entry_cfgs = [c for c in strat_configs if isinstance(_build_strategy(c), EntrySignal)]
+    member_a: list[tuple[EntrySignal, float]] = []
+    member_b: list[tuple[EntrySignal, float]] = []
+    for cfg in entry_cfgs:
+        built = _build_strategy(cfg)
+        assert isinstance(built, EntrySignal)
+        member_a.append((built, cfg.weight))
+        params = dict(cfg.params)
+        if "window" in params:
+            params["window"] = int(params["window"]) + 5
+        if "momentum_scale" in params:
+            params["momentum_scale"] = 0.03
+        jittered = _build_strategy(StrategyConfig(name=cfg.name, params=params, weight=cfg.weight))
+        assert isinstance(jittered, EntrySignal)
+        member_b.append((jittered, cfg.weight))
+    return [member_a, member_b]
+
+
+def _run_scenario_k2(out_dir: Path) -> BacktestResult:
+    """The golden scenario deployed as a two-member ensemble."""
+    port = load_portfolio(FIXTURE_DIR / "portfolio.yaml")
+    strat_configs, constraints, risk_config = load_strategies(FIXTURE_DIR / "strategies.yaml")
+    _allocator, sizer, exit_rules = _build_components(
+        strat_configs, constraints, port.active_ticker_count(), risk_config=risk_config
+    )
+    allocator = Allocator(
+        [],
+        constraints,
+        port.active_ticker_count(),
+        risk_config=risk_config,
+        members=_k2_members(strat_configs),
+    )
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=sizer,
+        exit_rules=exit_rules,
+        constraints=constraints,
+        train_pct=DEFAULT_TRAIN_PCT,
+        enable_split=True,
+        execution_mode="next_open",
+        tax_config=port.tax_config,
+    )
+    result = engine.run(port, _load_price_data(), SIM_START, SIM_END)
+    write_backtest_results(result, out_dir)
+    return result
+
+
+def test_golden_backtest_k2(tmp_path: Path, update_golden: bool) -> None:
+    result = _run_scenario_k2(tmp_path)
+    assert len(result.trades) > 10, "K2 scenario produced too few trades to pin anything"
+    # The blend must be a different run than the K=1 golden — if these ever
+    # match, the second member has become inert.
+    assert _compare_outputs(tmp_path), "K2 outputs identical to K=1 goldens — second member inert"
+
+    if update_golden:
+        EXPECTED_K2_DIR.mkdir(parents=True, exist_ok=True)
+        for filename in OUTPUT_FILES:
+            shutil.copy(tmp_path / filename, EXPECTED_K2_DIR / filename)
+        pytest.fail("K2 goldens regenerated; review the diff and re-run without --update-golden.")
+
+    mismatches = _compare_outputs(tmp_path, expected_dir=EXPECTED_K2_DIR)
+    assert not mismatches, "K2 golden mismatch (bless with --update-golden):\n" + "\n".join(mismatches[:40])
 
 
 def test_golden_detects_change(tmp_path: Path, update_golden: bool) -> None:
