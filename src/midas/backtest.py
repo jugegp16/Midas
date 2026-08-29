@@ -160,6 +160,8 @@ class _SimState:
     vol_contrib_sums: dict[str, float] = field(default_factory=dict)
     vol_contrib_bars: int = 0
     vol_contrib_ticks: int = 0  # held bars seen; every Nth is sampled for attribution
+    target_series: list[dict[str, float]] = field(default_factory=list)  # per recorded bar, when enabled
+    last_targets: dict[str, float] = field(default_factory=dict)
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -307,6 +309,7 @@ class BacktestEngine:
         execution_mode: ExecutionMode = "next_open",
         tax_config: TaxConfig | None = None,
         track_vol_contribution: bool = True,
+        record_targets: bool = False,
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -320,6 +323,9 @@ class BacktestEngine:
         # Off in optimizer trials: attribution feeds only the report table,
         # and its per-bar covariance fit is ~30% of a trial's runtime.
         self._track_vol_contribution = track_vol_contribution
+        # Off by default: per-bar target capture exists for the fitter's
+        # behavioral member dedupe, not for reporting.
+        self._record_targets = record_targets
 
     def run(
         self,
@@ -567,6 +573,8 @@ class BacktestEngine:
                 self._capture_split_snapshot(state, portfolio, current_data)
             self._run_day(state, portfolio, current_data, day)
             self._record_bar(state, portfolio, current_data, day)
+            if self._record_targets:
+                state.target_series.append(dict(state.last_targets))
             self._accumulate_vol_contribution(state, current_data)
 
     @staticmethod
@@ -800,6 +808,8 @@ class BacktestEngine:
             current_weights=current_weights,
             current_drawdown=current_drawdown,
         )
+        if self._record_targets:
+            state.last_targets = dict(allocation.targets)
 
         # Phase 2: exit rules clamp targets downward (LEAN pattern). Each
         # rule can only reduce a target, never increase. First clamper
@@ -1164,6 +1174,7 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            target_series=state.target_series,
             ulcer_index=round(ulcer, 6),
             block_returns=[round(block, 6) for block in block_returns],
             total_days=total_days,

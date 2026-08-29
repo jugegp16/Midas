@@ -2222,3 +2222,41 @@ def test_two_member_backtest_differs_from_either_member_alone() -> None:
     only_b = run(Allocator(member_b(), constraints, 1))
     assert blend.equity_curve != only_a.equity_curve
     assert blend.equity_curve != only_b.equity_curve
+
+
+def test_record_targets_captures_per_bar_allocations() -> None:
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(4)
+    prices = make_price_series(date(2024, 1, 2), 60, 100.0, list(rng.normal(0, 0.01, 60)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=2000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01)
+    engine = BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 1),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=constraints,
+        enable_split=False,
+        record_targets=True,
+    )
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert len(result.target_series) == len(result.equity_curve)
+    assert all(set(bar) <= {"TEST"} for bar in result.target_series)
+
+
+def test_record_targets_off_is_empty_and_free() -> None:
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(4)
+    prices = make_price_series(date(2024, 1, 2), 60, 100.0, list(rng.normal(0, 0.01, 60)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=2000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01)
+    engine = BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 1),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=constraints,
+        enable_split=False,
+    )
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert result.target_series == []

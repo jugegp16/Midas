@@ -64,6 +64,9 @@ class BacktestResult:
     bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
     """Per-bar buy-and-hold equity, parallel to ``equity_curve``."""
 
+    target_series: list[dict[str, float]] = field(default_factory=list)
+    """Per recorded bar allocation targets; populated only under ``record_targets``."""
+
     ulcer_index: float = 0.0
     """RMS drawdown depth of the inflow-adjusted equity path (0 = never underwater)."""
 
