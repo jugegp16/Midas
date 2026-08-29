@@ -358,3 +358,70 @@ def test_quantile_rank_nan_drops_out_as_abstention() -> None:
 
     assert "A" not in normalized
     assert normalized["B"] == 1.0
+
+
+class TestEnsembleMembers:
+    """K entry-parameter members blended by flat mean before one sizing pass."""
+
+    @staticmethod
+    def _uniform(name: str, score: float | None, weight: float = 1.0) -> tuple[FixedScore, float]:
+        return FixedScore(name, {1.0: score, 2.0: score}), weight
+
+    def test_members_and_entries_are_mutually_exclusive(self) -> None:
+        entry = self._uniform("S", 0.5)
+        with pytest.raises(ValueError, match="entries"):
+            Allocator([entry], AllocationConstraints(), 1, members=[[entry]])
+
+    def test_single_member_is_identical_to_entries_path(self) -> None:
+        prices = _fixed_prices([1.0, 2.0])
+        tickers = list(prices)
+        entries = [self._uniform("A", 0.8), self._uniform("B", 0.3, weight=2.0)]
+        solo = Allocator(entries, AllocationConstraints(), 2)
+        one_member = Allocator([], AllocationConstraints(), 2, members=[entries])
+        a = solo.allocate(tickers, prices)
+        b = one_member.allocate(tickers, prices)
+        assert a.targets == b.targets
+        assert a.blended_scores == b.blended_scores
+        assert a.contributions == b.contributions
+
+    def test_two_members_average_blended_scores(self) -> None:
+        """Hand-computed: member A scores 0.8, member B 0.4 -> blend 0.6 (flat mean)."""
+        prices = _fixed_prices([1.0, 2.0])
+        tickers = list(prices)
+        ens = Allocator(
+            [],
+            AllocationConstraints(forecast_scaling="none"),
+            2,
+            members=[[self._uniform("A", 0.8)], [self._uniform("B", 0.4)]],
+        )
+        result = ens.allocate(tickers, prices)
+        for ticker in tickers:
+            assert result.blended_scores[ticker] == pytest.approx(0.6)
+
+    def test_abstaining_member_counts_as_zero_when_another_scores(self) -> None:
+        """Member A scores 0.8, member B abstains -> blend 0.4, ticker active."""
+        prices = _fixed_prices([1.0, 2.0])
+        tickers = list(prices)
+        ens = Allocator(
+            [],
+            AllocationConstraints(forecast_scaling="none"),
+            2,
+            members=[[self._uniform("A", 0.8)], [self._uniform("B", None)]],
+        )
+        result = ens.allocate(tickers, prices)
+        for ticker in tickers:
+            assert result.blended_scores[ticker] == pytest.approx(0.4)
+            assert result.targets[ticker] > 0.0
+
+    def test_all_members_abstaining_holds_exactly_like_today(self) -> None:
+        prices = _fixed_prices([1.0, 2.0])
+        tickers = list(prices)
+        ens = Allocator(
+            [],
+            AllocationConstraints(forecast_scaling="none"),
+            2,
+            members=[[self._uniform("A", None)], [self._uniform("B", None)]],
+        )
+        result = ens.allocate(tickers, prices, current_weights={t: 0.2 for t in tickers})
+        for ticker in tickers:
+            assert result.targets[ticker] == pytest.approx(0.2)  # Option A hold
