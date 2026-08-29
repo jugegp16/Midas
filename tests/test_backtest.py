@@ -2162,3 +2162,63 @@ def test_vol_attribution_samples_bars_instead_of_every_bar(monkeypatch: pytest.M
     assert result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution
     n_bars = len(result.equity_curve)
     assert 0 < len(calls) <= n_bars // backtest_module.VOL_CONTRIB_SAMPLE_STRIDE + 1
+
+
+def test_ensemble_of_one_backtest_is_byte_identical() -> None:
+    """The identity property, end to end: same trades, same curve."""
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(3)
+    prices = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0, 0.015, 200)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=5_000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+
+    def run(allocator: Allocator) -> BacktestResult:
+        engine = BacktestEngine(
+            allocator=allocator,
+            order_sizer=OrderSizer(),
+            exit_rules=[StopLoss(loss_threshold=0.1)],
+            constraints=constraints,
+            enable_split=False,
+        )
+        return engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+
+    solo = run(Allocator([(MeanReversion(window=20, threshold=0.05), 1.0)], constraints, 1))
+    ens = run(Allocator([], constraints, 1, members=[[(MeanReversion(window=20, threshold=0.05), 1.0)]]))
+    assert solo.equity_curve == ens.equity_curve
+    assert [(t.date, t.ticker, t.shares, t.price) for t in solo.trades] == [
+        (t.date, t.ticker, t.shares, t.price) for t in ens.trades
+    ]
+
+
+def test_two_member_backtest_differs_from_either_member_alone() -> None:
+    """The blend is a real third thing, not a passthrough of one member."""
+    from midas.strategies.mean_reversion import MeanReversion
+    from midas.strategies.momentum import Momentum
+
+    rng = np.random.default_rng(9)
+    prices = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0.0005, 0.02, 200)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=5_000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+
+    def member_a() -> list:
+        return [(MeanReversion(window=15, threshold=0.03), 1.0)]
+
+    def member_b() -> list:
+        return [(Momentum(window=25, momentum_scale=0.05), 1.0)]
+
+    def run(allocator: Allocator) -> BacktestResult:
+        engine = BacktestEngine(
+            allocator=allocator,
+            order_sizer=OrderSizer(),
+            exit_rules=[],
+            constraints=constraints,
+            enable_split=False,
+        )
+        return engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+
+    blend = run(Allocator([], constraints, 1, members=[member_a(), member_b()]))
+    only_a = run(Allocator(member_a(), constraints, 1))
+    only_b = run(Allocator(member_b(), constraints, 1))
+    assert blend.equity_curve != only_a.equity_curve
+    assert blend.equity_curve != only_b.equity_curve
