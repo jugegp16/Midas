@@ -40,7 +40,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
-from midas.results import BacktestResult
+from midas.results import BacktestResult, CarriedState
 from midas.risk import per_ticker_vol_contribution
 from midas.risk_metrics import RiskHistory, compute_risk_metrics
 from midas.strategies.base import ExitRule, max_warmup
@@ -162,6 +162,8 @@ class _SimState:
     vol_contrib_ticks: int = 0  # held bars seen; every Nth is sampled for attribution
     target_series: list[dict[str, float]] = field(default_factory=list)  # per recorded bar, when enabled
     last_targets: dict[str, float] = field(default_factory=dict)
+    deferred_pending: dict[str, float] = field(default_factory=dict)  # deferred input, for end-state accounting
+    deferred_activated: set[str] = field(default_factory=set)
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -333,6 +335,7 @@ class BacktestEngine:
         price_data: dict[str, pd.DataFrame],
         start: date,
         end: date,
+        carried: CarriedState | None = None,
     ) -> BacktestResult:
         """Execute a full backtest over the given date range.
 
@@ -354,16 +357,25 @@ class BacktestEngine:
         # later trial silently ran without them, so trials were scored on
         # different problems and the final refit didn't match the search.
         portfolio = copy.deepcopy(portfolio)
+        if carried is not None and portfolio.cash_infusion is not None and carried.infusion_next_date is not None:
+            portfolio.cash_infusion.next_date = carried.infusion_next_date
         trading_days = self._collect_trading_days(price_data, start, end)
         split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
-        state = self._init_positions(portfolio, price_data, trading_days, start, end)
+        if carried is None:
+            state = self._init_positions(portfolio, price_data, trading_days, start, end)
+        else:
+            state = self._init_from_carried(portfolio, carried, price_data, start)
 
         # Precompute strategy signals over the full PriceHistory (one-time cost).
         full_history = {ticker: idx.history for ticker, idx in ticker_idx.items()}
         self._allocator.precompute_signals(full_history)
 
-        deferred = self._find_deferred(portfolio, price_data, trading_days, start)
+        if carried is not None:
+            deferred = dict(carried.deferred)
+        else:
+            deferred = self._find_deferred(portfolio, price_data, trading_days, start)
+        state.deferred_pending = dict(deferred)
 
         self._simulate(
             state,
@@ -520,6 +532,41 @@ class BacktestEngine:
         state.peak_value = state.starting_value
         return state
 
+    def _init_from_carried(
+        self,
+        portfolio: PortfolioConfig,
+        carried: CarriedState,
+        price_data: dict[str, pd.DataFrame],
+        start: date,
+    ) -> _SimState:
+        """Resume simulation state from a previous run's final book.
+
+        Lots keep their real purchase dates and bases (a resumed fold must
+        fire exits on carried gains — the fresh-start seeding exists only
+        for standalone backtests). Restriction state is not carried.
+        """
+        state = _SimState(cash=carried.cash)
+        if portfolio.trading_restrictions:
+            state.restriction_tracker = RestrictionTracker(portfolio.trading_restrictions)
+        state.lots = {ticker: [copy.deepcopy(lot) for lot in lots] for ticker, lots in carried.lots.items()}
+        state.positions = {ticker: sum(lot.shares for lot in lots) for ticker, lots in state.lots.items()}
+        state.high_water_marks = dict(carried.high_water_marks)
+        state.bh_positions = dict(carried.bh_positions)
+        first_dates = self._first_data_dates(price_data, start)
+        starting_value = state.cash
+        for ticker, shares in state.positions.items():
+            if shares <= 0:
+                continue
+            if ticker in first_dates:
+                entry_df = price_data[ticker][price_data[ticker].index >= start]
+                starting_value += shares * float(entry_df["close"].iloc[0])
+            else:
+                starting_value += sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
+        state.starting_value = starting_value
+        state.twr_base_value = starting_value
+        state.peak_value = max(carried.peak_value, starting_value)
+        return state
+
     def _find_deferred(
         self,
         portfolio: PortfolioConfig,
@@ -557,7 +604,7 @@ class BacktestEngine:
             state.bh_positions[ticker] = shares
             state.positions[ticker] = 0.0
 
-        deferred_activated: set[str] = set()
+        deferred_activated = state.deferred_activated
 
         for day in trading_days:
             state.last_day = day
@@ -1175,6 +1222,20 @@ class BacktestEngine:
             twr=round(twr, 4),
             equity_curve=equity_curve,
             target_series=state.target_series,
+            daily_returns=adjusted_returns,
+            end_state=CarriedState(
+                lots=state.lots,
+                cash=state.cash,
+                high_water_marks=state.high_water_marks,
+                peak_value=state.peak_value,
+                deferred={
+                    ticker: shares
+                    for ticker, shares in state.deferred_pending.items()
+                    if ticker not in state.deferred_activated
+                },
+                bh_positions=state.bh_positions,
+                infusion_next_date=(portfolio.cash_infusion.next_date if portfolio.cash_infusion else None),
+            ),
             ulcer_index=round(ulcer, 6),
             block_returns=[round(block, 6) for block in block_returns],
             total_days=total_days,

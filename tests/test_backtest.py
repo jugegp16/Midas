@@ -2260,3 +2260,69 @@ def test_record_targets_off_is_empty_and_free() -> None:
     )
     result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
     assert result.target_series == []
+
+
+def _carry_fixture():
+    """Fixture exercising what must survive a resume boundary: open lots,
+    high-water marks, cash infusions, and a deferred late-start ticker."""
+    from midas.models import CashInfusion
+
+    rng = np.random.default_rng(11)
+    early = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0.0005, 0.015, 200)), name="AAA")
+    late_full = make_price_series(date(2024, 1, 2), 200, 50.0, list(rng.normal(0.0, 0.01, 200)), name="BBB")
+    late = late_full.iloc[120:]  # BBB's data starts after the boundary -> deferred across it
+    price_data = {"AAA": early, "BBB": late}
+    portfolio = PortfolioConfig(
+        holdings=[
+            Holding(ticker="AAA", shares=20, cost_basis=100.0),
+            Holding(ticker="BBB", shares=30, cost_basis=50.0),
+        ],
+        available_cash=5_000.0,
+        cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 1, 15), frequency="biweekly"),
+    )
+    return portfolio, price_data, sorted(early.index)
+
+
+def _carry_engine() -> BacktestEngine:
+    from midas.strategies.mean_reversion import MeanReversion
+
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.6)
+    return BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 2),
+        order_sizer=OrderSizer(),
+        exit_rules=[StopLoss(loss_threshold=0.12)],
+        constraints=constraints,
+        enable_split=False,
+    )
+
+
+def test_chained_run_equals_continuous_run() -> None:
+    """Resume fidelity: [start, mid] + carried [mid, end] == [start, end]."""
+    portfolio, price_data, days = _carry_fixture()
+    start, mid, end = days[0], days[100], days[-1]
+
+    continuous = _carry_engine().run(portfolio, price_data, start, end)
+    first = _carry_engine().run(portfolio, price_data, start, days[99])
+    assert first.end_state is not None
+    second = _carry_engine().run(portfolio, price_data, mid, end, carried=first.end_state)
+
+    chained = [v for _, v in first.equity_curve] + [v for _, v in second.equity_curve]
+    assert chained == pytest.approx([v for _, v in continuous.equity_curve])
+
+    def key(t):
+        return (t.date, t.ticker, t.direction, round(t.shares, 6), round(t.price, 6))
+
+    assert [key(t) for t in first.trades + second.trades] == [key(t) for t in continuous.trades]
+
+
+def test_end_state_reflects_final_book() -> None:
+    portfolio, price_data, days = _carry_fixture()
+    result = _carry_engine().run(portfolio, price_data, days[0], days[50])
+    state = result.end_state
+    assert state is not None
+    assert "BBB" in state.deferred  # not yet activated at day 50
+    assert state.cash >= 0
+    lot_shares = sum(lot.shares for lot in state.lots.get("AAA", []))
+    net_traded = sum(t.shares if t.direction.value == "BUY" else -t.shares for t in result.trades if t.ticker == "AAA")
+    assert lot_shares == pytest.approx(20 + net_traded)
+    assert state.infusion_next_date is not None and state.infusion_next_date > days[50]
