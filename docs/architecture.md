@@ -67,6 +67,16 @@ rules then run exactly once on the blended scores — members differ only
 in forecasts, never in sizing or exits. An ensemble of one is
 byte-identical to the single-set path.
 
+**Policy validator** -- `validate_policy` executes a deployment policy
+exactly as live runs it: test folds of `policy.cadence_days`, one
+`fit_as_of` per fold (warm-started from the deployed members),
+degradation-gated adoption evaluated over the previous fold's full daily
+path, and a portfolio carried across fold boundaries — lots, bases,
+high-water marks, cash, and the infusion schedule survive, so parameter
+switches pay their real turnover and tax cost and no fold ramps in from
+cash. Output is the baselines artifact (per-day fold paths, provenance
+hashes) that the monitor and sweep consume.
+
 With `forecast_scaling: quantile`, each entry-rule instance's positive scores are rank-transformed across the tickers it scored on that bar — its strongest pick becomes 1.0, its weakest positive `1/n` — before the weighted average in Phase 1 blends them. This gives every rule equal say regardless of its raw score distribution. Zeros and abstentions are untouched. The default `none` skips the transform entirely. See [Strategies](strategies.md#score-normalization-forecast_scaling) for details.
 
 #### Phase 2: Softmax Budget Allocation

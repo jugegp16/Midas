@@ -395,6 +395,24 @@ Landing experiments run after 5; their pre-registered criteria decide
 the defaults; results are committed under
 `docs/experiments/<date>-policy-landing/`.
 
+## Deviations recorded at implementation
+
+- **Seeds derive from `(base_seed, as_of, restart)`**, not a fold index:
+  the validator's per-fold fits and a standalone fit at the same date must
+  draw identical seeds or coherence dies at the RNG (phase 3).
+- **Rollback lives on `midas fit --rollback`** until phase 7's `refit`
+  command exists and delegates to it (phase 3).
+- **`walk_forward_optimize` is retained as the legacy `optimize
+  --walk-forward` path**; the policy validator is new code
+  (`validate_policy`) rather than a re-base, so the legacy CLI keeps its
+  contract (phase 4).
+- **Restriction-tracker state is not carried across fold boundaries** —
+  the round-trip clock resets; a disclosed coherence gap alongside the
+  three listed above (phase 4).
+- **Trigger arming thresholds:** the drawdown arm needs ≥1 completed
+  fold, the percentile arm ≥5; both latch over the full daily path
+  (phase 4).
+
 ## Kill criteria (what result abandons what)
 
 - **Ensemble:** no OOS gain over `best` within the bootstrap interval
