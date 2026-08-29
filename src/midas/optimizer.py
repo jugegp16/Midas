@@ -148,6 +148,19 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
 
 DEFAULT_N_TRIALS = 200
 
+
+def entry_search_names() -> list[str]:
+    """Entry-signal strategies the optimizer may search.
+
+    Exit rules and allocator globals are policy-owned: the operator sets
+    them and the search never samples them, so ensembles differ only in
+    forecasts and the engine has exactly one sizing/exit configuration.
+    """
+    return [
+        name for name in PARAM_RANGES if name != ALLOCATION_KEY and issubclass(STRATEGY_REGISTRY[name], EntrySignal)
+    ]
+
+
 # Sampler seed: fixed so a given (inputs, seed) pair reproduces its search
 # byte for byte. Walk-forward offsets it per fold so folds stay distinct.
 DEFAULT_SEED = 42
@@ -636,26 +649,42 @@ def _prepare_names_and_ranges(
     strategy_names: list[str] | None,
     min_cash_pct: float,
     n_tickers: int,
+    search_globals: bool = False,
 ) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
-    """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
-    names = strategy_names or [key for key in PARAM_RANGES if key != ALLOCATION_KEY]
-    names = [name for name in names if name in PARAM_RANGES]
+    """Resolve searched strategies and their ranges (shared by optimize/walk-forward).
+
+    By default only entry signals are searched; exit rules and allocator
+    globals are policy-owned. ``search_globals=True`` restores the full
+    legacy space for experiments.
+
+    Raises:
+        ValueError: If no searchable strategies remain, or a policy-owned
+            name is requested without ``search_globals``.
+    """
+    searchable = set(PARAM_RANGES) if search_globals else set(entry_search_names())
+    names = strategy_names or sorted(searchable - {ALLOCATION_KEY})
+    rejected = [n for n in names if n in PARAM_RANGES and n not in searchable]
+    if rejected:
+        msg = f"{sorted(rejected)} are policy-owned (exit rules); set search_globals to search them"
+        raise ValueError(msg)
+    names = [name for name in names if name in searchable]
 
     if not names:
         msg = "No optimizable strategies found"
         raise ValueError(msg)
 
-    names.append(ALLOCATION_KEY)
+    ranges = {name: dict(PARAM_RANGES[name]) for name in names}
 
-    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
-    lo = max(round(1.5 * equal_weight, 2), 0.10)
-    hi = min(round(5.0 * equal_weight, 2), 0.80)
-    if lo >= hi:
-        lo, hi = 0.10, 0.80
-    step = round((hi - lo) / 8, 2) or 0.01
-    ranges = {name: dict(PARAM_RANGES[name]) for name in names if name in PARAM_RANGES}
-    ranges.setdefault(ALLOCATION_KEY, {})
-    ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
+    if search_globals:
+        names.append(ALLOCATION_KEY)
+        equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
+        lo = max(round(1.5 * equal_weight, 2), 0.10)
+        hi = min(round(5.0 * equal_weight, 2), 0.80)
+        if lo >= hi:
+            lo, hi = 0.10, 0.80
+        step = round((hi - lo) / 8, 2) or 0.01
+        ranges.setdefault(ALLOCATION_KEY, dict(PARAM_RANGES[ALLOCATION_KEY]))
+        ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
 
     return names, ranges
 
