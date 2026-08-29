@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 import yaml
+
+if TYPE_CHECKING:
+    from midas.policy import Policy
 
 from midas.models import (
     DEFAULT_ALERT_TIMEOUT_SECONDS,
@@ -242,6 +245,7 @@ def load_strategies(
         "max_position_pct",
         "forecast_scaling",
         "risk",
+        "policy",
     }
     unknown = set(raw) - known_keys
     if unknown:
@@ -286,3 +290,18 @@ def load_strategies(
     )
 
     return configs, constraints, risk
+
+
+def load_policy(path: Path) -> Policy | None:
+    """Load the ``policy:`` block from a strategies file, or None when absent."""
+    from midas.policy import parse_policy  # local import: policy imports models, not config
+
+    raw = _load_yaml(path)
+    block = raw.get("policy")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        msg = f"policy: must be a mapping, got {type(block).__name__}"
+        raise ValueError(msg)
+    parsed: Policy = parse_policy(block)
+    return parsed
