@@ -144,3 +144,30 @@ def test_ensemble_mode_is_deterministic() -> None:
     a = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
     b = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
     assert a.members == b.members and a.member_scores == b.member_scores
+
+
+def test_ensemble_underfill_is_reported() -> None:
+    """Fewer survivors than ensemble_size must be said out loud, not implied.
+
+    The operator reads "20 members" in the policy; if dedupe leaves 3, the
+    deployed artifact is a much less diversified object than configured.
+    """
+    import pytest
+
+    portfolio, price_data = _data()
+    policy = Policy(objective="sharpe", budget=2, restarts=2, deployment="ensemble", ensemble_size=6)
+    logs: list[str] = []
+    result = fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        policy,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+        log_fn=logs.append,
+    )
+    if len(result.members) < policy.ensemble_size:
+        assert any("ensemble under-filled" in line for line in logs), logs
+    else:
+        pytest.skip("dedupe kept ensemble full; under-fill not reachable with this fixture")

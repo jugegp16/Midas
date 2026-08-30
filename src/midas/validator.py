@@ -223,6 +223,8 @@ def validate_policy(
             min_cash_pct=min_cash_pct,
             forecast_scaling=forecast_scaling,
             tax_config=tax_config,
+            cash_infusion=portfolio.cash_infusion,
+            trading_restrictions=portfolio.trading_restrictions,
         ),
         validation_start=days[0],
         validation_end=days[-1],

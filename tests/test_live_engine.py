@@ -2091,3 +2091,20 @@ def test_deposit_while_engine_down_survives_intermediate_saves(tmp_path: Path, m
     ret = engine._state.monitor_returns[-1]
     assert abs(ret) < 1e-9  # the 1k equity gain was the deposit, not performance
     engine.close()
+
+
+def test_member_reload_keys_on_input_hash_too(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A same-day redeploy under a changed configuration must still reload."""
+    import dataclasses
+
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    before = engine._allocator
+    same_day_new_config = dataclasses.replace(_phase7_fit(date(2026, 5, 1), window=40), input_hash="j" * 64)
+    deploy_fit(strategies, same_day_new_config)
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before
+    assert [s._window for s in engine._allocator.strategies] == [40]

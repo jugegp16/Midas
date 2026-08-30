@@ -104,6 +104,8 @@ def _current_hash(strategies: Path, portfolio: Path) -> str:
         min_cash_pct=constraints.min_cash_pct,
         forecast_scaling=constraints.forecast_scaling,
         tax_config=port.tax_config,
+        cash_infusion=port.cash_infusion,
+        trading_restrictions=port.trading_restrictions,
     )
 
 

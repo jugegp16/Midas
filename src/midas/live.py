@@ -230,7 +230,7 @@ class LiveEngine:
             self._baselines = baselines
             self._monitor_input_hash = monitor_input_hash
             self._strategies_path = strategies_path
-            self._loaded_fit_as_of: date | None = None
+            self._loaded_fit_key: tuple[date, str] | None = None
             self._proposal_ttl = timedelta(hours=pending_ttl_hours)
             self._refit_spawner = refit_spawner
             self._cadence_days = cadence_days
@@ -483,7 +483,7 @@ class LiveEngine:
         from midas.optimizer import _instantiate_strategies
 
         members = read_members(self._strategies_path)
-        if members is not None and members.members and members.as_of != self._loaded_fit_as_of:
+        if members is not None and members.members and (members.as_of, members.input_hash) != self._loaded_fit_key:
             member_entries = [_instantiate_strategies(member)[0] for member in members.members]
             self._allocator = Allocator(
                 [],
@@ -492,7 +492,7 @@ class LiveEngine:
                 risk_config=self._allocator.risk_config,
                 members=member_entries,
             )
-            self._loaded_fit_as_of = members.as_of
+            self._loaded_fit_key = (members.as_of, members.input_hash)
             print_status(f"Members reloaded: fit of {members.as_of.isoformat()} ({len(members.members)} member(s))")
 
         # The monitor window anchors on the latest fit — adoption or not, a

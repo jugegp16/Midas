@@ -59,6 +59,8 @@ def test_input_fingerprint_moves_with_every_input() -> None:
         min_cash_pct=0.05,
         forecast_scaling="quantile",
         tax_config=None,
+        cash_infusion=None,
+        trading_restrictions=None,
     )
     ref = input_fingerprint(**base)
     assert input_fingerprint(**{**base, "tickers": ["BBB", "AAA"]}) == ref  # order-insensitive
@@ -91,3 +93,47 @@ class TestFrozenTrigger:
 
     def test_default_trigger_is_not_disabled(self) -> None:
         assert not parse_policy({"objective": "sharpe"}).adopt_trigger.disabled
+
+
+class TestFingerprintCoversPortfolioBehavior:
+    """Anything that changes a fit's outcome must change the fingerprint."""
+
+    def _base_kwargs(self) -> dict:
+        from midas.models import AllocationConstraints
+
+        return dict(
+            policy=Policy(objective="sharpe"),
+            tickers=["AAPL"],
+            constraints=AllocationConstraints(),
+            exit_params=None,
+            risk_config=None,
+            min_cash_pct=0.05,
+            forecast_scaling="linear",
+            tax_config=None,
+            cash_infusion=None,
+            trading_restrictions=None,
+        )
+
+    def test_cash_infusion_changes_hash(self) -> None:
+        from datetime import date
+
+        from midas.models import CashInfusion
+
+        base = input_fingerprint(**self._base_kwargs())
+        kwargs = self._base_kwargs()
+        kwargs["cash_infusion"] = CashInfusion(amount=500.0, frequency="monthly", next_date=date(2026, 1, 2))
+        assert input_fingerprint(**kwargs) != base
+
+    def test_trading_restrictions_change_hash(self) -> None:
+        from midas.models import TradingRestrictions
+
+        base = input_fingerprint(**self._base_kwargs())
+        kwargs = self._base_kwargs()
+        kwargs["trading_restrictions"] = TradingRestrictions(round_trip_days=30)
+        assert input_fingerprint(**kwargs) != base
+
+
+def test_parse_policy_rejects_non_integral_counts() -> None:
+    """budget: 2.5 must fail loudly, never silently truncate to 2."""
+    with pytest.raises(ValueError, match="whole number"):
+        parse_policy({"objective": "sharpe", "budget": 2.5})

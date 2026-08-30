@@ -443,6 +443,8 @@ def live(
                 min_cash_pct=constraints.min_cash_pct,
                 forecast_scaling=constraints.forecast_scaling,
                 tax_config=port.tax_config,
+                cash_infusion=port.cash_infusion,
+                trading_restrictions=port.trading_restrictions,
             )
             live_anchor = members.as_of if members is not None else None
         else:
@@ -1561,6 +1563,8 @@ def refit(
         min_cash_pct=strat_constraints.min_cash_pct,
         forecast_scaling=strat_constraints.forecast_scaling,
         tax_config=port.tax_config,
+        cash_infusion=port.cash_infusion,
+        trading_restrictions=port.trading_restrictions,
     )
     incumbent = read_members(strategies_path)
     if incumbent is not None and incumbent.input_hash != current_hash:

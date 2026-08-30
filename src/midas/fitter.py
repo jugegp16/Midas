@@ -117,6 +117,11 @@ def fit_as_of(
             forecast_scaling=forecast_scaling,
             tax_config=tax_config,
         )
+        if len(members) < policy.ensemble_size and log_fn is not None:
+            log_fn(
+                f"ensemble under-filled: {len(members)} distinct member(s) survived dedupe "
+                f"(policy asks for {policy.ensemble_size}) — the deployment is less diversified than configured"
+            )
 
     return FitResult(
         members=members,
@@ -133,6 +138,8 @@ def fit_as_of(
             min_cash_pct=min_cash_pct,
             forecast_scaling=forecast_scaling,
             tax_config=tax_config,
+            cash_infusion=portfolio.cash_infusion,
+            trading_restrictions=portfolio.trading_restrictions,
         ),
     )
 

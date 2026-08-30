@@ -19,9 +19,11 @@ from typing import Literal, get_args
 from midas.models import (
     DEFAULT_OBJECTIVE,
     AllocationConstraints,
+    CashInfusion,
     Objective,
     RiskConfig,
     TaxConfig,
+    TradingRestrictions,
     objective_error,
 )
 
@@ -124,7 +126,11 @@ def parse_policy(raw: Mapping[str, object]) -> Policy:
             if not isinstance(value, int | float | str):
                 msg = f"policy.{int_field} must be a number, got {type(value).__name__}"
                 raise ValueError(msg)
-            kwargs[int_field] = int(value)
+            parsed_int = float(value)
+            if parsed_int != int(parsed_int):
+                msg = f"policy.{int_field} must be a whole number, got {value!r}"
+                raise ValueError(msg)
+            kwargs[int_field] = int(parsed_int)
     return Policy(**kwargs)  # type: ignore[arg-type]
 
 
@@ -163,6 +169,8 @@ def input_fingerprint(
     min_cash_pct: float,
     forecast_scaling: str,
     tax_config: TaxConfig | None,
+    cash_infusion: CashInfusion | None,
+    trading_restrictions: TradingRestrictions | None,
 ) -> str:
     """SHA-256 over everything a fit's outcome depends on besides prices.
 
@@ -179,6 +187,10 @@ def input_fingerprint(
         "min_cash_pct": min_cash_pct,
         "forecast_scaling": forecast_scaling,
         "tax": dataclasses.asdict(tax_config) if tax_config is not None else None,
+        "cash_infusion": dataclasses.asdict(cash_infusion) if cash_infusion is not None else None,
+        "trading_restrictions": (
+            dataclasses.asdict(trading_restrictions) if trading_restrictions is not None else None
+        ),
     }
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
