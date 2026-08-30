@@ -172,3 +172,37 @@ Observations recorded for future work (not acted on here):
   vs 2–3 pts at 1000×4 in Experiment 1's frozen cells): at 500 trials
   per restart, per-restart quality is variable enough that even
   best-of-10 wobbles. Relevant to any future restarts-vs-budget tuning.
+
+**Paired re-read (added 2026-08-30, after the sweep gained paired
+same-seed reporting):** variants at one seed base run identical search
+trials, so per-seed differences cancel search luck. etf paired
+best-ensemble: CAGR +0.66% ± 0.37% SE, 3/3 pairs favor best; after-tax
++0.09% (a wash). stonks paired: -9.2% ± 9.0% SE, 1/3 — genuinely
+unstable at 500×10. The unpaired "not resolvable" verdict understated
+the etf comparison; the paired lens motivates Experiment 3.
+
+## Experiment 3 — best vs ensemble at 16 paired seeds
+
+**Criterion (pre-registered 2026-08-30, before running):** ensemble
+becomes the default only if the paired (same-seed) after-tax fold-mean
+difference favors ensemble on BOTH baskets with |mean| > 2×SE.
+Otherwise `deployment: best` is retained. Paired CAGR reported
+alongside; the unpaired tables remain in the logs.
+
+**Setup:** identical to Experiment 2's frozen frame but 16 seed
+replications and both baskets at the registered budget 1000 ×
+4 restarts (the stonks 500×10 deviation is not repeated). Power basis:
+Experiment 2's etf paired sd ≈ 0.6 pt → 16 pairs give SE ≈ 0.16 pt;
+stonks paired sd at 1000×4 is expected near Experiment 1's 2-3 pt
+spreads → SE ≈ 0.5-0.8 pt.
+
+```
+midas sweep -p sample-portfolios/etf.yaml -s exp3-etf-strategies.yaml \
+  --start 2016-01-04 --end 2026-08-27 \
+  --vary deployment --value best --value ensemble --seeds 16
+midas sweep -p sample-portfolios/stonks.yaml -s exp3-stonks-strategies.yaml \
+  --start 2016-01-04 --end 2026-08-27 \
+  --vary deployment --value best --value ensemble --seeds 16
+```
+
+**Results** — pending.
