@@ -65,8 +65,9 @@ def print_alert(
 
 
 def print_status(message: str) -> None:
-    """Print a dimmed status line."""
-    console.print(f"[dim]{message}[/dim]")
+    """Print a dimmed status line. The message is data, never Rich markup —
+    bracketed text like "[cell 1/4]" must survive verbatim."""
+    console.print(message, style="dim", markup=False)
 
 
 def print_strategy_table(strategies: list[Strategy]) -> None:
