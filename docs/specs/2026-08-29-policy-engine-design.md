@@ -70,7 +70,11 @@ policy:
                              # and live's re-fit interval (single source)
   adopt_trigger:
     oos_percentile_below: 10 # trailing fold-window under this bootstrap pctile
+                             # (0 disables this arm)
     drawdown_breach: true    # trailing DD beyond the validated worst fold
+  # adopt_trigger: none    — the frozen policy: fold 0 fits once, later folds
+  # hold it forever. This is the hold arm of landing Experiment 1, and a
+  # sweep can vary it: --vary adopt_trigger --value none --value default.
 ```
 
 - **Cadence flows from the policy to the folds, not from the date range.**

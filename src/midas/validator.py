@@ -56,7 +56,7 @@ def trigger_fired(
             offset sits below the configured percentile of prior folds'
             cumulative returns at the same offset (shorter folds skipped).
     """
-    if not current_daily_returns:
+    if trigger.disabled or not current_daily_returns:
         return False
 
     if trigger.drawdown_breach and len(prior_folds) >= DRAWDOWN_ARM_MIN_FOLDS:
@@ -64,7 +64,7 @@ def trigger_fired(
         if _max_drawdown_along(current_daily_returns) > worst_prior:
             return True
 
-    if len(prior_folds) >= PERCENTILE_ARM_MIN_FOLDS:
+    if trigger.oos_percentile_below > 0 and len(prior_folds) >= PERCENTILE_ARM_MIN_FOLDS:
         prior_cumulative = [_cumulative(fold.daily_returns) for fold in prior_folds]
         current_cumulative = _cumulative(current_daily_returns)
         for offset, value in enumerate(current_cumulative):

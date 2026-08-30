@@ -185,3 +185,16 @@ def test_bootstrap_ci_respects_seed_disagreement() -> None:
     lo, hi = (float(x) / 100 for x in re.search(r"bootstrap95% \[([+-][0-9.]+)%, ([+-][0-9.]+)%\]", line).groups())
     assert hi > 0.60  # the up-seed's ~+65% annualized survives
     assert lo < -0.30  # the down-seed's ~-40% annualized survives
+
+
+def test_make_variants_can_freeze_the_trigger() -> None:
+    """Experiment 1 (hold vs re-fit) needs adopt_trigger as a sweep axis."""
+    from midas.policy import Policy
+    from midas.sweep import make_variants
+
+    base = Policy(objective="sharpe")
+    variants = make_variants(base, "adopt_trigger", ["none", "default"])
+    assert [name for name, _p in variants] == ["none", "default"]
+    frozen, default = variants[0][1], variants[1][1]
+    assert frozen.adopt_trigger.disabled
+    assert not default.adopt_trigger.disabled

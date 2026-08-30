@@ -29,7 +29,7 @@ from midas.models import (
     RiskConfig,
     TaxConfig,
 )
-from midas.policy import Policy
+from midas.policy import AdoptTrigger, Policy
 from midas.validator import validate_policy
 
 TRADING_DAYS_PER_YEAR = 252
@@ -201,7 +201,21 @@ def make_variants(policy: Policy, vary: str, values: Sequence[str]) -> list[tupl
     int_fields = {"budget", "restarts", "base_seed", "ensemble_size", "cadence_days"}
     variants: list[tuple[str, Policy]] = []
     for value in values:
-        parsed: object = int(value) if vary in int_fields else value
+        parsed: object
+        if vary == "adopt_trigger":
+            # The axis for the hold-vs-refit experiment: "none" freezes the
+            # policy (fit once, hold), "default" keeps the standard trigger.
+            if value == "none":
+                parsed = AdoptTrigger.never()
+            elif value == "default":
+                parsed = AdoptTrigger()
+            else:
+                msg = f"adopt_trigger variant must be 'none' or 'default', got {value!r}"
+                raise ValueError(msg)
+        elif vary in int_fields:
+            parsed = int(value)
+        else:
+            parsed = value
         # dataclasses.replace re-runs Policy.__post_init__, so invalid values
         # fail loudly there; the dict indirection is untypeable for mypy.
         replaced = dataclasses.replace(policy, **{vary: parsed})  # type: ignore[arg-type]

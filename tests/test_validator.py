@@ -157,3 +157,22 @@ def test_folds_carry_the_portfolio(monkeypatch) -> None:
     assert fold_runs, "no fold runs observed"
     assert fold_runs[0] is False  # first fold starts the book
     assert all(fold_runs[1:])  # every later fold resumes it
+
+
+def test_disabled_trigger_never_fires() -> None:
+    """The frozen policy holds through any crash — that is its definition."""
+    from midas.policy import AdoptTrigger
+
+    priors = [_fold(i, [0.001] * 60) for i in range(6)]
+    crash = [-0.05] * 30
+    assert trigger_fired(priors, crash, AdoptTrigger.never()) is False
+
+
+def test_percentile_zero_disables_that_arm() -> None:
+    """oos_percentile_below: 0 means "no percentile arm", not "below the min"."""
+    from midas.policy import AdoptTrigger
+
+    priors = [_fold(i, [0.001] * 60) for i in range(6)]
+    below_min = [-0.001] * 60  # under every prior path at every offset
+    trigger = AdoptTrigger(oos_percentile_below=0.0, drawdown_breach=False)
+    assert trigger_fired(priors, below_min, trigger) is False

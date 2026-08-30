@@ -74,3 +74,20 @@ def test_load_policy_roundtrip(tmp_path) -> None:
     assert policy is not None and policy.objective == "gross" and policy.budget == 100
     path.write_text("strategies:\n  - name: MeanReversion\n")
     assert load_policy(path) is None
+
+
+class TestFrozenTrigger:
+    """adopt_trigger: none expresses the hold-forever (frozen) policy."""
+
+    def test_parse_none_disables_both_arms(self) -> None:
+        policy = parse_policy({"objective": "sharpe", "adopt_trigger": "none"})
+        assert policy.adopt_trigger.disabled
+        assert not policy.adopt_trigger.drawdown_breach
+        assert policy.adopt_trigger.oos_percentile_below == 0.0
+
+    def test_parse_yaml_null_also_disables(self) -> None:
+        policy = parse_policy({"objective": "sharpe", "adopt_trigger": None})
+        assert policy.adopt_trigger.disabled
+
+    def test_default_trigger_is_not_disabled(self) -> None:
+        assert not parse_policy({"objective": "sharpe"}).adopt_trigger.disabled

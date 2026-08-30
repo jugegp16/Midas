@@ -39,6 +39,16 @@ class AdoptTrigger:
     oos_percentile_below: float = 10.0
     drawdown_breach: bool = True
 
+    @property
+    def disabled(self) -> bool:
+        """True when neither arm can ever fire — the frozen (hold-forever) policy."""
+        return not self.drawdown_breach and self.oos_percentile_below <= 0
+
+    @classmethod
+    def never(cls) -> AdoptTrigger:
+        """The trigger that never fires: fold 0 fits once and holds."""
+        return cls(oos_percentile_below=0.0, drawdown_breach=False)
+
     def __post_init__(self) -> None:
         if not 0 <= self.oos_percentile_below <= 100:
             msg = f"oos_percentile_below must be in [0, 100], got {self.oos_percentile_below}"
@@ -88,10 +98,16 @@ def parse_policy(raw: Mapping[str, object]) -> Policy:
         msg = f"policy: has unrecognized keys {sorted(unknown)}; known keys: {sorted(known)}"
         raise ValueError(msg)
     kwargs: dict[str, object] = dict(raw)
-    trigger_raw = kwargs.pop("adopt_trigger", None)
-    if trigger_raw is not None:
+    missing = object()
+    trigger_raw = kwargs.pop("adopt_trigger", missing)
+    if trigger_raw is missing:
+        pass
+    elif trigger_raw is None or (isinstance(trigger_raw, str) and trigger_raw.lower() == "none"):
+        # Explicitly no trigger: the frozen policy — fit once, hold forever.
+        kwargs["adopt_trigger"] = AdoptTrigger.never()
+    else:
         if not isinstance(trigger_raw, Mapping):
-            msg = f"adopt_trigger must be a mapping, got {type(trigger_raw).__name__}"
+            msg = f"adopt_trigger must be a mapping or 'none', got {type(trigger_raw).__name__}"
             raise ValueError(msg)
         trigger_known = {f.name for f in dataclasses.fields(AdoptTrigger)}
         trigger_unknown = set(trigger_raw) - trigger_known
