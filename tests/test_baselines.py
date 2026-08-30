@@ -6,7 +6,7 @@ from pathlib import Path
 from midas.baselines import Baselines, FoldRecord, baselines_path, read_baselines, write_baselines
 
 
-def _baselines() -> Baselines:
+def _baselines(**overrides) -> Baselines:
     folds = [
         FoldRecord(
             fold=1,
@@ -31,7 +31,9 @@ def _baselines() -> Baselines:
             adopted=False,
         ),
     ]
-    return Baselines(
+    import dataclasses
+
+    base = Baselines(
         folds=folds,
         aggregate_oos_cagr=0.01,
         policy_hash="p" * 64,
@@ -40,6 +42,7 @@ def _baselines() -> Baselines:
         validation_end=date(2024, 6, 28),
         cadence_days=63,
     )
+    return dataclasses.replace(base, **overrides)
 
 
 def test_roundtrip(tmp_path: Path) -> None:
@@ -63,3 +66,25 @@ def test_write_is_atomic(tmp_path: Path) -> None:
     strategies.write_text("strategies: []\n")
     write_baselines(strategies, _baselines())
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_includes_holdout_flag_round_trips(tmp_path: Path) -> None:
+    baselines = _baselines(includes_holdout=True)
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_baselines(strategies, baselines)
+    assert read_baselines(strategies).includes_holdout is True
+
+
+def test_includes_holdout_defaults_false_for_old_artifacts(tmp_path: Path) -> None:
+    import json
+
+    baselines = _baselines()
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_baselines(strategies, baselines)
+    path = baselines_path(strategies)
+    raw = json.loads(path.read_text())
+    raw.pop("includes_holdout", None)
+    path.write_text(json.dumps(raw))
+    assert read_baselines(strategies).includes_holdout is False

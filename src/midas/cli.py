@@ -1296,7 +1296,15 @@ def fit(portfolio: str, strategies: str, start: date, as_of: date | None, rollba
 @click.option(
     "--min-train-pct", default=0.60, show_default=True, help="Initial training reserve before the first fold."
 )
-def validate(portfolio: str, strategies: str, start: date, end: date, min_train_pct: float) -> None:
+@click.option(
+    "--includes-holdout",
+    is_flag=True,
+    default=False,
+    help="Mark the artifact holdout-grade: the range includes the reserved holdout (one-shot, post-landing).",
+)
+def validate(
+    portfolio: str, strategies: str, start: date, end: date, min_train_pct: float, includes_holdout: bool
+) -> None:
     """Run the policy over history exactly as live would, and write baselines.
 
     Executes cadence-driven folds with fits, degradation-gated adoption,
@@ -1346,7 +1354,18 @@ def validate(portfolio: str, strategies: str, start: date, end: date, min_train_
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    if includes_holdout:
+        import dataclasses
+
+        baselines = dataclasses.replace(baselines, includes_holdout=True)
     write_baselines(strategies_path, baselines)
+    if baselines.folds:
+        first_test = baselines.folds[0].test_start
+        click.echo(
+            f"Initial train: {start_d} through the day before {first_test} "
+            f"({min_train_pct:.0%} of the range — fold count moves with --start/--end); "
+            f"{len(baselines.folds)} folds of cadence {baselines.cadence_days}."
+        )
     for fold in baselines.folds:
         marker = "adopted" if fold.adopted else "held"
         click.echo(
@@ -1354,7 +1373,8 @@ def validate(portfolio: str, strategies: str, start: date, end: date, min_train_
             f"{fold.return_annualized:+.2%} ann.  dd {fold.drawdown:.2%}  [{marker}]"
         )
     click.echo(f"Aggregate OOS CAGR: {baselines.aggregate_oos_cagr:+.2%} over {len(baselines.folds)} folds.")
-    click.echo(f"Baselines written: {baselines_path(strategies_path).name}")
+    grade = "holdout-grade (one shot — do not iterate on this)" if includes_holdout else "pre-holdout"
+    click.echo(f"Baselines written: {baselines_path(strategies_path).name} [{grade}]")
 
 
 @cli.command()

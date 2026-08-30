@@ -74,3 +74,16 @@ def test_offset_fold_rank_midrank_semantics() -> None:
     assert offset_fold_rank(paths, 1, 0.04) == 50.0  # tie counts half
     assert offset_fold_rank(paths, 1, 0.07) == 100.0  # above all
     assert offset_fold_rank(paths, 5, 0.01) is None  # no fold that long
+
+
+def test_pre_holdout_baselines_are_labeled() -> None:
+    lines, _ = monitor_lines(BASE, [0.001] * 10, current_input_hash="i" * 64)
+    assert any("pre-holdout" in line for line in lines), lines
+
+
+def test_holdout_grade_baselines_carry_no_label() -> None:
+    import dataclasses
+
+    final = dataclasses.replace(BASE, includes_holdout=True)
+    lines, _ = monitor_lines(final, [0.001] * 10, current_input_hash="i" * 64)
+    assert not any("pre-holdout" in line for line in lines), lines

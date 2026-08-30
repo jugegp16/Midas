@@ -87,3 +87,27 @@ def test_validate_requires_policy(tmp_path: Path, fake_prices: None) -> None:
     result, _ = _invoke_validate(tmp_path, strategies_text=STRATS_NO_POLICY)
     assert result.exit_code != 0
     assert "policy" in result.output
+
+
+def test_includes_holdout_flag_stamps_the_artifact(tmp_path: Path, fake_prices: None) -> None:
+    from midas.baselines import read_baselines
+
+    result, strategies = _invoke_validate(tmp_path, "--includes-holdout")
+    assert result.exit_code == 0, result.output
+    assert read_baselines(strategies).includes_holdout is True
+    assert "holdout" in result.output.lower()
+
+
+def test_default_validate_is_pre_holdout(tmp_path: Path, fake_prices: None) -> None:
+    from midas.baselines import read_baselines
+
+    result, strategies = _invoke_validate(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert read_baselines(strategies).includes_holdout is False
+
+
+def test_validate_echoes_fold_derivation(tmp_path: Path, fake_prices: None) -> None:
+    """The fold count silently depends on --start/--end — say so out loud."""
+    result, _strategies = _invoke_validate(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "Initial train" in result.output

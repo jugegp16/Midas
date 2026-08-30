@@ -59,7 +59,8 @@ def monitor_lines(
     else:
         position = "validation distribution unavailable"
     day = len(window_returns)
-    lines = [f"fold-window day {day}/{baselines.cadence_days}: {cumulative:+.2%} TWR (pre-tax) — {position}"]
+    grade = "" if baselines.includes_holdout else " (pre-holdout baselines)"
+    lines = [f"fold-window day {day}/{baselines.cadence_days}: {cumulative:+.2%} TWR (pre-tax) — {position}{grade}"]
 
     window_dd = _window_drawdown(window_returns)
     worst = max((fold.drawdown for fold in baselines.folds), default=0.0)

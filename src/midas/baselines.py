@@ -40,6 +40,9 @@ class Baselines:
     validation_start: date
     validation_end: date
     cadence_days: int
+    # True only for the one-shot post-landing run whose range includes the
+    # reserved holdout; iteration-grade baselines stay marked pre-holdout.
+    includes_holdout: bool = False
 
 
 def baselines_path(strategies_path: Path) -> Path:
@@ -90,4 +93,5 @@ def read_baselines(strategies_path: Path) -> Baselines | None:
         validation_start=date.fromisoformat(raw["validation_start"]),
         validation_end=date.fromisoformat(raw["validation_end"]),
         cadence_days=int(raw["cadence_days"]),
+        includes_holdout=bool(raw.get("includes_holdout", False)),
     )
