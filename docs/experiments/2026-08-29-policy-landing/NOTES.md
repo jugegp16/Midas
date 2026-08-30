@@ -125,4 +125,50 @@ midas sweep -p sample-portfolios/stonks.yaml -s exp2-stonks-strategies.yaml \
   --vary deployment --value best --value ensemble --seeds 3
 ```
 
-**Results** — pending.
+**Config deviation (operator-intentional):** the stonks basket ran at
+`budget: 500, restarts: 10` (operator edit, confirmed deliberate) while
+etf ran the registered `budget: 1000, restarts: 4`. Same total trials
+per fit (4,000); different explore/exploit split. Recorded here because
+the protocol above says 1000×4; the per-basket best-vs-ensemble
+comparison is unaffected (both variants share each basket's config).
+
+**Results** (2026-08-30; logs `exp2-etf.log`, `exp2-stonks.log`;
+per-seed numbers transcribed from the local sweep-cells sidecars)
+
+etf (1000×4):
+
+| variant | OOS CAGR (mean of 3 seeds) | seed spread | after-tax fold mean | bootstrap 95% | per-seed CAGR |
+|---|---|---|---|---|---|
+| best     | +9.78% | 2.94% | +2.15% | [−5.53%, +27.42%] | 8.5 / 9.5 / 11.4 |
+| ensemble | +9.12% | 1.78% | +2.07% | [−5.45%, +25.93%] | 8.2 / 9.1 / 10.0 |
+
+Sweep verdict: spread 0.66% vs seed noise 2.94% — not resolvable.
+
+stonks (500×10):
+
+| variant | OOS CAGR (mean of 3 seeds) | seed spread | after-tax fold mean | bootstrap 95% | per-seed CAGR |
+|---|---|---|---|---|---|
+| best     | +12.91% | 11.46% | +2.36% | [−14.86%, +52.36%] | 17.9 / 6.5 / 14.4 |
+| ensemble | +22.08% | 19.89% | +4.06% | [−8.93%, +67.89%] | 9.2 / 27.9 / 29.1 |
+
+Sweep verdict: spread 9.16% vs seed noise 19.89% — not resolvable.
+
+**Pre-registered judgment:** ensemble becomes the default only if its
+bootstrap OOS interval is at least as good as best's on both baskets
+AND after-tax drag ≤ 1 pt. On etf the interval is NOT unambiguously at
+least as good (upper bound 25.93 vs 27.42, mean lower, and best leads
+in all three seeds), so the interval condition fails on etf.
+**Criterion not met → `deployment: best` stays the default.**
+
+Observations recorded for future work (not acted on here):
+
+- Ensemble's stabilization effect is visible on etf (seed spread 1.78
+  vs 2.94) without a return edge — consistent with the K=20 weak prior.
+- On stonks ensemble's interval dominates best's on both ends and
+  after-tax is +1.7 pt HIGHER — but at seed spreads of 11–20 pts
+  nothing resolves; a higher-seed follow-up at the registered 1000×4
+  would be the honest test.
+- The 500×10 split produced dramatically larger seed noise (11–20 pts
+  vs 2–3 pts at 1000×4 in Experiment 1's frozen cells): at 500 trials
+  per restart, per-restart quality is variable enough that even
+  best-of-10 wobbles. Relevant to any future restarts-vs-budget tuning.
