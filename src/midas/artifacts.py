@@ -68,11 +68,23 @@ def read_members(strategies_path: Path) -> FitResult | None:
 
 
 def list_fits(strategies_path: Path) -> list[Path]:
-    """History entries, oldest first (filenames sort by as_of)."""
+    """History entries, oldest first (as_of from the filename, mtime breaking same-day ties)."""
     history_dir = fits_dir(strategies_path)
     if not history_dir.is_dir():
         return []
-    return sorted(history_dir.glob("*.yaml"))
+    return sorted(history_dir.glob("*.yaml"), key=lambda p: (p.name[:10], p.stat().st_mtime, p.name))
+
+
+def latest_fit_as_of(strategies_path: Path) -> date | None:
+    """The as_of of the newest history entry, parsed from its filename.
+
+    Cheap enough to call every tick: no YAML is read. None when no fit
+    was ever recorded.
+    """
+    entries = list_fits(strategies_path)
+    if not entries:
+        return None
+    return date.fromisoformat(entries[-1].name[:10])
 
 
 def rollback(strategies_path: Path, steps: int = 1) -> FitResult:

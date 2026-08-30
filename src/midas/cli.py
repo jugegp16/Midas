@@ -1523,7 +1523,9 @@ def refit(
         clear_proposal,
         deploy_fit,
         list_fits,
+        read_fit_entry,
         read_members,
+        read_proposal,
         record_fit,
         write_proposal,
     )
@@ -1568,10 +1570,20 @@ def refit(
         )
 
     if adopt:
-        entries = list_fits(strategies_path)
-        if not entries:
-            raise click.ClickException("no fit history to adopt from — run refit (or midas fit) first")
-        latest = _read_fit(entries[-1])
+        # A standing proposal is what the operator was shown — adopt that
+        # fit, never whichever one happened to land last.
+        proposal = read_proposal(strategies_path)
+        if proposal is not None:
+            latest = read_fit_entry(strategies_path, proposal.fit_as_of, proposal.input_hash)
+            if latest is None:
+                raise click.ClickException(
+                    f"proposal references fit of {proposal.fit_as_of.isoformat()} which is not in history"
+                )
+        else:
+            entries = list_fits(strategies_path)
+            if not entries:
+                raise click.ClickException("no fit history to adopt from — run refit (or midas fit) first")
+            latest = _read_fit(entries[-1])
         deploy_fit(strategies_path, latest)
         clear_proposal(strategies_path)
         click.echo(f"Adopted fit of {latest.as_of.isoformat()} ({len(latest.members)} member(s)).")
@@ -1605,8 +1617,14 @@ def refit(
     if baselines is None or state is None or not state.monitor_returns:
         click.echo("No degradation evidence available (missing baselines or monitor window) — no proposal.")
         return
+    if baselines.input_hash != current_hash:
+        click.echo(
+            "Baselines were validated under a different configuration — no trigger evaluation; "
+            "run midas validate to refresh them."
+        )
+        return
     if trigger_fired(baselines.folds, state.monitor_returns, policy.adopt_trigger):
-        evidence, _breached = monitor_lines(baselines, state.monitor_returns, current_input_hash=baselines.input_hash)
+        evidence, _breached = monitor_lines(baselines, state.monitor_returns, current_input_hash=current_hash)
         write_proposal(
             strategies_path,
             fit_as_of=result.as_of,

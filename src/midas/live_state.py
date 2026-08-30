@@ -210,7 +210,7 @@ def save_atomic(state: LiveState, path: Path) -> None:
                 "dd_warned": state.monitor_dd_warned,
                 "expected_cash": state.expected_cash,
             }
-            if state.monitor_anchor is not None or state.monitor_returns
+            if state.monitor_anchor is not None or state.monitor_returns or state.expected_cash is not None
             else None
         ),
         "intent_cooldowns": [

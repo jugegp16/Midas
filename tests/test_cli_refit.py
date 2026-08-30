@@ -176,3 +176,50 @@ def test_input_hash_mismatch_refuses(tmp_path: Path, fake_prices: None) -> None:
     result = _refit(portfolio, strategies, state)
     assert result.exit_code != 0
     assert "midas fit" in result.output
+
+
+def test_stale_baselines_suppress_trigger_evaluation(tmp_path: Path, fake_prices: None) -> None:
+    """Baselines validated under a different configuration prove nothing.
+
+    The trigger compares live returns against fold distributions — if the
+    baselines' input hash differs from the current configuration's, the
+    comparison is meaningless and must be refused, not silently passed its
+    own hash back as "current".
+    """
+    import dataclasses
+
+    from midas.artifacts import read_proposal
+    from midas.baselines import read_baselines, write_baselines
+
+    portfolio, strategies, state = _setup(tmp_path, monitor_returns=[-0.02] * 15, worst_dd=0.01)
+    stale = dataclasses.replace(read_baselines(strategies), input_hash="e" * 64)
+    write_baselines(strategies, stale)
+    result = _refit(portfolio, strategies, state)
+    assert result.exit_code == 0, result.output
+    assert read_proposal(strategies) is None  # degraded window, but stale evidence
+    assert "different configuration" in result.output
+
+
+def test_adopt_prefers_pending_proposal_over_latest_fit(tmp_path: Path, fake_prices: None) -> None:
+    """--adopt confirms the standing proposal, not whatever fit came last.
+
+    The operator is answering the proposal they were shown; a later
+    trigger-silent fit recorded in between must not be deployed instead.
+    """
+    from midas.artifacts import read_members, read_proposal
+
+    portfolio, strategies, state = _setup(tmp_path, monitor_returns=[-0.02] * 15, worst_dd=0.01)
+    _refit(portfolio, strategies, state)  # writes proposal for fit of 2024-04-01
+    assert read_proposal(strategies) is not None
+    # A later trigger-silent fit lands (the monitor window recovered).
+    from midas.live_state import LiveState, save_atomic
+
+    healthy = LiveState(available_cash=2000.0, cash_infusion_next_date=None)
+    healthy.monitor_returns = [0.001] * 15
+    save_atomic(healthy, state)
+    result = _refit(portfolio, strategies, state, "--as-of", "2024-05-01")
+    assert result.exit_code == 0, result.output
+    result = _refit(portfolio, strategies, state, "--adopt")
+    assert result.exit_code == 0, result.output
+    assert read_members(strategies).as_of == date(2024, 4, 1)  # the proposed fit, not 2024-05-01
+    assert read_proposal(strategies) is None

@@ -239,6 +239,12 @@ class LiveEngine:
             # restart mid-session forgets them (accepted: one day's monitor
             # return reads slightly high on that rare path).
             self._session_inflows = 0.0
+            if self._state.expected_cash is not None:
+                # Cash moved while the engine was down (a manual deposit or
+                # withdrawal) — capture it now, because every later save
+                # re-syncs expected_cash and would silently absorb it.
+                self._session_inflows += self._state.available_cash - self._state.expected_cash
+                self._state.expected_cash = self._state.available_cash
             if monitor_anchor is not None and self._state.monitor_anchor != monitor_anchor:
                 # A new fit opened a new window — adoption or not, the fit
                 # date is the anchor (a declined proposal still closed one).
@@ -433,19 +439,26 @@ class LiveEngine:
         """
         if self._refit_spawner is None or self._cadence_days is None or self._strategies_path is None:
             return
+        if self._dry_run:
+            return
         today = now.date()
         if self._refit_spawned_on == today:
             return
-        from midas.artifacts import read_members
+        from midas.artifacts import latest_fit_as_of, read_members
 
         members = read_members(self._strategies_path)
         if members is None:
             return
+        # A recorded-but-unadopted fit still counts as the last fit — else a
+        # trigger-silent re-fit leaves the sidecar stale and live spawns a
+        # fresh fit every single day.
+        last_fit = latest_fit_as_of(self._strategies_path) or members.as_of
+        last_fit = max(last_fit, members.as_of)
         stale_after = int(self._cadence_days * 7 / 5)
-        if (today - members.as_of).days < stale_after:
+        if (today - last_fit).days < stale_after:
             return
         self._refit_spawned_on = today
-        print_status(f"Fit of {members.as_of.isoformat()} is past cadence — spawning midas refit.")
+        print_status(f"Last fit of {last_fit.isoformat()} is past cadence — spawning midas refit.")
         self._refit_spawner()
 
     def _handle_policy_artifacts(self, now: datetime) -> None:
@@ -459,7 +472,14 @@ class LiveEngine:
         """
         if self._strategies_path is None:
             return
-        from midas.artifacts import clear_proposal, deploy_fit, read_fit_entry, read_members, read_proposal
+        from midas.artifacts import (
+            clear_proposal,
+            deploy_fit,
+            latest_fit_as_of,
+            read_fit_entry,
+            read_members,
+            read_proposal,
+        )
         from midas.optimizer import _instantiate_strategies
 
         members = read_members(self._strategies_path)
@@ -474,6 +494,21 @@ class LiveEngine:
             )
             self._loaded_fit_as_of = members.as_of
             print_status(f"Members reloaded: fit of {members.as_of.isoformat()} ({len(members.members)} member(s))")
+
+        # The monitor window anchors on the latest fit — adoption or not, a
+        # fit landing mid-run (the spawned refit finishing) opens a new
+        # window right then, never on the next restart.
+        anchor = latest_fit_as_of(self._strategies_path) or (members.as_of if members is not None else None)
+        if anchor is not None and self._state.monitor_anchor != anchor:
+            self._state.monitor_anchor = anchor
+            self._state.monitor_returns = []
+            self._state.monitor_dd_warned = False
+            self._save_state()
+
+        if self._dry_run:
+            # Dry-run reloads members (read-only, keeps the book realistic)
+            # but must never post, settle, or clear a shared proposal.
+            return
 
         proposal = read_proposal(self._strategies_path)
         if proposal is None:
@@ -507,6 +542,19 @@ class LiveEngine:
                 self._state.proposal_message_id = None
             self._state.proposal_fit_as_of = proposal.fit_as_of
             self._state.proposal_posted_at = now
+            self._save_state()
+            return
+
+        if self._state.proposal_fit_as_of != proposal.fit_as_of:
+            # The file now describes a different fit than the posted embed —
+            # the operator's reaction answers what they read, so the old
+            # message expires and the new proposal posts fresh next tick.
+            if self._confirmer is not None and self._state.proposal_message_id is not None:
+                self._confirmer.mark_expired(self._state.proposal_message_id)
+            print_status("Adoption proposal superseded by a newer fit — re-posting.")
+            self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = None
+            self._state.proposal_posted_at = None
             self._save_state()
             return
 
