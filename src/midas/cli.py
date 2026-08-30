@@ -1474,7 +1474,6 @@ def sweep(
             risk_config=risk_config,
             min_cash_pct=strat_constraints.min_cash_pct,
             forecast_scaling=strat_constraints.forecast_scaling,
-            tax_config=next(iter(ports.values())).tax_config if len(ports) == 1 else None,
             strategy_names=strategy_names,
             log_fn=print_status,
             holdout_trimmed_to=holdout_boundary,

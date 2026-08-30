@@ -27,7 +27,6 @@ from midas.models import (
     ForecastScaling,
     PortfolioConfig,
     RiskConfig,
-    TaxConfig,
 )
 from midas.policy import AdoptTrigger, Policy
 from midas.validator import validate_policy
@@ -109,6 +108,7 @@ class SweepCell:
     oos_sharpe: float
     daily_returns: list[float]
     n_folds: int
+    after_tax_mean: float | None = None
 
 
 @dataclass(frozen=True)
@@ -163,9 +163,13 @@ class SweepReport:
                     skew=skew,
                     kurtosis=kurtosis,
                 )
+                after_tax_means = [c.after_tax_mean for c in cells if c.after_tax_mean is not None]
+                after_tax = ""
+                if after_tax_means:
+                    after_tax = f"  after-tax fold mean {sum(after_tax_means) / len(after_tax_means):+.2%}"
                 lines.append(
                     f"{portfolio}/{variant}: mean OOS CAGR {mean:+.2%} across {len(cells)} seed(s), "
-                    f"spread {spread:.2%}{ci}  DSR~{dsr:.2f} (proxy: trials from folds, "
+                    f"spread {spread:.2%}{ci}{after_tax}  DSR~{dsr:.2f} (proxy: trials from folds, "
                     f"SR var from seeds)"
                 )
         for portfolio in portfolios:
@@ -238,7 +242,6 @@ def run_sweep(
     risk_config: RiskConfig | None = None,
     min_cash_pct: float = DEFAULT_MIN_CASH_PCT,
     forecast_scaling: ForecastScaling = "none",
-    tax_config: TaxConfig | None = None,
     strategy_names: list[str] | None = None,
     log_fn: Callable[[str], None] | None = None,
     validate: Callable[..., Baselines] = validate_policy,
@@ -268,10 +271,11 @@ def run_sweep(
                     risk_config=risk_config,
                     min_cash_pct=min_cash_pct,
                     forecast_scaling=forecast_scaling,
-                    tax_config=tax_config,
+                    tax_config=portfolio.tax_config,
                     strategy_names=strategy_names,
                 )
                 path = [r for fold in baselines.folds for r in fold.daily_returns]
+                after_tax = [f.after_tax_return_raw for f in baselines.folds if f.after_tax_return_raw is not None]
                 cells.append(
                     SweepCell(
                         variant=variant_name,
@@ -281,6 +285,7 @@ def run_sweep(
                         oos_sharpe=compute_sharpe(path),
                         daily_returns=path,
                         n_folds=len(baselines.folds),
+                        after_tax_mean=(sum(after_tax) / len(after_tax)) if after_tax else None,
                     )
                 )
     return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to)

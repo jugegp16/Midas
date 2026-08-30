@@ -198,3 +198,64 @@ def test_make_variants_can_freeze_the_trigger() -> None:
     frozen, default = variants[0][1], variants[1][1]
     assert frozen.adopt_trigger.disabled
     assert not default.adopt_trigger.disabled
+
+
+def test_run_sweep_uses_each_portfolios_own_tax_config() -> None:
+    """Multi-portfolio sweeps must tax each basket by its own rules.
+
+    Passing None for every portfolio silently reports pre-tax numbers for
+    a comparison whose pre-registered criterion is after-tax.
+    """
+    from datetime import date
+
+    from midas.models import AllocationConstraints, Holding, PortfolioConfig, TaxConfig
+    from midas.policy import Policy
+    from midas.sweep import run_sweep
+
+    tax_a = TaxConfig(short_term_rate=0.35, long_term_rate=0.15)
+    tax_b = TaxConfig(short_term_rate=0.24, long_term_rate=0.15)
+    port_a = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=1, cost_basis=1.0)], available_cash=1.0, tax_config=tax_a
+    )
+    port_b = PortfolioConfig(
+        holdings=[Holding(ticker="TEST", shares=1, cost_basis=1.0)], available_cash=1.0, tax_config=tax_b
+    )
+    seen: dict[str, object] = {}
+
+    def spy_validate(portfolio, price_data, start, end, policy, **kwargs):
+        name = next(k for k, p in {"a": port_a, "b": port_b}.items() if p is portfolio)
+        seen[name] = kwargs.get("tax_config")
+        return _stub_validate_factory({("gross", 42): 0.1})(portfolio, price_data, start, end, policy, **kwargs)
+
+    run_sweep(
+        {"a": port_a, "b": port_b},
+        {"a": {}, "b": {}},
+        date(2016, 1, 4),
+        date(2024, 6, 28),
+        Policy(objective="gross"),
+        "objective",
+        [],
+        seeds=1,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        validate=spy_validate,
+    )
+    assert seen == {"a": tax_a, "b": tax_b}
+
+
+def test_summary_reports_after_tax_when_available() -> None:
+    from midas.sweep import SweepCell, SweepReport
+
+    cell = SweepCell(
+        variant="base",
+        portfolio="p",
+        seed_base=42,
+        aggregate_oos_cagr=0.1,
+        oos_sharpe=1.0,
+        daily_returns=[0.001] * 100,
+        n_folds=4,
+        after_tax_mean=0.08,
+    )
+    text = "\n".join(SweepReport(cells=[cell], holdout_trimmed_to=None).summary_lines())
+    assert "after-tax" in text
+    assert "+8.00%" in text
