@@ -176,3 +176,32 @@ def test_percentile_zero_disables_that_arm() -> None:
     below_min = [-0.001] * 60  # under every prior path at every offset
     trigger = AdoptTrigger(oos_percentile_below=0.0, drawdown_breach=False)
     assert trigger_fired(priors, below_min, trigger) is False
+
+
+def test_trigger_and_monitor_agree_on_the_rank() -> None:
+    """The trigger fires on the same number the operator reads.
+
+    Six prior folds, one deeply negative; the window sits between the
+    worst fold and the rest — midrank p17. The monitor prints p17, a 10%%
+    trigger stays silent, a 20%% trigger fires: one number governs both.
+    """
+    from datetime import date as date_type
+
+    from midas.baselines import Baselines
+    from midas.monitor import monitor_lines
+
+    priors = [_fold(i, [0.002] * 60) for i in range(5)] + [_fold(5, [-0.004] * 60)]
+    window = [-0.002] * 40  # cumulative -7.7%: above the worst fold's -14.5%
+    assert trigger_fired(priors, window, AdoptTrigger(oos_percentile_below=10.0, drawdown_breach=False)) is False
+    assert trigger_fired(priors, window, AdoptTrigger(oos_percentile_below=20.0, drawdown_breach=False)) is True
+    baselines = Baselines(
+        folds=priors,
+        aggregate_oos_cagr=0.1,
+        policy_hash="p" * 64,
+        input_hash="i" * 64,
+        validation_start=date_type(2024, 1, 2),
+        validation_end=date_type(2025, 6, 30),
+        cadence_days=63,
+    )
+    lines, _breached = monitor_lines(baselines, window, current_input_hash="i" * 64)
+    assert any("p17 of validation folds" in line for line in lines), lines

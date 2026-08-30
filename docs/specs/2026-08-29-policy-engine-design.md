@@ -421,6 +421,13 @@ the defaults; results are committed under
   sidecar changed"; live hot-reloads members (policy-owned knobs still
   require a restart). `record_fit`/`deploy_fit` split so re-fit records
   without deploying; `midas fit` composes both.
+- **The monitor and the trigger share one fold-midrank percentile** —
+  the spec's offset-bootstrap display is replaced by the midrank of the
+  live window's cumulative return among prior folds' values at the same
+  offset. The mixture bootstrap treated a fold-persistent regime as an
+  improbable streak (a window riding a validated fold's exact rate
+  drifted toward p0), and displaying one number while triggering on
+  another let the operator read p16 the night the policy acted on p7.
 - **The sweep compares; `midas validate` writes baselines** — splitting
   the comparator from the evidence writer keeps "selected variant" out of
   the sweep's job description (phase 5). Sweep DSR proxies (trial count

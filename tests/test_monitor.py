@@ -3,7 +3,7 @@
 from datetime import date
 
 from midas.baselines import Baselines, FoldRecord
-from midas.monitor import monitor_lines, offset_cumulative_distribution
+from midas.monitor import monitor_lines, offset_fold_rank
 
 
 def _baselines(fold_returns: list[list[float]], input_hash: str = "i" * 64) -> Baselines:
@@ -68,8 +68,9 @@ def test_crash_window_breaches() -> None:
     assert any("BREACH" in line for line in lines)
 
 
-def test_offset_distribution_shape() -> None:
-    concat = [r for f in BASE.folds for r in f.daily_returns]
-    dist = offset_cumulative_distribution(concat, 9, n_resamples=100, seed=1)
-    assert len(dist) == 100
-    assert offset_cumulative_distribution([0.01], 5) == []
+def test_offset_fold_rank_midrank_semantics() -> None:
+    paths = [[0.01, 0.02], [0.01, 0.04], [0.01, 0.06]]
+    assert offset_fold_rank(paths, 1, 0.01) == 0.0  # below all
+    assert offset_fold_rank(paths, 1, 0.04) == 50.0  # tie counts half
+    assert offset_fold_rank(paths, 1, 0.07) == 100.0  # above all
+    assert offset_fold_rank(paths, 5, 0.01) is None  # no fold that long

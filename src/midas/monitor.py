@@ -9,43 +9,30 @@ does not match the running configuration is refused, not reinterpreted.
 
 from __future__ import annotations
 
-import random
 from collections.abc import Sequence
 
 from midas.baselines import Baselines
 
-OFFSET_RESAMPLES = 500
-MEAN_BLOCK = 21
 
+def offset_fold_rank(fold_paths: Sequence[Sequence[float]], offset: int, value: float) -> float | None:
+    """Midrank percentile of *value* among the folds' cumulative returns at *offset*.
 
-def offset_cumulative_distribution(
-    fold_returns_concat: Sequence[float],
-    offset: int,
-    *,
-    n_resamples: int = OFFSET_RESAMPLES,
-    mean_block: int = MEAN_BLOCK,
-    seed: int = 0,
-) -> list[float]:
-    """Bootstrap cumulative returns at a given day offset.
+    This is THE ranking — the monitor prints it and the adoption trigger
+    fires on it, so the operator never reads one number while the policy
+    acts on another. Fold values are ranked directly (never a mixture
+    bootstrap of the concatenated path, which treats a fold-persistent
+    regime as an improbable streak): a window riding a validated fold's
+    exact rate ranks at that fold's mass, not below it. Ties count half.
 
-    Stationary-bootstrap resamples of length ``offset + 1`` drawn from the
-    concatenated validation path — a smoother reference than ranking
-    against N autocorrelated folds at 1/N granularity.
+    Returns:
+        None when no fold is long enough to have a value at *offset*.
     """
-    n = len(fold_returns_concat)
-    if n < 2 or offset < 0:
-        return []
-    rng = random.Random(seed)
-    restart_p = 1.0 / mean_block
-    out: list[float] = []
-    for _ in range(n_resamples):
-        idx = rng.randrange(n)
-        growth = 1.0
-        for _step in range(offset + 1):
-            growth *= 1.0 + fold_returns_concat[idx]
-            idx = rng.randrange(n) if rng.random() < restart_p else (idx + 1) % n
-        out.append(growth - 1.0)
-    return out
+    at_offset = [path[offset] for path in fold_paths if len(path) > offset]
+    if not at_offset:
+        return None
+    below = sum(1 for v in at_offset if v < value)
+    equal = sum(1 for v in at_offset if v == value)
+    return (below + equal / 2.0) * 100.0 / len(at_offset)
 
 
 def monitor_lines(
@@ -65,11 +52,10 @@ def monitor_lines(
         cumulative *= 1.0 + ret
     cumulative -= 1.0
     offset = len(window_returns) - 1
-    concat = [r for fold in baselines.folds for r in fold.daily_returns]
-    dist = sorted(offset_cumulative_distribution(concat, offset))
-    if dist:
-        rank = sum(1 for v in dist if v < cumulative) * 100 // len(dist)
-        position = f"p{rank} of validation distribution"
+    fold_paths = [_cumulative_path(fold.daily_returns) for fold in baselines.folds]
+    rank = offset_fold_rank(fold_paths, offset, cumulative)
+    if rank is not None:
+        position = f"p{rank:.0f} of validation folds at this offset"
     else:
         position = "validation distribution unavailable"
     day = len(window_returns)
@@ -93,3 +79,12 @@ def _window_drawdown(daily_returns: Sequence[float]) -> float:
         peak = max(peak, value)
         worst = max(worst, (peak - value) / peak)
     return worst
+
+
+def _cumulative_path(daily_returns: Sequence[float]) -> list[float]:
+    values: list[float] = []
+    value = 1.0
+    for ret in daily_returns:
+        value *= 1.0 + ret
+        values.append(value - 1.0)
+    return values

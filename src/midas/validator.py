@@ -53,8 +53,10 @@ def trigger_fired(
         drawdown (>= 1 prior fold): the path's drawdown from its window
             peak exceeds the worst prior-fold drawdown.
         percentile (>= 5 prior folds): the cumulative return at some day
-            offset sits below the configured percentile of prior folds'
-            cumulative returns at the same offset (shorter folds skipped).
+            offset ranks below the configured percentile of prior folds'
+            cumulative returns at the same offset — the identical midrank
+            the monitor prints, so the trigger fires on the number the
+            operator reads, never a different one.
     """
     if trigger.disabled or not current_daily_returns:
         return False
@@ -65,15 +67,16 @@ def trigger_fired(
             return True
 
     if trigger.oos_percentile_below > 0 and len(prior_folds) >= PERCENTILE_ARM_MIN_FOLDS:
+        from midas.monitor import offset_fold_rank
+
         prior_cumulative = [_cumulative(fold.daily_returns) for fold in prior_folds]
         current_cumulative = _cumulative(current_daily_returns)
         for offset, value in enumerate(current_cumulative):
-            at_offset = sorted(path[offset] for path in prior_cumulative if len(path) > offset)
-            if len(at_offset) < PERCENTILE_ARM_MIN_FOLDS:
+            long_enough = sum(1 for path in prior_cumulative if len(path) > offset)
+            if long_enough < PERCENTILE_ARM_MIN_FOLDS:
                 continue
-            cutoff_index = int(len(at_offset) * trigger.oos_percentile_below / 100.0)
-            cutoff = at_offset[min(cutoff_index, len(at_offset) - 1)]
-            if value < cutoff:
+            rank = offset_fold_rank(prior_cumulative, offset, value)
+            if rank is not None and rank < trigger.oos_percentile_below:
                 return True
 
     return False
