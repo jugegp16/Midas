@@ -24,7 +24,7 @@ strategies:
     window: 22
 policy:
   objective: sharpe
-  budget: 2000
+  budget: 1000
   restarts: 4
   base_seed: 42
   deployment: best
