@@ -100,6 +100,28 @@ def _validate(portfolio, price_data, policy=TINY):
     )
 
 
+def test_validator_streams_fit_progress() -> None:
+    """Fold fits must narrate through log_fn — a silent day-long run is
+    unmonitorable."""
+    portfolio, price_data = _val_data()
+    lines: list[str] = []
+    days = sorted(price_data["TEST"].index)
+    validate_policy(
+        portfolio,
+        price_data,
+        days[0],
+        days[-1],
+        TINY,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+        log_fn=lines.append,
+    )
+    text = "\n".join(lines)
+    assert "Fold 1/" in text
+    assert f"restart 1/{TINY.restarts}" in text
+
+
 def test_validator_produces_baselines() -> None:
     portfolio, price_data = _val_data()
     baselines = _validate(portfolio, price_data)

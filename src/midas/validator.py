@@ -175,6 +175,7 @@ def validate_policy(
                 tax_config=tax_config,
                 incumbent=deployed,
                 strategy_names=strategy_names,
+                log_fn=log_fn,
             )
         adopted = deployed is None or trigger_fired(completed[:-1], completed[-1].daily_returns, policy.adopt_trigger)
         if adopted:

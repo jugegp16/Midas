@@ -2,5 +2,21 @@ holdout: withholding 2024-08-27 → 2026-08-27 from the sweep
 Fetching data for XLU, ETH, VDE, VFH, SCHA, IBIT, SMH, SCHX, QQQM, VOO (with 
 160-day warmup buffer from 2015-07-28)...
 preflight: 2 variant(s) x 1 portfolio(s) x 2 seed(s) x ~14 fold(s) x 4 restart(s) x 2000 trials ≈ 448,000 trials
-sweep: none on etf, seed base 42 
+sweep: none on etf, seed base 42 [cell 1/4]
+Fold 1/13: test 2021-03-12 → 2021-06-10
+Fold 2/13: test 2021-06-11 → 2021-09-09
+Fold 3/13: test 2021-09-10 → 2021-12-08
+Fold 4/13: test 2021-12-09 → 2022-03-10
+Fold 5/13: test 2022-03-11 → 2022-06-09
+Fold 6/13: test 2022-06-10 → 2022-09-09
+Fold 7/13: test 2022-09-12 → 2022-12-08
+Fold 8/13: test 2022-12-09 → 2023-03-13
+Fold 9/13: test 2023-03-14 → 2023-06-12
+Fold 10/13: test 2023-06-13 → 2023-09-12
+Fold 11/13: test 2023-09-13 → 2023-12-11
+Fold 12/13: test 2023-12-12 → 2024-03-13
+Fold 13/13: test 2024-03-14 → 2024-08-27
+cell 1/4 done in 8m (elapsed 8m; ~24m remaining at the mean cell pace — frozen 
+cells run far faster than re-fit cells)
+sweep: none on etf, seed base 43 [cell 2/4]
 Fold 1/13: test 2021-03-12 → 2021-06-10
