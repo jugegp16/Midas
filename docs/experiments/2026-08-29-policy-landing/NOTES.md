@@ -94,8 +94,35 @@ Observations recorded for future work (not acted on here):
   results above come from sequential re-runs with per-cell JSONL
   checkpointing added in response.
 
-## Experiment 2 — best vs ensemble vs sampled SPP
+## Experiment 2 — best vs ensemble
 
-Pending Experiment 1. Criterion (pre-registered): ensemble becomes the
-default only if its block-bootstrap OOS interval is at least as good as
-best's on both baskets AND after-tax drag rises ≤ 1 pt.
+**Criterion (pre-registered):** ensemble becomes the default only if
+its block-bootstrap OOS interval is at least as good as best's on both
+baskets AND after-tax drag rises ≤ 1 pt.
+
+**Protocol choices recorded before running (2026-08-30):**
+
+- Deployments compared under the **frozen** adoption posture
+  (`adopt_trigger: none`) — the posture Experiment 1 selected — so the
+  over-firing trigger cannot contaminate the deployment comparison.
+  Frozen cells fit once, so seeds rise to 3.
+- The sampled-SPP arm is **dropped**: the spec admitted it only if it
+  fit the overnight budget, it was never implemented as a deployment
+  mode, and best-vs-ensemble is the decision that sets the default.
+- Same baskets, range, holdout, and policy as Experiment 1
+  (budget 1000, restarts 4, sharpe), varying only `deployment`
+  (`best` vs `ensemble`, ensemble_size 20). Baskets run in parallel
+  (frozen cells are short; per-cell checkpointing covers a kill).
+
+**Commands**
+
+```
+midas sweep -p sample-portfolios/etf.yaml -s exp2-etf-strategies.yaml \
+  --start 2016-01-04 --end 2026-08-27 \
+  --vary deployment --value best --value ensemble --seeds 3
+midas sweep -p sample-portfolios/stonks.yaml -s exp2-stonks-strategies.yaml \
+  --start 2016-01-04 --end 2026-08-27 \
+  --vary deployment --value best --value ensemble --seeds 3
+```
+
+**Results** — pending.
