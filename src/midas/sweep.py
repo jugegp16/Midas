@@ -136,21 +136,32 @@ class SweepReport:
                 spread = max(cagrs) - min(cagrs) if len(cagrs) > 1 else 0.0
                 widest_floor = max(widest_floor, spread)
                 means[(portfolio, variant)] = mean
-                path = [r for c in cells for r in c.daily_returns]
-                boot = stationary_bootstrap(path, n_resamples=500, seed=0)
+                # Each seed's path is resampled on its own and the resampled
+                # CAGRs pooled — concatenating first would narrow the CI by
+                # sqrt(seeds) and average distinct basins into one blur.
+                boot: list[float] = []
+                for cell_idx, cell in enumerate(cells):
+                    boot.extend(stationary_bootstrap(cell.daily_returns, n_resamples=500, seed=cell_idx))
                 ci = ""
                 if boot:
                     boot.sort()
                     lo = boot[int(0.025 * len(boot))]
                     hi = boot[int(0.975 * len(boot)) - 1]
                     ci = f"  bootstrap95% [{lo:+.2%}, {hi:+.2%}]"
-                sharpe_var = _variance([c.oos_sharpe for c in cells])
+                path = [r for c in cells for r in c.daily_returns]
+                # The DSR z-statistic works in per-period units: n_obs counts
+                # daily observations, so the annualized Sharpe and its
+                # cross-seed variance both convert to daily scale.
+                sharpe_var = _variance([c.oos_sharpe for c in cells]) / TRADING_DAYS_PER_YEAR
                 n_trials = max(1, sum(c.n_folds for c in cells))
+                skew, kurtosis = _sample_moments(path)
                 dsr = deflated_sharpe_ratio(
-                    sum(c.oos_sharpe for c in cells) / len(cells),
+                    sum(c.oos_sharpe for c in cells) / len(cells) / math.sqrt(TRADING_DAYS_PER_YEAR),
                     n_trials=n_trials,
-                    sharpe_variance=max(sharpe_var, 0.01),
+                    sharpe_variance=max(sharpe_var, 0.01 / TRADING_DAYS_PER_YEAR),
                     n_obs=max(len(path), 2),
+                    skew=skew,
+                    kurtosis=kurtosis,
                 )
                 lines.append(
                     f"{portfolio}/{variant}: mean OOS CAGR {mean:+.2%} across {len(cells)} seed(s), "
@@ -259,6 +270,25 @@ def run_sweep(
                     )
                 )
     return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to)
+
+
+def _sample_moments(values: Sequence[float]) -> tuple[float, float]:
+    """Sample skewness and kurtosis (non-excess) of a return path.
+
+    Returns:
+        ``(0.0, 3.0)`` — the normal case — when the path is too short or
+        degenerate to estimate them.
+    """
+    n = len(values)
+    if n < 4:
+        return 0.0, 3.0
+    mean = sum(values) / n
+    m2 = sum((v - mean) ** 2 for v in values) / n
+    if m2 <= 0:
+        return 0.0, 3.0
+    m3 = sum((v - mean) ** 3 for v in values) / n
+    m4 = sum((v - mean) ** 4 for v in values) / n
+    return m3 / m2**1.5, m4 / m2**2
 
 
 def _variance(values: Sequence[float]) -> float:

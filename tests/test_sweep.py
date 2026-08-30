@@ -130,3 +130,58 @@ def test_run_sweep_replicates_and_qualifies() -> None:
     text = "\n".join(report.summary_lines())
     assert "not resolvable" in text
     assert "(on these windows)" in text  # single portfolio -> qualified
+
+
+def _report_cells(paths_by_seed: dict[int, list[float]], sharpe: float, n_folds: int = 8):
+    from midas.sweep import SweepCell, SweepReport
+
+    cells = [
+        SweepCell(
+            variant="base",
+            portfolio="p",
+            seed_base=42 + i,
+            aggregate_oos_cagr=0.1,
+            oos_sharpe=sharpe,
+            daily_returns=path,
+            n_folds=n_folds,
+        )
+        for i, path in paths_by_seed.items()
+    ]
+    return SweepReport(cells=cells, holdout_trimmed_to=None)
+
+
+def test_dsr_uses_per_period_units() -> None:
+    """The DSR must be a probability, not a saturated 0-or-1 indicator.
+
+    Feeding an annualized SR with daily n_obs inflates |z| by ~sqrt(252),
+    so every comparison saturates (this scenario lands at ~1e-5). In daily
+    units an annualized SR of 0.2 sits just under the expected max of 600
+    noise trials at the variance floor, putting the DSR near 0.4 — a
+    moderate, meaningful value only the per-period computation produces.
+    """
+    import re
+
+    rng = np.random.default_rng(3)
+    paths = {i: list(rng.normal(0.0, 0.01, 500)) for i in range(3)}
+    report = _report_cells(paths, sharpe=0.2, n_folds=200)
+    line = report.summary_lines()[0]
+    dsr = float(re.search(r"DSR~([0-9.]+)", line).group(1))
+    assert 0.25 < dsr < 0.75
+
+
+def test_bootstrap_ci_respects_seed_disagreement() -> None:
+    """The CI must cover what the seeds actually produced, not their blend.
+
+    Concatenating seed paths into one series before resampling narrows the
+    interval by sqrt(seeds) and centers it between basins. Resampling each
+    seed's own path and pooling the resampled CAGRs keeps both modes.
+    """
+    import re
+
+    up = [0.002] * 250
+    down = [-0.002] * 250
+    report = _report_cells({0: up, 1: down}, sharpe=1.0)
+    line = report.summary_lines()[0]
+    lo, hi = (float(x) / 100 for x in re.search(r"bootstrap95% \[([+-][0-9.]+)%, ([+-][0-9.]+)%\]", line).groups())
+    assert hi > 0.60  # the up-seed's ~+65% annualized survives
+    assert lo < -0.30  # the down-seed's ~-40% annualized survives
