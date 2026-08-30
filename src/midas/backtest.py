@@ -164,6 +164,7 @@ class _SimState:
     last_targets: dict[str, float] = field(default_factory=dict)
     deferred_pending: dict[str, float] = field(default_factory=dict)  # deferred input, for end-state accounting
     deferred_activated: set[str] = field(default_factory=set)
+    prior_bar: tuple[date, float] | None = None  # last bar of the previous window, when resumed
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -552,16 +553,26 @@ class BacktestEngine:
         state.positions = {ticker: sum(lot.shares for lot in lots) for ticker, lots in state.lots.items()}
         state.high_water_marks = dict(carried.high_water_marks)
         state.bh_positions = dict(carried.bh_positions)
-        first_dates = self._first_data_dates(price_data, start)
-        starting_value = state.cash
-        for ticker, shares in state.positions.items():
-            if shares <= 0:
-                continue
-            if ticker in first_dates:
-                entry_df = price_data[ticker][price_data[ticker].index >= start]
-                starting_value += shares * float(entry_df["close"].iloc[0])
-            else:
-                starting_value += sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
+        if isinstance(carried.pending, _Decision):
+            # The boundary day's decision fills on this window's first bar —
+            # dropping it would delete one trade per fold under lagged modes.
+            state.pending = carried.pending
+        if carried.last_bar is not None:
+            # The window's first return is measured from the prior close, so
+            # no fold loses its day-one return.
+            state.prior_bar = carried.last_bar
+            starting_value = carried.last_bar[1]
+        else:
+            first_dates = self._first_data_dates(price_data, start)
+            starting_value = state.cash
+            for ticker, shares in state.positions.items():
+                if shares <= 0:
+                    continue
+                if ticker in first_dates:
+                    entry_df = price_data[ticker][price_data[ticker].index >= start]
+                    starting_value += shares * float(entry_df["close"].iloc[0])
+                else:
+                    starting_value += sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
         state.starting_value = starting_value
         state.twr_base_value = starting_value
         state.peak_value = max(carried.peak_value, starting_value)
@@ -1182,7 +1193,8 @@ class BacktestEngine:
         cagr = compute_cagr(starting_val, final_value, total_days)
         # Every risk figure reads the inflow-adjusted series: a deposit is not
         # return, and measured on the raw curve it would also mask drawdown depth.
-        adjusted_returns = compute_inflow_adjusted_returns(equity_curve, state.inflows)
+        curve_for_returns = ([state.prior_bar] if state.prior_bar is not None else []) + equity_curve
+        adjusted_returns = compute_inflow_adjusted_returns(curve_for_returns, state.inflows)
         max_drawdown = compute_max_drawdown(adjusted_returns)
         sharpe = compute_sharpe(adjusted_returns)
         sortino = compute_sortino(adjusted_returns)
@@ -1235,6 +1247,8 @@ class BacktestEngine:
                 },
                 bh_positions=state.bh_positions,
                 infusion_next_date=(portfolio.cash_infusion.next_date if portfolio.cash_infusion else None),
+                pending=state.pending,
+                last_bar=(equity_curve[-1] if equity_curve else state.prior_bar),
             ),
             ulcer_index=round(ulcer, 6),
             block_returns=[round(block, 6) for block in block_returns],

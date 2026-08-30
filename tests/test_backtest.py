@@ -2326,3 +2326,35 @@ def test_end_state_reflects_final_book() -> None:
     net_traded = sum(t.shares if t.direction.value == "BUY" else -t.shares for t in result.trades if t.ticker == "AAA")
     assert lot_shares == pytest.approx(20 + net_traded)
     assert state.infusion_next_date is not None and state.infusion_next_date > days[50]
+
+
+def test_chained_run_equals_continuous_across_many_boundaries() -> None:
+    """Adversarial resume fidelity: any boundary, not just a quiet one.
+
+    Under next_open a decision made on the boundary day fills the next
+    bar — the carried state must include that pending decision, and the
+    resumed window's first return must be measured from the prior close,
+    or trades drop and every fold path loses its first day.
+    """
+    portfolio, price_data, days = _carry_fixture()
+    start, end = days[0], days[-1]
+    continuous = _carry_engine().run(portfolio, price_data, start, end)
+
+    def key(t):
+        return (t.date, t.ticker, t.direction, round(t.shares, 6), round(t.price, 6))
+
+    for mid_idx in (60, 109, 123, 130, 186):
+        first = _carry_engine().run(portfolio, price_data, start, days[mid_idx - 1])
+        assert first.end_state is not None
+        second = _carry_engine().run(portfolio, price_data, days[mid_idx], end, carried=first.end_state)
+
+        chained_trades = [key(t) for t in first.trades + second.trades]
+        assert chained_trades == [key(t) for t in continuous.trades], f"trades diverge at boundary {mid_idx}"
+
+        chained_returns = first.daily_returns + second.daily_returns
+        assert len(chained_returns) == len(continuous.daily_returns), f"path length wrong at {mid_idx}"
+        assert chained_returns == pytest.approx(continuous.daily_returns, abs=1e-9), f"returns at {mid_idx}"
+
+        assert first.twr is not None and second.twr is not None and continuous.twr is not None
+        chained_twr = (1 + first.twr) * (1 + second.twr) - 1
+        assert chained_twr == pytest.approx(continuous.twr, abs=2e-4), f"TWR at boundary {mid_idx}"

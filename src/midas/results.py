@@ -41,6 +41,11 @@ class CarriedState:
     deferred: dict[str, float]
     bh_positions: dict[str, float]
     infusion_next_date: date | None
+    # In-memory only (never serialized): the boundary-day decision awaiting
+    # its next-open fill, and the final recorded bar so the resumed window's
+    # first return is measured from the prior close.
+    pending: object | None = None
+    last_bar: tuple[date, float] | None = None
 
 
 @dataclass
