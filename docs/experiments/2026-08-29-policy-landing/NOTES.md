@@ -52,7 +52,9 @@ midas sweep -p sample-portfolios/stonks.yaml -s exp1-stonks-strategies.yaml \
 Logs: `exp1-etf.log`, `exp1-stonks.log` (committed with results).
 
 **Results** (2026-08-30; logs `exp1-etf.log`, `exp1-stonks.log`;
-per-cell data `exp1-*-strategies.sweep-cells.jsonl`)
+per-cell data was captured to local `exp1-*-strategies.sweep-cells.jsonl`
+sidecars — untracked working files; the per-seed numbers below are
+transcribed from them)
 
 etf (after-tax fold mean is the criterion column):
 
