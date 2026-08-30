@@ -14,9 +14,12 @@ adoption does not lose to frozen on after-tax OOS CAGR on both baskets.
   hold) vs `default` (10th-percentile fold-midrank arm + drawdown-breach
   arm, degradation-gated adoption).
 - Policy under test (both variants, both baskets): `objective: sharpe`,
-  `budget: 2000`, `restarts: 4`, `base_seed: 42`, `deployment: best`,
+  `budget: 1000`, `restarts: 4`, `base_seed: 42`, `deployment: best`,
   `cadence_days: 63`. `deployment: best` isolates the re-fit question;
-  ensemble is Experiment 2.
+  ensemble is Experiment 2. Budget was lowered from 2000 to 1000 mid-run
+  on 2026-08-29 after watching training bests plateau well before 1000
+  trials — before any OOS comparison existed; the run restarted from
+  scratch at the new budget.
 - Baskets: `sample-portfolios/etf.yaml` (10 ETFs, 35.8/18.8 tax rates)
   and `sample-portfolios/stonks.yaml` (11 stocks, 37/20 tax rates), each
   with its own optimized globals/exits (copied from the deployed
