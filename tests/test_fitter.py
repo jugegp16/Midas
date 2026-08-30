@@ -171,3 +171,27 @@ def test_ensemble_underfill_is_reported() -> None:
         assert any("ensemble under-filled" in line for line in logs), logs
     else:
         pytest.skip("dedupe kept ensemble full; under-fill not reachable with this fixture")
+
+
+def test_fit_ignores_tickers_not_yet_listed() -> None:
+    """A holding that lists after as_of must not break the search.
+
+    Real baskets hold late-listed tickers (a 2024 ETF in a 2016-start
+    validation); the fit searches what was tradeable strictly before
+    as_of, and the OOS engine picks the newcomer up when it lists.
+    """
+    portfolio, price_data = _data()
+    price_data["LATER"] = pd.DataFrame(
+        {"open": [], "high": [], "low": [], "close": [], "volume": []},
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    result = fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        SMALL,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+    )
+    assert result.members

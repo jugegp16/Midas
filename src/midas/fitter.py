@@ -67,8 +67,16 @@ def fit_as_of(
     ``policy.deployment``: the single best trial across restarts, or a
     stratified, behaviorally deduplicated top-K/R ensemble.
     """
-    start = min(min(df.index) for df in price_data.values())
     end = as_of - timedelta(days=1)
+    # Search only what was tradeable strictly before as_of: a late-listed
+    # holding (an ETF younger than the validation range) contributes no
+    # bars to fit on, and the OOS engine picks it up when it lists.
+    searchable = {ticker: df for ticker, df in price_data.items() if _listed_before(df, as_of)}
+    if not searchable:
+        msg = f"no ticker has data before {as_of.isoformat()} — nothing to fit on"
+        raise ValueError(msg)
+    price_data = searchable
+    start = min(min(df.index) for df in price_data.values())
     enqueue = [flatten_params(member) for member in incumbent.members] if incumbent is not None else None
     record_top = policy.ensemble_size if policy.deployment == "ensemble" else 0
 
@@ -229,3 +237,12 @@ def _target_series(
     )
     result = engine.run(portfolio, price_data, start, end)
     return result.target_series
+
+
+def _listed_before(df: pd.DataFrame, as_of: date) -> bool:
+    """Whether the frame has at least one bar strictly before *as_of*."""
+    if not len(df):
+        return False
+    first = df.index[0]
+    first_date = first.date() if isinstance(first, pd.Timestamp) else first
+    return bool(first_date < as_of)
