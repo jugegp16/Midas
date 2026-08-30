@@ -304,3 +304,34 @@ def test_run_sweep_threads_progress_logging_through_validate() -> None:
     assert "cell 1/2" in text
     assert "cell 2/2" in text
     assert "remaining" in text  # estimate appears once a cell has completed
+
+
+def test_run_sweep_checkpoints_each_cell() -> None:
+    """A crash at 95% of a multi-hour sweep must not lose finished cells."""
+    from datetime import date
+
+    from midas.models import AllocationConstraints, Holding, PortfolioConfig
+    from midas.policy import Policy
+    from midas.sweep import run_sweep
+
+    checkpoints: list[dict] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=1, cost_basis=1.0)], available_cash=1.0)
+    run_sweep(
+        {"etf": portfolio},
+        {"etf": {}},
+        date(2016, 1, 4),
+        date(2024, 6, 28),
+        Policy(objective="gross"),
+        "objective",
+        [],
+        seeds=2,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        validate=_stub_validate_factory({("gross", 42): 0.11, ("gross", 43): 0.12}),
+        checkpoint_fn=checkpoints.append,
+    )
+    assert len(checkpoints) == 2
+    assert checkpoints[0]["variant"] == "base"
+    assert checkpoints[0]["seed_base"] == 42
+    assert checkpoints[0]["aggregate_oos_cagr"] == 0.11
+    assert "daily_returns" not in checkpoints[0]  # summary numbers, not bulk paths

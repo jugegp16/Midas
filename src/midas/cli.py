@@ -1480,6 +1480,14 @@ def sweep(
     )
 
     try:
+        import json
+
+        checkpoint_path = strategies_path.with_name(f"{strategies_path.stem}.sweep-cells.jsonl")
+
+        def _checkpoint(cell: dict[str, object]) -> None:
+            with checkpoint_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(cell) + "\n")
+
         report = run_sweep(
             ports,
             price_by_port,
@@ -1497,6 +1505,7 @@ def sweep(
             strategy_names=strategy_names,
             log_fn=print_status,
             holdout_trimmed_to=holdout_boundary,
+            checkpoint_fn=_checkpoint,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc

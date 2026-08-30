@@ -247,6 +247,7 @@ def run_sweep(
     log_fn: Callable[[str], None] | None = None,
     validate: Callable[..., Baselines] = validate_policy,
     holdout_trimmed_to: date | None = None,
+    checkpoint_fn: Callable[[dict[str, object]], None] | None = None,
 ) -> SweepReport:
     """Fan the validator over variants x portfolios x seed replications.
 
@@ -309,6 +310,24 @@ def run_sweep(
                         after_tax_mean=(sum(after_tax) / len(after_tax)) if after_tax else None,
                     )
                 )
+                if checkpoint_fn is not None:
+                    # Summary numbers per finished cell — a crash late in a
+                    # multi-hour sweep must not lose the cells already done.
+                    cell = cells[-1]
+                    checkpoint_fn(
+                        {
+                            "variant": cell.variant,
+                            "portfolio": cell.portfolio,
+                            "seed_base": cell.seed_base,
+                            "aggregate_oos_cagr": cell.aggregate_oos_cagr,
+                            "oos_sharpe": cell.oos_sharpe,
+                            "n_folds": cell.n_folds,
+                            "after_tax_mean": cell.after_tax_mean,
+                            "fold_returns_raw": [f.return_raw for f in baselines.folds],
+                            "fold_after_tax": [f.after_tax_return_raw for f in baselines.folds],
+                            "fold_adopted": [f.adopted for f in baselines.folds],
+                        }
+                    )
     return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to)
 
 
