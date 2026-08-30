@@ -205,3 +205,27 @@ def test_trigger_and_monitor_agree_on_the_rank() -> None:
     )
     lines, _breached = monitor_lines(baselines, window, current_input_hash="i" * 64)
     assert any("p17 of validation folds" in line for line in lines), lines
+
+
+def test_frozen_policy_fits_only_fold_zero(monkeypatch) -> None:
+    """With the trigger disabled a challenger can never be adopted — the
+    validator must not spend a full search budget producing a discarded
+    fit every fold (it doubles the cost of the hold-vs-refit experiment)."""
+    import midas.validator as validator_module
+
+    calls: list[object] = []
+    real_fit = validator_module.fit_as_of
+
+    def counting_fit(*args, **kwargs):
+        calls.append(1)
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(validator_module, "fit_as_of", counting_fit)
+    import dataclasses
+
+    portfolio, price_data = _val_data()
+    frozen = dataclasses.replace(TINY, adopt_trigger=AdoptTrigger.never())
+    baselines = _validate(portfolio, price_data, frozen)
+    assert len(baselines.folds) >= 2
+    assert len(calls) == 1  # fold 0 only
+    assert all(fold.adopted == (fold.fold == baselines.folds[0].fold) for fold in baselines.folds)

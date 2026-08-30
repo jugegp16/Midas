@@ -1,0 +1,5 @@
+holdout: withholding 2024-08-27 → 2026-08-27 from the sweep
+Fetching data for XLU, ETH, VDE, VFH, SCHA, IBIT, SMH, SCHX, QQQM, VOO (with 
+160-day warmup buffer from 2015-07-28)...
+preflight: 2 variant(s) x 1 portfolio(s) x 2 seed(s) x ~14 fold(s) x 4 restart(s) x 2000 trials ≈ 448,000 trials
+sweep: none on etf, seed base 42

@@ -1,0 +1,36 @@
+# Landing Experiment 1 (hold vs re-fit), etf basket.
+# Globals/exits copied from etf-optimized-strategy.yaml; entries+weights
+# are searched by the policy, so listed params are the incumbent seed.
+softmax_temperature: 1.0
+min_buy_delta: 0.04
+max_position_pct: 0.42
+min_cash_pct: 0.05
+forecast_scaling: quantile
+strategies:
+- name: Momentum
+  weight: 0.5
+  params:
+    window: 47
+    momentum_scale: 0.07
+- name: MeanReversion
+  weight: 1.0
+  params:
+    window: 10
+    threshold: 0.13
+- name: ProfitTaking
+  params:
+    gain_threshold: 0.58
+- name: ChandelierStop
+  params:
+    window: 12
+    multiplier: 4.75
+policy:
+  objective: sharpe
+  budget: 2000
+  restarts: 4
+  base_seed: 42
+  deployment: best
+  cadence_days: 63
+  adopt_trigger:
+    oos_percentile_below: 10
+    drawdown_breach: true

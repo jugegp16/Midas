@@ -157,20 +157,25 @@ def validate_policy(
         test_end = days[min(end_boundary, len(days)) - 1] if fold_number < len(boundaries) else days[-1]
         log(f"Fold {fold_number}/{len(boundaries)}: test {test_start} → {test_end}")
 
-        challenger = fit_as_of(
-            portfolio,
-            price_data,
-            test_start,
-            policy,
-            constraints=constraints,
-            exit_params=exit_params,
-            risk_config=risk_config,
-            min_cash_pct=min_cash_pct,
-            forecast_scaling=forecast_scaling,
-            tax_config=tax_config,
-            incumbent=deployed,
-            strategy_names=strategy_names,
-        )
+        if deployed is not None and policy.adopt_trigger.disabled:
+            # Frozen policy: a challenger can never be adopted, so the fit
+            # would be discarded unread — skip the search entirely.
+            challenger = deployed
+        else:
+            challenger = fit_as_of(
+                portfolio,
+                price_data,
+                test_start,
+                policy,
+                constraints=constraints,
+                exit_params=exit_params,
+                risk_config=risk_config,
+                min_cash_pct=min_cash_pct,
+                forecast_scaling=forecast_scaling,
+                tax_config=tax_config,
+                incumbent=deployed,
+                strategy_names=strategy_names,
+            )
         adopted = deployed is None or trigger_fired(completed[:-1], completed[-1].daily_returns, policy.adopt_trigger)
         if adopted:
             deployed = challenger
