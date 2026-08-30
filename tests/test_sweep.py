@@ -335,3 +335,51 @@ def test_run_sweep_checkpoints_each_cell() -> None:
     assert checkpoints[0]["seed_base"] == 42
     assert checkpoints[0]["aggregate_oos_cagr"] == 0.11
     assert "daily_returns" not in checkpoints[0]  # summary numbers, not bulk paths
+
+
+def test_summary_reports_paired_differences() -> None:
+    """Same-seed variants share search trials, so pairing removes search
+    luck — the unpaired spread verdict wildly understates power for
+    two-variant sweeps and must not be the only readout."""
+    from midas.sweep import SweepCell, SweepReport
+
+    cells = []
+    for variant, cagrs, taxes in (
+        ("best", [0.085, 0.095, 0.114], [0.0186, 0.0213, 0.0247]),
+        ("ensemble", [0.082, 0.091, 0.100], [0.0197, 0.0204, 0.0218]),
+    ):
+        for i, (cagr, tax) in enumerate(zip(cagrs, taxes, strict=True)):
+            cells.append(
+                SweepCell(
+                    variant=variant,
+                    portfolio="etf",
+                    seed_base=42 + i,
+                    aggregate_oos_cagr=cagr,
+                    oos_sharpe=1.0,
+                    daily_returns=[0.001] * 50,
+                    n_folds=13,
+                    after_tax_mean=tax,
+                )
+            )
+    text = "\n".join(SweepReport(cells=cells, holdout_trimmed_to=None).summary_lines())
+    assert "paired" in text
+    assert "3/3" in text  # best wins every same-seed pair on CAGR
+    assert "+0.70%" in text  # mean paired CAGR difference (0.3+0.4+1.4)/3 pts
+
+
+def test_no_paired_line_for_single_variant() -> None:
+    from midas.sweep import SweepCell, SweepReport
+
+    cells = [
+        SweepCell(
+            variant="base",
+            portfolio="p",
+            seed_base=42,
+            aggregate_oos_cagr=0.1,
+            oos_sharpe=1.0,
+            daily_returns=[0.001] * 50,
+            n_folds=13,
+        )
+    ]
+    text = "\n".join(SweepReport(cells=cells, holdout_trimmed_to=None).summary_lines())
+    assert "paired" not in text

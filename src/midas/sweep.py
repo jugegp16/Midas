@@ -173,6 +173,39 @@ class SweepReport:
                     f"spread {spread:.2%}{ci}{after_tax}  DSR~{dsr:.2f} (proxy: trials from folds, "
                     f"SR var from seeds)"
                 )
+        if len(variants) == 2:
+            first, second = variants
+            for portfolio in portfolios:
+                by_seed_first = {c.seed_base: c for c in self.cells if c.portfolio == portfolio and c.variant == first}
+                by_seed_second = {
+                    c.seed_base: c for c in self.cells if c.portfolio == portfolio and c.variant == second
+                }
+                common = sorted(set(by_seed_first) & set(by_seed_second))
+                if len(common) < 2:
+                    continue
+                # Same-seed variants run the same search trials (seeds derive
+                # from base_seed and date), so pairing removes search luck —
+                # far more power than the unpaired spread verdict.
+                diffs = [by_seed_first[s].aggregate_oos_cagr - by_seed_second[s].aggregate_oos_cagr for s in common]
+                n = len(diffs)
+                mean_diff = sum(diffs) / n
+                sd = math.sqrt(sum((d - mean_diff) ** 2 for d in diffs) / (n - 1))
+                se = sd / math.sqrt(n)
+                wins = sum(1 for d in diffs if d > 0)
+                tax_diffs = []
+                for seed in common:
+                    tax_a = by_seed_first[seed].after_tax_mean
+                    tax_b = by_seed_second[seed].after_tax_mean
+                    if tax_a is not None and tax_b is not None:
+                        tax_diffs.append(tax_a - tax_b)
+                tax_note = ""
+                if tax_diffs:
+                    tax_mean = sum(tax_diffs) / len(tax_diffs)
+                    tax_note = f"; after-tax {tax_mean:+.2%}"
+                lines.append(
+                    f"{portfolio}: paired {first}-{second} (same-seed searches share trials): "
+                    f"CAGR {mean_diff:+.2%} ± {se:.2%} SE, {wins}/{n} pairs favor {first}{tax_note}"
+                )
         for portfolio in portfolios:
             variant_means = [means[(portfolio, v)] for v in variants if (portfolio, v) in means]
             if len(variant_means) > 1:
