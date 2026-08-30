@@ -217,7 +217,7 @@ Fold 12/13: test 2023-12-12 → 2024-03-13
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
 Fold 13/13: test 2024-03-14 → 2024-08-27
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
-cell 1/4 done in 5m (elapsed 5m; ~15m remaining at the mean cell pace — frozen 
+cell 1/4 done in 3m (elapsed 3m; ~10m remaining at the mean cell pace — frozen 
 cells run far faster than re-fit cells)
 sweep: none on stonks, seed base 43 [cell 2/4]
 Fold 1/13: test 2021-03-12 → 2021-06-10
@@ -434,7 +434,7 @@ Fold 12/13: test 2023-12-12 → 2024-03-13
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
 Fold 13/13: test 2024-03-14 → 2024-08-27
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
-cell 2/4 done in 4m (elapsed 9m; ~9m remaining at the mean cell pace — frozen 
+cell 2/4 done in 3m (elapsed 7m; ~7m remaining at the mean cell pace — frozen 
 cells run far faster than re-fit cells)
 sweep: default on stonks, seed base 42 [cell 3/4]
 Fold 1/13: test 2021-03-12 → 2021-06-10
@@ -2907,7 +2907,7 @@ Optimization complete — best sharpe: 1.51
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
   Max drawdown: 25.87% | Sharpe: 1.51 | Win rate: 42.58%
 max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
-cell 3/4 done in 60m (elapsed 70m; ~23m remaining at the mean cell pace — frozen
+cell 3/4 done in 56m (elapsed 62m; ~21m remaining at the mean cell pace — frozen
 cells run far faster than re-fit cells)
 sweep: default on stonks, seed base 43 [cell 4/4]
 Fold 1/13: test 2021-03-12 → 2021-06-10
@@ -3549,3 +3549,1839 @@ Optimizing 2 strategies over 2015-07-28 to 2021-12-08
   [ 37%] 375/1000 trials — best sharpe: 1.85
   [ 40%] 400/1000 trials — best sharpe: 1.89
   [ 42%] 425/1000 trials — best sharpe: 1.89
+  [ 45%] 450/1000 trials — best sharpe: 1.89
+  [ 47%] 475/1000 trials — best sharpe: 1.89
+  [ 50%] 500/1000 trials — best sharpe: 1.89
+  [ 52%] 525/1000 trials — best sharpe: 1.89
+  [ 55%] 550/1000 trials — best sharpe: 1.89
+  [ 57%] 575/1000 trials — best sharpe: 1.89
+  [ 60%] 600/1000 trials — best sharpe: 1.89
+  [ 62%] 625/1000 trials — best sharpe: 1.89
+  [ 65%] 650/1000 trials — best sharpe: 1.89
+  [ 67%] 675/1000 trials — best sharpe: 1.89
+  [ 70%] 700/1000 trials — best sharpe: 1.89
+  [ 72%] 725/1000 trials — best sharpe: 1.89
+  [ 75%] 750/1000 trials — best sharpe: 1.89
+  [ 77%] 775/1000 trials — best sharpe: 1.89
+  [ 80%] 800/1000 trials — best sharpe: 1.89
+  [ 82%] 825/1000 trials — best sharpe: 1.89
+  [ 85%] 850/1000 trials — best sharpe: 1.89
+  [ 87%] 875/1000 trials — best sharpe: 1.89
+  [ 90%] 900/1000 trials — best sharpe: 1.89
+  [ 92%] 925/1000 trials — best sharpe: 1.89
+  [ 95%] 950/1000 trials — best sharpe: 1.89
+  [ 97%] 975/1000 trials — best sharpe: 1.89
+  [100%] 1000/1000 trials — best sharpe: 1.89
+Optimization complete — best sharpe: 1.89
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 25.12% | Sharpe: 1.89 | Win rate: 53.47%
+restart 3/4 (as of 2021-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2021-12-08
+  objective: sharpe | train window: 2015-07-28 → 2021-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.66
+  [  5%] 50/1000 trials — best sharpe: 1.70
+  [  7%] 75/1000 trials — best sharpe: 1.70
+  [ 10%] 100/1000 trials — best sharpe: 1.70
+  [ 12%] 125/1000 trials — best sharpe: 1.70
+  [ 15%] 150/1000 trials — best sharpe: 1.78
+  [ 17%] 175/1000 trials — best sharpe: 1.78
+  [ 20%] 200/1000 trials — best sharpe: 1.78
+  [ 22%] 225/1000 trials — best sharpe: 1.78
+  [ 25%] 250/1000 trials — best sharpe: 1.78
+  [ 27%] 275/1000 trials — best sharpe: 1.78
+  [ 30%] 300/1000 trials — best sharpe: 1.86
+  [ 32%] 325/1000 trials — best sharpe: 1.86
+  [ 35%] 350/1000 trials — best sharpe: 1.86
+  [ 37%] 375/1000 trials — best sharpe: 1.86
+  [ 40%] 400/1000 trials — best sharpe: 1.86
+  [ 42%] 425/1000 trials — best sharpe: 1.86
+  [ 45%] 450/1000 trials — best sharpe: 1.86
+  [ 47%] 475/1000 trials — best sharpe: 1.86
+  [ 50%] 500/1000 trials — best sharpe: 1.86
+  [ 52%] 525/1000 trials — best sharpe: 1.86
+  [ 55%] 550/1000 trials — best sharpe: 1.86
+  [ 57%] 575/1000 trials — best sharpe: 1.86
+  [ 60%] 600/1000 trials — best sharpe: 1.86
+  [ 62%] 625/1000 trials — best sharpe: 1.86
+  [ 65%] 650/1000 trials — best sharpe: 1.86
+  [ 67%] 675/1000 trials — best sharpe: 1.86
+  [ 70%] 700/1000 trials — best sharpe: 1.86
+  [ 72%] 725/1000 trials — best sharpe: 1.86
+  [ 75%] 750/1000 trials — best sharpe: 1.86
+  [ 77%] 775/1000 trials — best sharpe: 1.86
+  [ 80%] 800/1000 trials — best sharpe: 1.86
+  [ 82%] 825/1000 trials — best sharpe: 1.86
+  [ 85%] 850/1000 trials — best sharpe: 1.86
+  [ 87%] 875/1000 trials — best sharpe: 1.86
+  [ 90%] 900/1000 trials — best sharpe: 1.86
+  [ 92%] 925/1000 trials — best sharpe: 1.86
+  [ 95%] 950/1000 trials — best sharpe: 1.86
+  [ 97%] 975/1000 trials — best sharpe: 1.86
+  [100%] 1000/1000 trials — best sharpe: 1.86
+Optimization complete — best sharpe: 1.86
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 22.57% | Sharpe: 1.86 | Win rate: 55.41%
+restart 4/4 (as of 2021-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2021-12-08
+  objective: sharpe | train window: 2015-07-28 → 2021-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.61
+  [  5%] 50/1000 trials — best sharpe: 1.67
+  [  7%] 75/1000 trials — best sharpe: 1.67
+  [ 10%] 100/1000 trials — best sharpe: 1.75
+  [ 12%] 125/1000 trials — best sharpe: 1.75
+  [ 15%] 150/1000 trials — best sharpe: 1.75
+  [ 17%] 175/1000 trials — best sharpe: 1.75
+  [ 20%] 200/1000 trials — best sharpe: 1.75
+  [ 22%] 225/1000 trials — best sharpe: 1.75
+  [ 25%] 250/1000 trials — best sharpe: 1.75
+  [ 27%] 275/1000 trials — best sharpe: 1.75
+  [ 30%] 300/1000 trials — best sharpe: 1.75
+  [ 32%] 325/1000 trials — best sharpe: 1.75
+  [ 35%] 350/1000 trials — best sharpe: 1.75
+  [ 37%] 375/1000 trials — best sharpe: 1.79
+  [ 40%] 400/1000 trials — best sharpe: 1.87
+  [ 42%] 425/1000 trials — best sharpe: 1.87
+  [ 45%] 450/1000 trials — best sharpe: 1.87
+  [ 47%] 475/1000 trials — best sharpe: 1.87
+  [ 50%] 500/1000 trials — best sharpe: 1.87
+  [ 52%] 525/1000 trials — best sharpe: 1.87
+  [ 55%] 550/1000 trials — best sharpe: 1.87
+  [ 57%] 575/1000 trials — best sharpe: 1.87
+  [ 60%] 600/1000 trials — best sharpe: 1.89
+  [ 62%] 625/1000 trials — best sharpe: 1.89
+  [ 65%] 650/1000 trials — best sharpe: 1.89
+  [ 67%] 675/1000 trials — best sharpe: 1.89
+  [ 70%] 700/1000 trials — best sharpe: 1.89
+  [ 72%] 725/1000 trials — best sharpe: 1.89
+  [ 75%] 750/1000 trials — best sharpe: 1.89
+  [ 77%] 775/1000 trials — best sharpe: 1.90
+  [ 80%] 800/1000 trials — best sharpe: 1.90
+  [ 82%] 825/1000 trials — best sharpe: 1.90
+  [ 85%] 850/1000 trials — best sharpe: 1.90
+  [ 87%] 875/1000 trials — best sharpe: 1.90
+  [ 90%] 900/1000 trials — best sharpe: 1.90
+  [ 92%] 925/1000 trials — best sharpe: 1.90
+  [ 95%] 950/1000 trials — best sharpe: 1.90
+  [ 97%] 975/1000 trials — best sharpe: 1.90
+  [100%] 1000/1000 trials — best sharpe: 1.90
+Optimization complete — best sharpe: 1.90
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 21.64% | Sharpe: 1.90 | Win rate: 53.52%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 5/13: test 2022-03-11 → 2022-06-09
+restart 1/4 (as of 2022-03-11)
+Optimizing 2 strategies over 2015-07-28 to 2022-03-10
+  objective: sharpe | train window: 2015-07-28 → 2022-03-10
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.74
+  [  5%] 50/1000 trials — best sharpe: 1.74
+  [  7%] 75/1000 trials — best sharpe: 1.74
+  [ 10%] 100/1000 trials — best sharpe: 1.74
+  [ 12%] 125/1000 trials — best sharpe: 1.74
+  [ 15%] 150/1000 trials — best sharpe: 1.74
+  [ 17%] 175/1000 trials — best sharpe: 1.74
+  [ 20%] 200/1000 trials — best sharpe: 1.74
+  [ 22%] 225/1000 trials — best sharpe: 1.74
+  [ 25%] 250/1000 trials — best sharpe: 1.74
+  [ 27%] 275/1000 trials — best sharpe: 1.74
+  [ 30%] 300/1000 trials — best sharpe: 1.74
+  [ 32%] 325/1000 trials — best sharpe: 1.74
+  [ 35%] 350/1000 trials — best sharpe: 1.74
+  [ 37%] 375/1000 trials — best sharpe: 1.74
+  [ 40%] 400/1000 trials — best sharpe: 1.74
+  [ 42%] 425/1000 trials — best sharpe: 1.74
+  [ 45%] 450/1000 trials — best sharpe: 1.74
+  [ 47%] 475/1000 trials — best sharpe: 1.74
+  [ 50%] 500/1000 trials — best sharpe: 1.74
+  [ 52%] 525/1000 trials — best sharpe: 1.74
+  [ 55%] 550/1000 trials — best sharpe: 1.74
+  [ 57%] 575/1000 trials — best sharpe: 1.74
+  [ 60%] 600/1000 trials — best sharpe: 1.74
+  [ 62%] 625/1000 trials — best sharpe: 1.74
+  [ 65%] 650/1000 trials — best sharpe: 1.74
+  [ 67%] 675/1000 trials — best sharpe: 1.74
+  [ 70%] 700/1000 trials — best sharpe: 1.74
+  [ 72%] 725/1000 trials — best sharpe: 1.74
+  [ 75%] 750/1000 trials — best sharpe: 1.74
+  [ 77%] 775/1000 trials — best sharpe: 1.74
+  [ 80%] 800/1000 trials — best sharpe: 1.74
+  [ 82%] 825/1000 trials — best sharpe: 1.74
+  [ 85%] 850/1000 trials — best sharpe: 1.74
+  [ 87%] 875/1000 trials — best sharpe: 1.74
+  [ 90%] 900/1000 trials — best sharpe: 1.74
+  [ 92%] 925/1000 trials — best sharpe: 1.74
+  [ 95%] 950/1000 trials — best sharpe: 1.74
+  [ 97%] 975/1000 trials — best sharpe: 1.74
+  [100%] 1000/1000 trials — best sharpe: 1.74
+Optimization complete — best sharpe: 1.74
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.06% | Sharpe: 1.74 | Win rate: 54.48%
+restart 2/4 (as of 2022-03-11)
+Optimizing 2 strategies over 2015-07-28 to 2022-03-10
+  objective: sharpe | train window: 2015-07-28 → 2022-03-10
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.47
+  [  5%] 50/1000 trials — best sharpe: 1.48
+  [  7%] 75/1000 trials — best sharpe: 1.63
+  [ 10%] 100/1000 trials — best sharpe: 1.63
+  [ 12%] 125/1000 trials — best sharpe: 1.63
+  [ 15%] 150/1000 trials — best sharpe: 1.63
+  [ 17%] 175/1000 trials — best sharpe: 1.63
+  [ 20%] 200/1000 trials — best sharpe: 1.63
+  [ 22%] 225/1000 trials — best sharpe: 1.63
+  [ 25%] 250/1000 trials — best sharpe: 1.63
+  [ 27%] 275/1000 trials — best sharpe: 1.63
+  [ 30%] 300/1000 trials — best sharpe: 1.63
+  [ 32%] 325/1000 trials — best sharpe: 1.63
+  [ 35%] 350/1000 trials — best sharpe: 1.63
+  [ 37%] 375/1000 trials — best sharpe: 1.63
+  [ 40%] 400/1000 trials — best sharpe: 1.67
+  [ 42%] 425/1000 trials — best sharpe: 1.67
+  [ 45%] 450/1000 trials — best sharpe: 1.67
+  [ 47%] 475/1000 trials — best sharpe: 1.68
+  [ 50%] 500/1000 trials — best sharpe: 1.68
+  [ 52%] 525/1000 trials — best sharpe: 1.68
+  [ 55%] 550/1000 trials — best sharpe: 1.68
+  [ 57%] 575/1000 trials — best sharpe: 1.68
+  [ 60%] 600/1000 trials — best sharpe: 1.68
+  [ 62%] 625/1000 trials — best sharpe: 1.68
+  [ 65%] 650/1000 trials — best sharpe: 1.68
+  [ 67%] 675/1000 trials — best sharpe: 1.68
+  [ 70%] 700/1000 trials — best sharpe: 1.68
+  [ 72%] 725/1000 trials — best sharpe: 1.68
+  [ 75%] 750/1000 trials — best sharpe: 1.68
+  [ 77%] 775/1000 trials — best sharpe: 1.68
+  [ 80%] 800/1000 trials — best sharpe: 1.68
+  [ 82%] 825/1000 trials — best sharpe: 1.68
+  [ 85%] 850/1000 trials — best sharpe: 1.68
+  [ 87%] 875/1000 trials — best sharpe: 1.68
+  [ 90%] 900/1000 trials — best sharpe: 1.68
+  [ 92%] 925/1000 trials — best sharpe: 1.68
+  [ 95%] 950/1000 trials — best sharpe: 1.68
+  [ 97%] 975/1000 trials — best sharpe: 1.68
+  [100%] 1000/1000 trials — best sharpe: 1.68
+Optimization complete — best sharpe: 1.68
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.39% | Sharpe: 1.68 | Win rate: 46.53%
+restart 3/4 (as of 2022-03-11)
+Optimizing 2 strategies over 2015-07-28 to 2022-03-10
+  objective: sharpe | train window: 2015-07-28 → 2022-03-10
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.53
+  [  5%] 50/1000 trials — best sharpe: 1.67
+  [  7%] 75/1000 trials — best sharpe: 1.67
+  [ 10%] 100/1000 trials — best sharpe: 1.67
+  [ 12%] 125/1000 trials — best sharpe: 1.67
+  [ 15%] 150/1000 trials — best sharpe: 1.67
+  [ 17%] 175/1000 trials — best sharpe: 1.68
+  [ 20%] 200/1000 trials — best sharpe: 1.68
+  [ 22%] 225/1000 trials — best sharpe: 1.68
+  [ 25%] 250/1000 trials — best sharpe: 1.68
+  [ 27%] 275/1000 trials — best sharpe: 1.68
+  [ 30%] 300/1000 trials — best sharpe: 1.68
+  [ 32%] 325/1000 trials — best sharpe: 1.68
+  [ 35%] 350/1000 trials — best sharpe: 1.68
+  [ 37%] 375/1000 trials — best sharpe: 1.68
+  [ 40%] 400/1000 trials — best sharpe: 1.68
+  [ 42%] 425/1000 trials — best sharpe: 1.68
+  [ 45%] 450/1000 trials — best sharpe: 1.68
+  [ 47%] 475/1000 trials — best sharpe: 1.73
+  [ 50%] 500/1000 trials — best sharpe: 1.73
+  [ 52%] 525/1000 trials — best sharpe: 1.73
+  [ 55%] 550/1000 trials — best sharpe: 1.73
+  [ 57%] 575/1000 trials — best sharpe: 1.78
+  [ 60%] 600/1000 trials — best sharpe: 1.78
+  [ 62%] 625/1000 trials — best sharpe: 1.78
+  [ 65%] 650/1000 trials — best sharpe: 1.78
+  [ 67%] 675/1000 trials — best sharpe: 1.78
+  [ 70%] 700/1000 trials — best sharpe: 1.78
+  [ 72%] 725/1000 trials — best sharpe: 1.78
+  [ 75%] 750/1000 trials — best sharpe: 1.78
+  [ 77%] 775/1000 trials — best sharpe: 1.78
+  [ 80%] 800/1000 trials — best sharpe: 1.78
+  [ 82%] 825/1000 trials — best sharpe: 1.78
+  [ 85%] 850/1000 trials — best sharpe: 1.78
+  [ 87%] 875/1000 trials — best sharpe: 1.78
+  [ 90%] 900/1000 trials — best sharpe: 1.78
+  [ 92%] 925/1000 trials — best sharpe: 1.78
+  [ 95%] 950/1000 trials — best sharpe: 1.78
+  [ 97%] 975/1000 trials — best sharpe: 1.78
+  [100%] 1000/1000 trials — best sharpe: 1.78
+Optimization complete — best sharpe: 1.78
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 28.66% | Sharpe: 1.78 | Win rate: 44.44%
+restart 4/4 (as of 2022-03-11)
+Optimizing 2 strategies over 2015-07-28 to 2022-03-10
+  objective: sharpe | train window: 2015-07-28 → 2022-03-10
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.49
+  [  5%] 50/1000 trials — best sharpe: 1.49
+  [  7%] 75/1000 trials — best sharpe: 1.64
+  [ 10%] 100/1000 trials — best sharpe: 1.64
+  [ 12%] 125/1000 trials — best sharpe: 1.65
+  [ 15%] 150/1000 trials — best sharpe: 1.65
+  [ 17%] 175/1000 trials — best sharpe: 1.65
+  [ 20%] 200/1000 trials — best sharpe: 1.69
+  [ 22%] 225/1000 trials — best sharpe: 1.69
+  [ 25%] 250/1000 trials — best sharpe: 1.69
+  [ 27%] 275/1000 trials — best sharpe: 1.69
+  [ 30%] 300/1000 trials — best sharpe: 1.73
+  [ 32%] 325/1000 trials — best sharpe: 1.73
+  [ 35%] 350/1000 trials — best sharpe: 1.73
+  [ 37%] 375/1000 trials — best sharpe: 1.73
+  [ 40%] 400/1000 trials — best sharpe: 1.73
+  [ 42%] 425/1000 trials — best sharpe: 1.73
+  [ 45%] 450/1000 trials — best sharpe: 1.73
+  [ 47%] 475/1000 trials — best sharpe: 1.73
+  [ 50%] 500/1000 trials — best sharpe: 1.73
+  [ 52%] 525/1000 trials — best sharpe: 1.73
+  [ 55%] 550/1000 trials — best sharpe: 1.73
+  [ 57%] 575/1000 trials — best sharpe: 1.73
+  [ 60%] 600/1000 trials — best sharpe: 1.73
+  [ 62%] 625/1000 trials — best sharpe: 1.73
+  [ 65%] 650/1000 trials — best sharpe: 1.73
+  [ 67%] 675/1000 trials — best sharpe: 1.73
+  [ 70%] 700/1000 trials — best sharpe: 1.73
+  [ 72%] 725/1000 trials — best sharpe: 1.73
+  [ 75%] 750/1000 trials — best sharpe: 1.73
+  [ 77%] 775/1000 trials — best sharpe: 1.73
+  [ 80%] 800/1000 trials — best sharpe: 1.73
+  [ 82%] 825/1000 trials — best sharpe: 1.74
+  [ 85%] 850/1000 trials — best sharpe: 1.74
+  [ 87%] 875/1000 trials — best sharpe: 1.74
+  [ 90%] 900/1000 trials — best sharpe: 1.74
+  [ 92%] 925/1000 trials — best sharpe: 1.74
+  [ 95%] 950/1000 trials — best sharpe: 1.74
+  [ 97%] 975/1000 trials — best sharpe: 1.74
+  [100%] 1000/1000 trials — best sharpe: 1.74
+Optimization complete — best sharpe: 1.74
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 25.32% | Sharpe: 1.74 | Win rate: 46.05%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 6/13: test 2022-06-10 → 2022-09-09
+restart 1/4 (as of 2022-06-10)
+Optimizing 2 strategies over 2015-07-28 to 2022-06-09
+  objective: sharpe | train window: 2015-07-28 → 2022-06-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.71
+  [  5%] 50/1000 trials — best sharpe: 1.71
+  [  7%] 75/1000 trials — best sharpe: 1.71
+  [ 10%] 100/1000 trials — best sharpe: 1.71
+  [ 12%] 125/1000 trials — best sharpe: 1.71
+  [ 15%] 150/1000 trials — best sharpe: 1.71
+  [ 17%] 175/1000 trials — best sharpe: 1.71
+  [ 20%] 200/1000 trials — best sharpe: 1.71
+  [ 22%] 225/1000 trials — best sharpe: 1.71
+  [ 25%] 250/1000 trials — best sharpe: 1.71
+  [ 27%] 275/1000 trials — best sharpe: 1.71
+  [ 30%] 300/1000 trials — best sharpe: 1.71
+  [ 32%] 325/1000 trials — best sharpe: 1.71
+  [ 35%] 350/1000 trials — best sharpe: 1.71
+  [ 37%] 375/1000 trials — best sharpe: 1.71
+  [ 40%] 400/1000 trials — best sharpe: 1.71
+  [ 42%] 425/1000 trials — best sharpe: 1.71
+  [ 45%] 450/1000 trials — best sharpe: 1.71
+  [ 47%] 475/1000 trials — best sharpe: 1.80
+  [ 50%] 500/1000 trials — best sharpe: 1.80
+  [ 52%] 525/1000 trials — best sharpe: 1.80
+  [ 55%] 550/1000 trials — best sharpe: 1.80
+  [ 57%] 575/1000 trials — best sharpe: 1.80
+  [ 60%] 600/1000 trials — best sharpe: 1.80
+  [ 62%] 625/1000 trials — best sharpe: 1.80
+  [ 65%] 650/1000 trials — best sharpe: 1.80
+  [ 67%] 675/1000 trials — best sharpe: 1.80
+  [ 70%] 700/1000 trials — best sharpe: 1.80
+  [ 72%] 725/1000 trials — best sharpe: 1.80
+  [ 75%] 750/1000 trials — best sharpe: 1.80
+  [ 77%] 775/1000 trials — best sharpe: 1.80
+  [ 80%] 800/1000 trials — best sharpe: 1.80
+  [ 82%] 825/1000 trials — best sharpe: 1.80
+  [ 85%] 850/1000 trials — best sharpe: 1.80
+  [ 87%] 875/1000 trials — best sharpe: 1.80
+  [ 90%] 900/1000 trials — best sharpe: 1.80
+  [ 92%] 925/1000 trials — best sharpe: 1.80
+  [ 95%] 950/1000 trials — best sharpe: 1.80
+  [ 97%] 975/1000 trials — best sharpe: 1.80
+  [100%] 1000/1000 trials — best sharpe: 1.80
+Optimization complete — best sharpe: 1.80
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.80 | Win rate: 44.44%
+restart 2/4 (as of 2022-06-10)
+Optimizing 2 strategies over 2015-07-28 to 2022-06-09
+  objective: sharpe | train window: 2015-07-28 → 2022-06-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.47
+  [  5%] 50/1000 trials — best sharpe: 1.47
+  [  7%] 75/1000 trials — best sharpe: 1.47
+  [ 10%] 100/1000 trials — best sharpe: 1.47
+  [ 12%] 125/1000 trials — best sharpe: 1.50
+  [ 15%] 150/1000 trials — best sharpe: 1.50
+  [ 17%] 175/1000 trials — best sharpe: 1.50
+  [ 20%] 200/1000 trials — best sharpe: 1.50
+  [ 22%] 225/1000 trials — best sharpe: 1.63
+  [ 25%] 250/1000 trials — best sharpe: 1.63
+  [ 27%] 275/1000 trials — best sharpe: 1.63
+  [ 30%] 300/1000 trials — best sharpe: 1.63
+  [ 32%] 325/1000 trials — best sharpe: 1.63
+  [ 35%] 350/1000 trials — best sharpe: 1.63
+  [ 37%] 375/1000 trials — best sharpe: 1.71
+  [ 40%] 400/1000 trials — best sharpe: 1.71
+  [ 42%] 425/1000 trials — best sharpe: 1.71
+  [ 45%] 450/1000 trials — best sharpe: 1.71
+  [ 47%] 475/1000 trials — best sharpe: 1.71
+  [ 50%] 500/1000 trials — best sharpe: 1.71
+  [ 52%] 525/1000 trials — best sharpe: 1.71
+  [ 55%] 550/1000 trials — best sharpe: 1.71
+  [ 57%] 575/1000 trials — best sharpe: 1.71
+  [ 60%] 600/1000 trials — best sharpe: 1.71
+  [ 62%] 625/1000 trials — best sharpe: 1.71
+  [ 65%] 650/1000 trials — best sharpe: 1.71
+  [ 67%] 675/1000 trials — best sharpe: 1.71
+  [ 70%] 700/1000 trials — best sharpe: 1.71
+  [ 72%] 725/1000 trials — best sharpe: 1.71
+  [ 75%] 750/1000 trials — best sharpe: 1.71
+  [ 77%] 775/1000 trials — best sharpe: 1.71
+  [ 80%] 800/1000 trials — best sharpe: 1.71
+  [ 82%] 825/1000 trials — best sharpe: 1.71
+  [ 85%] 850/1000 trials — best sharpe: 1.71
+  [ 87%] 875/1000 trials — best sharpe: 1.71
+  [ 90%] 900/1000 trials — best sharpe: 1.71
+  [ 92%] 925/1000 trials — best sharpe: 1.71
+  [ 95%] 950/1000 trials — best sharpe: 1.71
+  [ 97%] 975/1000 trials — best sharpe: 1.71
+  [100%] 1000/1000 trials — best sharpe: 1.71
+Optimization complete — best sharpe: 1.71
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 22.32% | Sharpe: 1.71 | Win rate: 51.59%
+restart 3/4 (as of 2022-06-10)
+Optimizing 2 strategies over 2015-07-28 to 2022-06-09
+  objective: sharpe | train window: 2015-07-28 → 2022-06-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.35
+  [  5%] 50/1000 trials — best sharpe: 1.54
+  [  7%] 75/1000 trials — best sharpe: 1.68
+  [ 10%] 100/1000 trials — best sharpe: 1.68
+  [ 12%] 125/1000 trials — best sharpe: 1.68
+  [ 15%] 150/1000 trials — best sharpe: 1.68
+  [ 17%] 175/1000 trials — best sharpe: 1.68
+  [ 20%] 200/1000 trials — best sharpe: 1.68
+  [ 22%] 225/1000 trials — best sharpe: 1.68
+  [ 25%] 250/1000 trials — best sharpe: 1.68
+  [ 27%] 275/1000 trials — best sharpe: 1.68
+  [ 30%] 300/1000 trials — best sharpe: 1.68
+  [ 32%] 325/1000 trials — best sharpe: 1.68
+  [ 35%] 350/1000 trials — best sharpe: 1.68
+  [ 37%] 375/1000 trials — best sharpe: 1.68
+  [ 40%] 400/1000 trials — best sharpe: 1.68
+  [ 42%] 425/1000 trials — best sharpe: 1.68
+  [ 45%] 450/1000 trials — best sharpe: 1.68
+  [ 47%] 475/1000 trials — best sharpe: 1.69
+  [ 50%] 500/1000 trials — best sharpe: 1.69
+  [ 52%] 525/1000 trials — best sharpe: 1.69
+  [ 55%] 550/1000 trials — best sharpe: 1.69
+  [ 57%] 575/1000 trials — best sharpe: 1.69
+  [ 60%] 600/1000 trials — best sharpe: 1.69
+  [ 62%] 625/1000 trials — best sharpe: 1.69
+  [ 65%] 650/1000 trials — best sharpe: 1.69
+  [ 67%] 675/1000 trials — best sharpe: 1.69
+  [ 70%] 700/1000 trials — best sharpe: 1.69
+  [ 72%] 725/1000 trials — best sharpe: 1.69
+  [ 75%] 750/1000 trials — best sharpe: 1.69
+  [ 77%] 775/1000 trials — best sharpe: 1.69
+  [ 80%] 800/1000 trials — best sharpe: 1.69
+  [ 82%] 825/1000 trials — best sharpe: 1.69
+  [ 85%] 850/1000 trials — best sharpe: 1.69
+  [ 87%] 875/1000 trials — best sharpe: 1.69
+  [ 90%] 900/1000 trials — best sharpe: 1.69
+  [ 92%] 925/1000 trials — best sharpe: 1.69
+  [ 95%] 950/1000 trials — best sharpe: 1.69
+  [ 97%] 975/1000 trials — best sharpe: 1.69
+  [100%] 1000/1000 trials — best sharpe: 1.69
+Optimization complete — best sharpe: 1.69
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.00% | Sharpe: 1.69 | Win rate: 43.05%
+restart 4/4 (as of 2022-06-10)
+Optimizing 2 strategies over 2015-07-28 to 2022-06-09
+  objective: sharpe | train window: 2015-07-28 → 2022-06-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.33
+  [  5%] 50/1000 trials — best sharpe: 1.42
+  [  7%] 75/1000 trials — best sharpe: 1.53
+  [ 10%] 100/1000 trials — best sharpe: 1.54
+  [ 12%] 125/1000 trials — best sharpe: 1.54
+  [ 15%] 150/1000 trials — best sharpe: 1.54
+  [ 17%] 175/1000 trials — best sharpe: 1.54
+  [ 20%] 200/1000 trials — best sharpe: 1.54
+  [ 22%] 225/1000 trials — best sharpe: 1.55
+  [ 25%] 250/1000 trials — best sharpe: 1.55
+  [ 27%] 275/1000 trials — best sharpe: 1.57
+  [ 30%] 300/1000 trials — best sharpe: 1.57
+  [ 32%] 325/1000 trials — best sharpe: 1.57
+  [ 35%] 350/1000 trials — best sharpe: 1.57
+  [ 37%] 375/1000 trials — best sharpe: 1.57
+  [ 40%] 400/1000 trials — best sharpe: 1.57
+  [ 42%] 425/1000 trials — best sharpe: 1.61
+  [ 45%] 450/1000 trials — best sharpe: 1.61
+  [ 47%] 475/1000 trials — best sharpe: 1.61
+  [ 50%] 500/1000 trials — best sharpe: 1.61
+  [ 52%] 525/1000 trials — best sharpe: 1.61
+  [ 55%] 550/1000 trials — best sharpe: 1.65
+  [ 57%] 575/1000 trials — best sharpe: 1.65
+  [ 60%] 600/1000 trials — best sharpe: 1.65
+  [ 62%] 625/1000 trials — best sharpe: 1.65
+  [ 65%] 650/1000 trials — best sharpe: 1.65
+  [ 67%] 675/1000 trials — best sharpe: 1.65
+  [ 70%] 700/1000 trials — best sharpe: 1.65
+  [ 72%] 725/1000 trials — best sharpe: 1.65
+  [ 75%] 750/1000 trials — best sharpe: 1.65
+  [ 77%] 775/1000 trials — best sharpe: 1.65
+  [ 80%] 800/1000 trials — best sharpe: 1.65
+  [ 82%] 825/1000 trials — best sharpe: 1.65
+  [ 85%] 850/1000 trials — best sharpe: 1.65
+  [ 87%] 875/1000 trials — best sharpe: 1.65
+  [ 90%] 900/1000 trials — best sharpe: 1.65
+  [ 92%] 925/1000 trials — best sharpe: 1.65
+  [ 95%] 950/1000 trials — best sharpe: 1.65
+  [ 97%] 975/1000 trials — best sharpe: 1.65
+  [100%] 1000/1000 trials — best sharpe: 1.65
+Optimization complete — best sharpe: 1.65
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.66% | Sharpe: 1.65 | Win rate: 41.56%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 7/13: test 2022-09-12 → 2022-12-08
+restart 1/4 (as of 2022-09-12)
+Optimizing 2 strategies over 2015-07-28 to 2022-09-11
+  objective: sharpe | train window: 2015-07-28 → 2022-09-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.69
+  [  5%] 50/1000 trials — best sharpe: 1.69
+  [  7%] 75/1000 trials — best sharpe: 1.69
+  [ 10%] 100/1000 trials — best sharpe: 1.69
+  [ 12%] 125/1000 trials — best sharpe: 1.69
+  [ 15%] 150/1000 trials — best sharpe: 1.69
+  [ 17%] 175/1000 trials — best sharpe: 1.69
+  [ 20%] 200/1000 trials — best sharpe: 1.69
+  [ 22%] 225/1000 trials — best sharpe: 1.69
+  [ 25%] 250/1000 trials — best sharpe: 1.69
+  [ 27%] 275/1000 trials — best sharpe: 1.69
+  [ 30%] 300/1000 trials — best sharpe: 1.69
+  [ 32%] 325/1000 trials — best sharpe: 1.69
+  [ 35%] 350/1000 trials — best sharpe: 1.69
+  [ 37%] 375/1000 trials — best sharpe: 1.69
+  [ 40%] 400/1000 trials — best sharpe: 1.69
+  [ 42%] 425/1000 trials — best sharpe: 1.69
+  [ 45%] 450/1000 trials — best sharpe: 1.69
+  [ 47%] 475/1000 trials — best sharpe: 1.69
+  [ 50%] 500/1000 trials — best sharpe: 1.69
+  [ 52%] 525/1000 trials — best sharpe: 1.69
+  [ 55%] 550/1000 trials — best sharpe: 1.69
+  [ 57%] 575/1000 trials — best sharpe: 1.69
+  [ 60%] 600/1000 trials — best sharpe: 1.69
+  [ 62%] 625/1000 trials — best sharpe: 1.69
+  [ 65%] 650/1000 trials — best sharpe: 1.69
+  [ 67%] 675/1000 trials — best sharpe: 1.69
+  [ 70%] 700/1000 trials — best sharpe: 1.69
+  [ 72%] 725/1000 trials — best sharpe: 1.69
+  [ 75%] 750/1000 trials — best sharpe: 1.69
+  [ 77%] 775/1000 trials — best sharpe: 1.69
+  [ 80%] 800/1000 trials — best sharpe: 1.69
+  [ 82%] 825/1000 trials — best sharpe: 1.69
+  [ 85%] 850/1000 trials — best sharpe: 1.69
+  [ 87%] 875/1000 trials — best sharpe: 1.69
+  [ 90%] 900/1000 trials — best sharpe: 1.69
+  [ 92%] 925/1000 trials — best sharpe: 1.69
+  [ 95%] 950/1000 trials — best sharpe: 1.69
+  [ 97%] 975/1000 trials — best sharpe: 1.69
+  [100%] 1000/1000 trials — best sharpe: 1.69
+Optimization complete — best sharpe: 1.69
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.69 | Win rate: 42.94%
+restart 2/4 (as of 2022-09-12)
+Optimizing 2 strategies over 2015-07-28 to 2022-09-11
+  objective: sharpe | train window: 2015-07-28 → 2022-09-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.32
+  [  5%] 50/1000 trials — best sharpe: 1.37
+  [  7%] 75/1000 trials — best sharpe: 1.38
+  [ 10%] 100/1000 trials — best sharpe: 1.38
+  [ 12%] 125/1000 trials — best sharpe: 1.45
+  [ 15%] 150/1000 trials — best sharpe: 1.45
+  [ 17%] 175/1000 trials — best sharpe: 1.47
+  [ 20%] 200/1000 trials — best sharpe: 1.47
+  [ 22%] 225/1000 trials — best sharpe: 1.47
+  [ 25%] 250/1000 trials — best sharpe: 1.47
+  [ 27%] 275/1000 trials — best sharpe: 1.47
+  [ 30%] 300/1000 trials — best sharpe: 1.47
+  [ 32%] 325/1000 trials — best sharpe: 1.48
+  [ 35%] 350/1000 trials — best sharpe: 1.49
+  [ 37%] 375/1000 trials — best sharpe: 1.49
+  [ 40%] 400/1000 trials — best sharpe: 1.49
+  [ 42%] 425/1000 trials — best sharpe: 1.56
+  [ 45%] 450/1000 trials — best sharpe: 1.58
+  [ 47%] 475/1000 trials — best sharpe: 1.58
+  [ 50%] 500/1000 trials — best sharpe: 1.58
+  [ 52%] 525/1000 trials — best sharpe: 1.58
+  [ 55%] 550/1000 trials — best sharpe: 1.58
+  [ 57%] 575/1000 trials — best sharpe: 1.58
+  [ 60%] 600/1000 trials — best sharpe: 1.58
+  [ 62%] 625/1000 trials — best sharpe: 1.58
+  [ 65%] 650/1000 trials — best sharpe: 1.58
+  [ 67%] 675/1000 trials — best sharpe: 1.58
+  [ 70%] 700/1000 trials — best sharpe: 1.58
+  [ 72%] 725/1000 trials — best sharpe: 1.58
+  [ 75%] 750/1000 trials — best sharpe: 1.58
+  [ 77%] 775/1000 trials — best sharpe: 1.58
+  [ 80%] 800/1000 trials — best sharpe: 1.58
+  [ 82%] 825/1000 trials — best sharpe: 1.58
+  [ 85%] 850/1000 trials — best sharpe: 1.58
+  [ 87%] 875/1000 trials — best sharpe: 1.58
+  [ 90%] 900/1000 trials — best sharpe: 1.58
+  [ 92%] 925/1000 trials — best sharpe: 1.58
+  [ 95%] 950/1000 trials — best sharpe: 1.58
+  [ 97%] 975/1000 trials — best sharpe: 1.58
+  [100%] 1000/1000 trials — best sharpe: 1.58
+Optimization complete — best sharpe: 1.58
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 20.60% | Sharpe: 1.58 | Win rate: 44.94%
+restart 3/4 (as of 2022-09-12)
+Optimizing 2 strategies over 2015-07-28 to 2022-09-11
+  objective: sharpe | train window: 2015-07-28 → 2022-09-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.33
+  [  5%] 50/1000 trials — best sharpe: 1.35
+  [  7%] 75/1000 trials — best sharpe: 1.37
+  [ 10%] 100/1000 trials — best sharpe: 1.37
+  [ 12%] 125/1000 trials — best sharpe: 1.46
+  [ 15%] 150/1000 trials — best sharpe: 1.46
+  [ 17%] 175/1000 trials — best sharpe: 1.46
+  [ 20%] 200/1000 trials — best sharpe: 1.46
+  [ 22%] 225/1000 trials — best sharpe: 1.46
+  [ 25%] 250/1000 trials — best sharpe: 1.46
+  [ 27%] 275/1000 trials — best sharpe: 1.51
+  [ 30%] 300/1000 trials — best sharpe: 1.51
+  [ 32%] 325/1000 trials — best sharpe: 1.51
+  [ 35%] 350/1000 trials — best sharpe: 1.51
+  [ 37%] 375/1000 trials — best sharpe: 1.51
+  [ 40%] 400/1000 trials — best sharpe: 1.51
+  [ 42%] 425/1000 trials — best sharpe: 1.51
+  [ 45%] 450/1000 trials — best sharpe: 1.51
+  [ 47%] 475/1000 trials — best sharpe: 1.53
+  [ 50%] 500/1000 trials — best sharpe: 1.53
+  [ 52%] 525/1000 trials — best sharpe: 1.53
+  [ 55%] 550/1000 trials — best sharpe: 1.56
+  [ 57%] 575/1000 trials — best sharpe: 1.56
+  [ 60%] 600/1000 trials — best sharpe: 1.56
+  [ 62%] 625/1000 trials — best sharpe: 1.56
+  [ 65%] 650/1000 trials — best sharpe: 1.56
+  [ 67%] 675/1000 trials — best sharpe: 1.56
+  [ 70%] 700/1000 trials — best sharpe: 1.56
+  [ 72%] 725/1000 trials — best sharpe: 1.56
+  [ 75%] 750/1000 trials — best sharpe: 1.56
+  [ 77%] 775/1000 trials — best sharpe: 1.56
+  [ 80%] 800/1000 trials — best sharpe: 1.56
+  [ 82%] 825/1000 trials — best sharpe: 1.56
+  [ 85%] 850/1000 trials — best sharpe: 1.56
+  [ 87%] 875/1000 trials — best sharpe: 1.56
+  [ 90%] 900/1000 trials — best sharpe: 1.56
+  [ 92%] 925/1000 trials — best sharpe: 1.56
+  [ 95%] 950/1000 trials — best sharpe: 1.56
+  [ 97%] 975/1000 trials — best sharpe: 1.61
+  [100%] 1000/1000 trials — best sharpe: 1.61
+Optimization complete — best sharpe: 1.61
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 25.37% | Sharpe: 1.61 | Win rate: 48.48%
+restart 4/4 (as of 2022-09-12)
+Optimizing 2 strategies over 2015-07-28 to 2022-09-11
+  objective: sharpe | train window: 2015-07-28 → 2022-09-09
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.37
+  [  5%] 50/1000 trials — best sharpe: 1.37
+  [  7%] 75/1000 trials — best sharpe: 1.37
+  [ 10%] 100/1000 trials — best sharpe: 1.45
+  [ 12%] 125/1000 trials — best sharpe: 1.45
+  [ 15%] 150/1000 trials — best sharpe: 1.45
+  [ 17%] 175/1000 trials — best sharpe: 1.45
+  [ 20%] 200/1000 trials — best sharpe: 1.45
+  [ 22%] 225/1000 trials — best sharpe: 1.45
+  [ 25%] 250/1000 trials — best sharpe: 1.45
+  [ 27%] 275/1000 trials — best sharpe: 1.45
+  [ 30%] 300/1000 trials — best sharpe: 1.45
+  [ 32%] 325/1000 trials — best sharpe: 1.48
+  [ 35%] 350/1000 trials — best sharpe: 1.48
+  [ 37%] 375/1000 trials — best sharpe: 1.48
+  [ 40%] 400/1000 trials — best sharpe: 1.48
+  [ 42%] 425/1000 trials — best sharpe: 1.48
+  [ 45%] 450/1000 trials — best sharpe: 1.48
+  [ 47%] 475/1000 trials — best sharpe: 1.48
+  [ 50%] 500/1000 trials — best sharpe: 1.48
+  [ 52%] 525/1000 trials — best sharpe: 1.48
+  [ 55%] 550/1000 trials — best sharpe: 1.48
+  [ 57%] 575/1000 trials — best sharpe: 1.48
+  [ 60%] 600/1000 trials — best sharpe: 1.48
+  [ 62%] 625/1000 trials — best sharpe: 1.48
+  [ 65%] 650/1000 trials — best sharpe: 1.48
+  [ 67%] 675/1000 trials — best sharpe: 1.48
+  [ 70%] 700/1000 trials — best sharpe: 1.48
+  [ 72%] 725/1000 trials — best sharpe: 1.48
+  [ 75%] 750/1000 trials — best sharpe: 1.48
+  [ 77%] 775/1000 trials — best sharpe: 1.48
+  [ 80%] 800/1000 trials — best sharpe: 1.48
+  [ 82%] 825/1000 trials — best sharpe: 1.48
+  [ 85%] 850/1000 trials — best sharpe: 1.49
+  [ 87%] 875/1000 trials — best sharpe: 1.49
+  [ 90%] 900/1000 trials — best sharpe: 1.49
+  [ 92%] 925/1000 trials — best sharpe: 1.49
+  [ 95%] 950/1000 trials — best sharpe: 1.49
+  [ 97%] 975/1000 trials — best sharpe: 1.49
+  [100%] 1000/1000 trials — best sharpe: 1.49
+Optimization complete — best sharpe: 1.49
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 24.69% | Sharpe: 1.49 | Win rate: 48.47%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 8/13: test 2022-12-09 → 2023-03-13
+restart 1/4 (as of 2022-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2022-12-08
+  objective: sharpe | train window: 2015-07-28 → 2022-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.66
+  [  5%] 50/1000 trials — best sharpe: 1.66
+  [  7%] 75/1000 trials — best sharpe: 1.66
+  [ 10%] 100/1000 trials — best sharpe: 1.66
+  [ 12%] 125/1000 trials — best sharpe: 1.66
+  [ 15%] 150/1000 trials — best sharpe: 1.66
+  [ 17%] 175/1000 trials — best sharpe: 1.66
+  [ 20%] 200/1000 trials — best sharpe: 1.66
+  [ 22%] 225/1000 trials — best sharpe: 1.66
+  [ 25%] 250/1000 trials — best sharpe: 1.66
+  [ 27%] 275/1000 trials — best sharpe: 1.66
+  [ 30%] 300/1000 trials — best sharpe: 1.66
+  [ 32%] 325/1000 trials — best sharpe: 1.66
+  [ 35%] 350/1000 trials — best sharpe: 1.66
+  [ 37%] 375/1000 trials — best sharpe: 1.66
+  [ 40%] 400/1000 trials — best sharpe: 1.66
+  [ 42%] 425/1000 trials — best sharpe: 1.66
+  [ 45%] 450/1000 trials — best sharpe: 1.66
+  [ 47%] 475/1000 trials — best sharpe: 1.66
+  [ 50%] 500/1000 trials — best sharpe: 1.66
+  [ 52%] 525/1000 trials — best sharpe: 1.66
+  [ 55%] 550/1000 trials — best sharpe: 1.66
+  [ 57%] 575/1000 trials — best sharpe: 1.66
+  [ 60%] 600/1000 trials — best sharpe: 1.66
+  [ 62%] 625/1000 trials — best sharpe: 1.66
+  [ 65%] 650/1000 trials — best sharpe: 1.66
+  [ 67%] 675/1000 trials — best sharpe: 1.66
+  [ 70%] 700/1000 trials — best sharpe: 1.66
+  [ 72%] 725/1000 trials — best sharpe: 1.66
+  [ 75%] 750/1000 trials — best sharpe: 1.66
+  [ 77%] 775/1000 trials — best sharpe: 1.66
+  [ 80%] 800/1000 trials — best sharpe: 1.66
+  [ 82%] 825/1000 trials — best sharpe: 1.66
+  [ 85%] 850/1000 trials — best sharpe: 1.66
+  [ 87%] 875/1000 trials — best sharpe: 1.66
+  [ 90%] 900/1000 trials — best sharpe: 1.66
+  [ 92%] 925/1000 trials — best sharpe: 1.66
+  [ 95%] 950/1000 trials — best sharpe: 1.66
+  [ 97%] 975/1000 trials — best sharpe: 1.66
+  [100%] 1000/1000 trials — best sharpe: 1.66
+Optimization complete — best sharpe: 1.66
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.66 | Win rate: 41.92%
+restart 2/4 (as of 2022-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2022-12-08
+  objective: sharpe | train window: 2015-07-28 → 2022-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.37
+  [  5%] 50/1000 trials — best sharpe: 1.37
+  [  7%] 75/1000 trials — best sharpe: 1.37
+  [ 10%] 100/1000 trials — best sharpe: 1.37
+  [ 12%] 125/1000 trials — best sharpe: 1.37
+  [ 15%] 150/1000 trials — best sharpe: 1.62
+  [ 17%] 175/1000 trials — best sharpe: 1.62
+  [ 20%] 200/1000 trials — best sharpe: 1.62
+  [ 22%] 225/1000 trials — best sharpe: 1.62
+  [ 25%] 250/1000 trials — best sharpe: 1.62
+  [ 27%] 275/1000 trials — best sharpe: 1.62
+  [ 30%] 300/1000 trials — best sharpe: 1.62
+  [ 32%] 325/1000 trials — best sharpe: 1.62
+  [ 35%] 350/1000 trials — best sharpe: 1.62
+  [ 37%] 375/1000 trials — best sharpe: 1.62
+  [ 40%] 400/1000 trials — best sharpe: 1.62
+  [ 42%] 425/1000 trials — best sharpe: 1.62
+  [ 45%] 450/1000 trials — best sharpe: 1.62
+  [ 47%] 475/1000 trials — best sharpe: 1.62
+  [ 50%] 500/1000 trials — best sharpe: 1.62
+  [ 52%] 525/1000 trials — best sharpe: 1.62
+  [ 55%] 550/1000 trials — best sharpe: 1.62
+  [ 57%] 575/1000 trials — best sharpe: 1.62
+  [ 60%] 600/1000 trials — best sharpe: 1.62
+  [ 62%] 625/1000 trials — best sharpe: 1.62
+  [ 65%] 650/1000 trials — best sharpe: 1.62
+  [ 67%] 675/1000 trials — best sharpe: 1.62
+  [ 70%] 700/1000 trials — best sharpe: 1.62
+  [ 72%] 725/1000 trials — best sharpe: 1.62
+  [ 75%] 750/1000 trials — best sharpe: 1.62
+  [ 77%] 775/1000 trials — best sharpe: 1.62
+  [ 80%] 800/1000 trials — best sharpe: 1.62
+  [ 82%] 825/1000 trials — best sharpe: 1.62
+  [ 85%] 850/1000 trials — best sharpe: 1.62
+  [ 87%] 875/1000 trials — best sharpe: 1.62
+  [ 90%] 900/1000 trials — best sharpe: 1.62
+  [ 92%] 925/1000 trials — best sharpe: 1.62
+  [ 95%] 950/1000 trials — best sharpe: 1.62
+  [ 97%] 975/1000 trials — best sharpe: 1.62
+  [100%] 1000/1000 trials — best sharpe: 1.62
+Optimization complete — best sharpe: 1.62
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 22.34% | Sharpe: 1.62 | Win rate: 53.30%
+restart 3/4 (as of 2022-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2022-12-08
+  objective: sharpe | train window: 2015-07-28 → 2022-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.29
+  [  5%] 50/1000 trials — best sharpe: 1.29
+  [  7%] 75/1000 trials — best sharpe: 1.48
+  [ 10%] 100/1000 trials — best sharpe: 1.48
+  [ 12%] 125/1000 trials — best sharpe: 1.48
+  [ 15%] 150/1000 trials — best sharpe: 1.48
+  [ 17%] 175/1000 trials — best sharpe: 1.48
+  [ 20%] 200/1000 trials — best sharpe: 1.48
+  [ 22%] 225/1000 trials — best sharpe: 1.48
+  [ 25%] 250/1000 trials — best sharpe: 1.48
+  [ 27%] 275/1000 trials — best sharpe: 1.48
+  [ 30%] 300/1000 trials — best sharpe: 1.48
+  [ 32%] 325/1000 trials — best sharpe: 1.48
+  [ 35%] 350/1000 trials — best sharpe: 1.48
+  [ 37%] 375/1000 trials — best sharpe: 1.48
+  [ 40%] 400/1000 trials — best sharpe: 1.48
+  [ 42%] 425/1000 trials — best sharpe: 1.48
+  [ 45%] 450/1000 trials — best sharpe: 1.48
+  [ 47%] 475/1000 trials — best sharpe: 1.48
+  [ 50%] 500/1000 trials — best sharpe: 1.48
+  [ 52%] 525/1000 trials — best sharpe: 1.48
+  [ 55%] 550/1000 trials — best sharpe: 1.48
+  [ 57%] 575/1000 trials — best sharpe: 1.48
+  [ 60%] 600/1000 trials — best sharpe: 1.48
+  [ 62%] 625/1000 trials — best sharpe: 1.48
+  [ 65%] 650/1000 trials — best sharpe: 1.48
+  [ 67%] 675/1000 trials — best sharpe: 1.48
+  [ 70%] 700/1000 trials — best sharpe: 1.48
+  [ 72%] 725/1000 trials — best sharpe: 1.48
+  [ 75%] 750/1000 trials — best sharpe: 1.48
+  [ 77%] 775/1000 trials — best sharpe: 1.48
+  [ 80%] 800/1000 trials — best sharpe: 1.48
+  [ 82%] 825/1000 trials — best sharpe: 1.48
+  [ 85%] 850/1000 trials — best sharpe: 1.48
+  [ 87%] 875/1000 trials — best sharpe: 1.48
+  [ 90%] 900/1000 trials — best sharpe: 1.48
+  [ 92%] 925/1000 trials — best sharpe: 1.48
+  [ 95%] 950/1000 trials — best sharpe: 1.48
+  [ 97%] 975/1000 trials — best sharpe: 1.48
+  [100%] 1000/1000 trials — best sharpe: 1.48
+Optimization complete — best sharpe: 1.48
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 24.74% | Sharpe: 1.48 | Win rate: 43.43%
+restart 4/4 (as of 2022-12-09)
+Optimizing 2 strategies over 2015-07-28 to 2022-12-08
+  objective: sharpe | train window: 2015-07-28 → 2022-12-08
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.19
+  [  5%] 50/1000 trials — best sharpe: 1.33
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.40
+  [ 12%] 125/1000 trials — best sharpe: 1.40
+  [ 15%] 150/1000 trials — best sharpe: 1.40
+  [ 17%] 175/1000 trials — best sharpe: 1.45
+  [ 20%] 200/1000 trials — best sharpe: 1.45
+  [ 22%] 225/1000 trials — best sharpe: 1.45
+  [ 25%] 250/1000 trials — best sharpe: 1.45
+  [ 27%] 275/1000 trials — best sharpe: 1.45
+  [ 30%] 300/1000 trials — best sharpe: 1.45
+  [ 32%] 325/1000 trials — best sharpe: 1.45
+  [ 35%] 350/1000 trials — best sharpe: 1.45
+  [ 37%] 375/1000 trials — best sharpe: 1.45
+  [ 40%] 400/1000 trials — best sharpe: 1.45
+  [ 42%] 425/1000 trials — best sharpe: 1.45
+  [ 45%] 450/1000 trials — best sharpe: 1.45
+  [ 47%] 475/1000 trials — best sharpe: 1.45
+  [ 50%] 500/1000 trials — best sharpe: 1.45
+  [ 52%] 525/1000 trials — best sharpe: 1.45
+  [ 55%] 550/1000 trials — best sharpe: 1.45
+  [ 57%] 575/1000 trials — best sharpe: 1.45
+  [ 60%] 600/1000 trials — best sharpe: 1.45
+  [ 62%] 625/1000 trials — best sharpe: 1.45
+  [ 65%] 650/1000 trials — best sharpe: 1.46
+  [ 67%] 675/1000 trials — best sharpe: 1.47
+  [ 70%] 700/1000 trials — best sharpe: 1.47
+  [ 72%] 725/1000 trials — best sharpe: 1.47
+  [ 75%] 750/1000 trials — best sharpe: 1.47
+  [ 77%] 775/1000 trials — best sharpe: 1.53
+  [ 80%] 800/1000 trials — best sharpe: 1.53
+  [ 82%] 825/1000 trials — best sharpe: 1.53
+  [ 85%] 850/1000 trials — best sharpe: 1.53
+  [ 87%] 875/1000 trials — best sharpe: 1.53
+  [ 90%] 900/1000 trials — best sharpe: 1.53
+  [ 92%] 925/1000 trials — best sharpe: 1.53
+  [ 95%] 950/1000 trials — best sharpe: 1.53
+  [ 97%] 975/1000 trials — best sharpe: 1.53
+  [100%] 1000/1000 trials — best sharpe: 1.53
+Optimization complete — best sharpe: 1.53
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 23.94% | Sharpe: 1.53 | Win rate: 43.96%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 9/13: test 2023-03-14 → 2023-06-12
+restart 1/4 (as of 2023-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2023-03-13
+  objective: sharpe | train window: 2015-07-28 → 2023-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.65
+  [  5%] 50/1000 trials — best sharpe: 1.65
+  [  7%] 75/1000 trials — best sharpe: 1.65
+  [ 10%] 100/1000 trials — best sharpe: 1.65
+  [ 12%] 125/1000 trials — best sharpe: 1.65
+  [ 15%] 150/1000 trials — best sharpe: 1.65
+  [ 17%] 175/1000 trials — best sharpe: 1.65
+  [ 20%] 200/1000 trials — best sharpe: 1.65
+  [ 22%] 225/1000 trials — best sharpe: 1.65
+  [ 25%] 250/1000 trials — best sharpe: 1.65
+  [ 27%] 275/1000 trials — best sharpe: 1.65
+  [ 30%] 300/1000 trials — best sharpe: 1.65
+  [ 32%] 325/1000 trials — best sharpe: 1.65
+  [ 35%] 350/1000 trials — best sharpe: 1.65
+  [ 37%] 375/1000 trials — best sharpe: 1.65
+  [ 40%] 400/1000 trials — best sharpe: 1.65
+  [ 42%] 425/1000 trials — best sharpe: 1.65
+  [ 45%] 450/1000 trials — best sharpe: 1.65
+  [ 47%] 475/1000 trials — best sharpe: 1.65
+  [ 50%] 500/1000 trials — best sharpe: 1.65
+  [ 52%] 525/1000 trials — best sharpe: 1.65
+  [ 55%] 550/1000 trials — best sharpe: 1.65
+  [ 57%] 575/1000 trials — best sharpe: 1.65
+  [ 60%] 600/1000 trials — best sharpe: 1.65
+  [ 62%] 625/1000 trials — best sharpe: 1.65
+  [ 65%] 650/1000 trials — best sharpe: 1.65
+  [ 67%] 675/1000 trials — best sharpe: 1.65
+  [ 70%] 700/1000 trials — best sharpe: 1.65
+  [ 72%] 725/1000 trials — best sharpe: 1.65
+  [ 75%] 750/1000 trials — best sharpe: 1.65
+  [ 77%] 775/1000 trials — best sharpe: 1.65
+  [ 80%] 800/1000 trials — best sharpe: 1.65
+  [ 82%] 825/1000 trials — best sharpe: 1.65
+  [ 85%] 850/1000 trials — best sharpe: 1.65
+  [ 87%] 875/1000 trials — best sharpe: 1.65
+  [ 90%] 900/1000 trials — best sharpe: 1.65
+  [ 92%] 925/1000 trials — best sharpe: 1.65
+  [ 95%] 950/1000 trials — best sharpe: 1.65
+  [ 97%] 975/1000 trials — best sharpe: 1.65
+  [100%] 1000/1000 trials — best sharpe: 1.65
+Optimization complete — best sharpe: 1.65
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.65 | Win rate: 43.58%
+restart 2/4 (as of 2023-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2023-03-13
+  objective: sharpe | train window: 2015-07-28 → 2023-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.13
+  [  5%] 50/1000 trials — best sharpe: 1.33
+  [  7%] 75/1000 trials — best sharpe: 1.33
+  [ 10%] 100/1000 trials — best sharpe: 1.33
+  [ 12%] 125/1000 trials — best sharpe: 1.34
+  [ 15%] 150/1000 trials — best sharpe: 1.35
+  [ 17%] 175/1000 trials — best sharpe: 1.35
+  [ 20%] 200/1000 trials — best sharpe: 1.35
+  [ 22%] 225/1000 trials — best sharpe: 1.35
+  [ 25%] 250/1000 trials — best sharpe: 1.35
+  [ 27%] 275/1000 trials — best sharpe: 1.35
+  [ 30%] 300/1000 trials — best sharpe: 1.36
+  [ 32%] 325/1000 trials — best sharpe: 1.36
+  [ 35%] 350/1000 trials — best sharpe: 1.40
+  [ 37%] 375/1000 trials — best sharpe: 1.40
+  [ 40%] 400/1000 trials — best sharpe: 1.49
+  [ 42%] 425/1000 trials — best sharpe: 1.49
+  [ 45%] 450/1000 trials — best sharpe: 1.49
+  [ 47%] 475/1000 trials — best sharpe: 1.49
+  [ 50%] 500/1000 trials — best sharpe: 1.49
+  [ 52%] 525/1000 trials — best sharpe: 1.49
+  [ 55%] 550/1000 trials — best sharpe: 1.49
+  [ 57%] 575/1000 trials — best sharpe: 1.49
+  [ 60%] 600/1000 trials — best sharpe: 1.49
+  [ 62%] 625/1000 trials — best sharpe: 1.49
+  [ 65%] 650/1000 trials — best sharpe: 1.49
+  [ 67%] 675/1000 trials — best sharpe: 1.49
+  [ 70%] 700/1000 trials — best sharpe: 1.49
+  [ 72%] 725/1000 trials — best sharpe: 1.49
+  [ 75%] 750/1000 trials — best sharpe: 1.49
+  [ 77%] 775/1000 trials — best sharpe: 1.49
+  [ 80%] 800/1000 trials — best sharpe: 1.49
+  [ 82%] 825/1000 trials — best sharpe: 1.49
+  [ 85%] 850/1000 trials — best sharpe: 1.49
+  [ 87%] 875/1000 trials — best sharpe: 1.49
+  [ 90%] 900/1000 trials — best sharpe: 1.49
+  [ 92%] 925/1000 trials — best sharpe: 1.49
+  [ 95%] 950/1000 trials — best sharpe: 1.49
+  [ 97%] 975/1000 trials — best sharpe: 1.49
+  [100%] 1000/1000 trials — best sharpe: 1.49
+Optimization complete — best sharpe: 1.49
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.14% | Sharpe: 1.49 | Win rate: 48.59%
+restart 3/4 (as of 2023-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2023-03-13
+  objective: sharpe | train window: 2015-07-28 → 2023-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.30
+  [  5%] 50/1000 trials — best sharpe: 1.40
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.48
+  [ 12%] 125/1000 trials — best sharpe: 1.48
+  [ 15%] 150/1000 trials — best sharpe: 1.48
+  [ 17%] 175/1000 trials — best sharpe: 1.48
+  [ 20%] 200/1000 trials — best sharpe: 1.48
+  [ 22%] 225/1000 trials — best sharpe: 1.48
+  [ 25%] 250/1000 trials — best sharpe: 1.48
+  [ 27%] 275/1000 trials — best sharpe: 1.48
+  [ 30%] 300/1000 trials — best sharpe: 1.48
+  [ 32%] 325/1000 trials — best sharpe: 1.48
+  [ 35%] 350/1000 trials — best sharpe: 1.48
+  [ 37%] 375/1000 trials — best sharpe: 1.48
+  [ 40%] 400/1000 trials — best sharpe: 1.48
+  [ 42%] 425/1000 trials — best sharpe: 1.48
+  [ 45%] 450/1000 trials — best sharpe: 1.48
+  [ 47%] 475/1000 trials — best sharpe: 1.48
+  [ 50%] 500/1000 trials — best sharpe: 1.48
+  [ 52%] 525/1000 trials — best sharpe: 1.48
+  [ 55%] 550/1000 trials — best sharpe: 1.48
+  [ 57%] 575/1000 trials — best sharpe: 1.48
+  [ 60%] 600/1000 trials — best sharpe: 1.48
+  [ 62%] 625/1000 trials — best sharpe: 1.49
+  [ 65%] 650/1000 trials — best sharpe: 1.49
+  [ 67%] 675/1000 trials — best sharpe: 1.55
+  [ 70%] 700/1000 trials — best sharpe: 1.55
+  [ 72%] 725/1000 trials — best sharpe: 1.55
+  [ 75%] 750/1000 trials — best sharpe: 1.55
+  [ 77%] 775/1000 trials — best sharpe: 1.55
+  [ 80%] 800/1000 trials — best sharpe: 1.55
+  [ 82%] 825/1000 trials — best sharpe: 1.55
+  [ 85%] 850/1000 trials — best sharpe: 1.55
+  [ 87%] 875/1000 trials — best sharpe: 1.55
+  [ 90%] 900/1000 trials — best sharpe: 1.55
+  [ 92%] 925/1000 trials — best sharpe: 1.55
+  [ 95%] 950/1000 trials — best sharpe: 1.55
+  [ 97%] 975/1000 trials — best sharpe: 1.55
+  [100%] 1000/1000 trials — best sharpe: 1.55
+Optimization complete — best sharpe: 1.55
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.55% | Sharpe: 1.55 | Win rate: 42.35%
+restart 4/4 (as of 2023-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2023-03-13
+  objective: sharpe | train window: 2015-07-28 → 2023-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.28
+  [  5%] 50/1000 trials — best sharpe: 1.31
+  [  7%] 75/1000 trials — best sharpe: 1.31
+  [ 10%] 100/1000 trials — best sharpe: 1.38
+  [ 12%] 125/1000 trials — best sharpe: 1.38
+  [ 15%] 150/1000 trials — best sharpe: 1.38
+  [ 17%] 175/1000 trials — best sharpe: 1.38
+  [ 20%] 200/1000 trials — best sharpe: 1.38
+  [ 22%] 225/1000 trials — best sharpe: 1.38
+  [ 25%] 250/1000 trials — best sharpe: 1.38
+  [ 27%] 275/1000 trials — best sharpe: 1.38
+  [ 30%] 300/1000 trials — best sharpe: 1.38
+  [ 32%] 325/1000 trials — best sharpe: 1.38
+  [ 35%] 350/1000 trials — best sharpe: 1.38
+  [ 37%] 375/1000 trials — best sharpe: 1.38
+  [ 40%] 400/1000 trials — best sharpe: 1.41
+  [ 42%] 425/1000 trials — best sharpe: 1.44
+  [ 45%] 450/1000 trials — best sharpe: 1.44
+  [ 47%] 475/1000 trials — best sharpe: 1.44
+  [ 50%] 500/1000 trials — best sharpe: 1.44
+  [ 52%] 525/1000 trials — best sharpe: 1.44
+  [ 55%] 550/1000 trials — best sharpe: 1.44
+  [ 57%] 575/1000 trials — best sharpe: 1.44
+  [ 60%] 600/1000 trials — best sharpe: 1.44
+  [ 62%] 625/1000 trials — best sharpe: 1.44
+  [ 65%] 650/1000 trials — best sharpe: 1.44
+  [ 67%] 675/1000 trials — best sharpe: 1.45
+  [ 70%] 700/1000 trials — best sharpe: 1.45
+  [ 72%] 725/1000 trials — best sharpe: 1.45
+  [ 75%] 750/1000 trials — best sharpe: 1.45
+  [ 77%] 775/1000 trials — best sharpe: 1.45
+  [ 80%] 800/1000 trials — best sharpe: 1.45
+  [ 82%] 825/1000 trials — best sharpe: 1.45
+  [ 85%] 850/1000 trials — best sharpe: 1.45
+  [ 87%] 875/1000 trials — best sharpe: 1.45
+  [ 90%] 900/1000 trials — best sharpe: 1.45
+  [ 92%] 925/1000 trials — best sharpe: 1.45
+  [ 95%] 950/1000 trials — best sharpe: 1.45
+  [ 97%] 975/1000 trials — best sharpe: 1.45
+  [100%] 1000/1000 trials — best sharpe: 1.45
+Optimization complete — best sharpe: 1.45
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 33.18% | Sharpe: 1.45 | Win rate: 48.89%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 10/13: test 2023-06-13 → 2023-09-12
+restart 1/4 (as of 2023-06-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-06-12
+  objective: sharpe | train window: 2015-07-28 → 2023-06-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.74
+  [  5%] 50/1000 trials — best sharpe: 1.74
+  [  7%] 75/1000 trials — best sharpe: 1.74
+  [ 10%] 100/1000 trials — best sharpe: 1.74
+  [ 12%] 125/1000 trials — best sharpe: 1.74
+  [ 15%] 150/1000 trials — best sharpe: 1.74
+  [ 17%] 175/1000 trials — best sharpe: 1.74
+  [ 20%] 200/1000 trials — best sharpe: 1.74
+  [ 22%] 225/1000 trials — best sharpe: 1.74
+  [ 25%] 250/1000 trials — best sharpe: 1.74
+  [ 27%] 275/1000 trials — best sharpe: 1.74
+  [ 30%] 300/1000 trials — best sharpe: 1.74
+  [ 32%] 325/1000 trials — best sharpe: 1.74
+  [ 35%] 350/1000 trials — best sharpe: 1.74
+  [ 37%] 375/1000 trials — best sharpe: 1.74
+  [ 40%] 400/1000 trials — best sharpe: 1.74
+  [ 42%] 425/1000 trials — best sharpe: 1.74
+  [ 45%] 450/1000 trials — best sharpe: 1.74
+  [ 47%] 475/1000 trials — best sharpe: 1.74
+  [ 50%] 500/1000 trials — best sharpe: 1.74
+  [ 52%] 525/1000 trials — best sharpe: 1.74
+  [ 55%] 550/1000 trials — best sharpe: 1.74
+  [ 57%] 575/1000 trials — best sharpe: 1.74
+  [ 60%] 600/1000 trials — best sharpe: 1.74
+  [ 62%] 625/1000 trials — best sharpe: 1.74
+  [ 65%] 650/1000 trials — best sharpe: 1.74
+  [ 67%] 675/1000 trials — best sharpe: 1.74
+  [ 70%] 700/1000 trials — best sharpe: 1.74
+  [ 72%] 725/1000 trials — best sharpe: 1.74
+  [ 75%] 750/1000 trials — best sharpe: 1.74
+  [ 77%] 775/1000 trials — best sharpe: 1.74
+  [ 80%] 800/1000 trials — best sharpe: 1.74
+  [ 82%] 825/1000 trials — best sharpe: 1.74
+  [ 85%] 850/1000 trials — best sharpe: 1.74
+  [ 87%] 875/1000 trials — best sharpe: 1.74
+  [ 90%] 900/1000 trials — best sharpe: 1.74
+  [ 92%] 925/1000 trials — best sharpe: 1.74
+  [ 95%] 950/1000 trials — best sharpe: 1.74
+  [ 97%] 975/1000 trials — best sharpe: 1.74
+  [100%] 1000/1000 trials — best sharpe: 1.74
+Optimization complete — best sharpe: 1.74
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.74 | Win rate: 42.39%
+restart 2/4 (as of 2023-06-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-06-12
+  objective: sharpe | train window: 2015-07-28 → 2023-06-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.35
+  [  5%] 50/1000 trials — best sharpe: 1.35
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.43
+  [ 12%] 125/1000 trials — best sharpe: 1.48
+  [ 15%] 150/1000 trials — best sharpe: 1.48
+  [ 17%] 175/1000 trials — best sharpe: 1.48
+  [ 20%] 200/1000 trials — best sharpe: 1.48
+  [ 22%] 225/1000 trials — best sharpe: 1.48
+  [ 25%] 250/1000 trials — best sharpe: 1.48
+  [ 27%] 275/1000 trials — best sharpe: 1.48
+  [ 30%] 300/1000 trials — best sharpe: 1.48
+  [ 32%] 325/1000 trials — best sharpe: 1.48
+  [ 35%] 350/1000 trials — best sharpe: 1.51
+  [ 37%] 375/1000 trials — best sharpe: 1.51
+  [ 40%] 400/1000 trials — best sharpe: 1.51
+  [ 42%] 425/1000 trials — best sharpe: 1.51
+  [ 45%] 450/1000 trials — best sharpe: 1.51
+  [ 47%] 475/1000 trials — best sharpe: 1.51
+  [ 50%] 500/1000 trials — best sharpe: 1.51
+  [ 52%] 525/1000 trials — best sharpe: 1.51
+  [ 55%] 550/1000 trials — best sharpe: 1.51
+  [ 57%] 575/1000 trials — best sharpe: 1.51
+  [ 60%] 600/1000 trials — best sharpe: 1.51
+  [ 62%] 625/1000 trials — best sharpe: 1.51
+  [ 65%] 650/1000 trials — best sharpe: 1.51
+  [ 67%] 675/1000 trials — best sharpe: 1.51
+  [ 70%] 700/1000 trials — best sharpe: 1.51
+  [ 72%] 725/1000 trials — best sharpe: 1.51
+  [ 75%] 750/1000 trials — best sharpe: 1.51
+  [ 77%] 775/1000 trials — best sharpe: 1.51
+  [ 80%] 800/1000 trials — best sharpe: 1.51
+  [ 82%] 825/1000 trials — best sharpe: 1.51
+  [ 85%] 850/1000 trials — best sharpe: 1.51
+  [ 87%] 875/1000 trials — best sharpe: 1.51
+  [ 90%] 900/1000 trials — best sharpe: 1.51
+  [ 92%] 925/1000 trials — best sharpe: 1.51
+  [ 95%] 950/1000 trials — best sharpe: 1.51
+  [ 97%] 975/1000 trials — best sharpe: 1.51
+  [100%] 1000/1000 trials — best sharpe: 1.51
+Optimization complete — best sharpe: 1.51
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 23.63% | Sharpe: 1.51 | Win rate: 46.88%
+restart 3/4 (as of 2023-06-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-06-12
+  objective: sharpe | train window: 2015-07-28 → 2023-06-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.37
+  [  5%] 50/1000 trials — best sharpe: 1.37
+  [  7%] 75/1000 trials — best sharpe: 1.41
+  [ 10%] 100/1000 trials — best sharpe: 1.48
+  [ 12%] 125/1000 trials — best sharpe: 1.48
+  [ 15%] 150/1000 trials — best sharpe: 1.55
+  [ 17%] 175/1000 trials — best sharpe: 1.55
+  [ 20%] 200/1000 trials — best sharpe: 1.55
+  [ 22%] 225/1000 trials — best sharpe: 1.55
+  [ 25%] 250/1000 trials — best sharpe: 1.55
+  [ 27%] 275/1000 trials — best sharpe: 1.55
+  [ 30%] 300/1000 trials — best sharpe: 1.55
+  [ 32%] 325/1000 trials — best sharpe: 1.55
+  [ 35%] 350/1000 trials — best sharpe: 1.55
+  [ 37%] 375/1000 trials — best sharpe: 1.55
+  [ 40%] 400/1000 trials — best sharpe: 1.55
+  [ 42%] 425/1000 trials — best sharpe: 1.55
+  [ 45%] 450/1000 trials — best sharpe: 1.55
+  [ 47%] 475/1000 trials — best sharpe: 1.55
+  [ 50%] 500/1000 trials — best sharpe: 1.55
+  [ 52%] 525/1000 trials — best sharpe: 1.55
+  [ 55%] 550/1000 trials — best sharpe: 1.55
+  [ 57%] 575/1000 trials — best sharpe: 1.64
+  [ 60%] 600/1000 trials — best sharpe: 1.64
+  [ 62%] 625/1000 trials — best sharpe: 1.64
+  [ 65%] 650/1000 trials — best sharpe: 1.64
+  [ 67%] 675/1000 trials — best sharpe: 1.64
+  [ 70%] 700/1000 trials — best sharpe: 1.64
+  [ 72%] 725/1000 trials — best sharpe: 1.64
+  [ 75%] 750/1000 trials — best sharpe: 1.64
+  [ 77%] 775/1000 trials — best sharpe: 1.64
+  [ 80%] 800/1000 trials — best sharpe: 1.64
+  [ 82%] 825/1000 trials — best sharpe: 1.64
+  [ 85%] 850/1000 trials — best sharpe: 1.64
+  [ 87%] 875/1000 trials — best sharpe: 1.64
+  [ 90%] 900/1000 trials — best sharpe: 1.64
+  [ 92%] 925/1000 trials — best sharpe: 1.64
+  [ 95%] 950/1000 trials — best sharpe: 1.64
+  [ 97%] 975/1000 trials — best sharpe: 1.64
+  [100%] 1000/1000 trials — best sharpe: 1.64
+Optimization complete — best sharpe: 1.64
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 32.14% | Sharpe: 1.64 | Win rate: 41.36%
+restart 4/4 (as of 2023-06-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-06-12
+  objective: sharpe | train window: 2015-07-28 → 2023-06-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.40
+  [  5%] 50/1000 trials — best sharpe: 1.40
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.40
+  [ 12%] 125/1000 trials — best sharpe: 1.40
+  [ 15%] 150/1000 trials — best sharpe: 1.40
+  [ 17%] 175/1000 trials — best sharpe: 1.40
+  [ 20%] 200/1000 trials — best sharpe: 1.40
+  [ 22%] 225/1000 trials — best sharpe: 1.40
+  [ 25%] 250/1000 trials — best sharpe: 1.40
+  [ 27%] 275/1000 trials — best sharpe: 1.41
+  [ 30%] 300/1000 trials — best sharpe: 1.45
+  [ 32%] 325/1000 trials — best sharpe: 1.49
+  [ 35%] 350/1000 trials — best sharpe: 1.49
+  [ 37%] 375/1000 trials — best sharpe: 1.49
+  [ 40%] 400/1000 trials — best sharpe: 1.52
+  [ 42%] 425/1000 trials — best sharpe: 1.52
+  [ 45%] 450/1000 trials — best sharpe: 1.52
+  [ 47%] 475/1000 trials — best sharpe: 1.52
+  [ 50%] 500/1000 trials — best sharpe: 1.52
+  [ 52%] 525/1000 trials — best sharpe: 1.52
+  [ 55%] 550/1000 trials — best sharpe: 1.52
+  [ 57%] 575/1000 trials — best sharpe: 1.52
+  [ 60%] 600/1000 trials — best sharpe: 1.52
+  [ 62%] 625/1000 trials — best sharpe: 1.52
+  [ 65%] 650/1000 trials — best sharpe: 1.52
+  [ 67%] 675/1000 trials — best sharpe: 1.52
+  [ 70%] 700/1000 trials — best sharpe: 1.52
+  [ 72%] 725/1000 trials — best sharpe: 1.52
+  [ 75%] 750/1000 trials — best sharpe: 1.54
+  [ 77%] 775/1000 trials — best sharpe: 1.54
+  [ 80%] 800/1000 trials — best sharpe: 1.54
+  [ 82%] 825/1000 trials — best sharpe: 1.54
+  [ 85%] 850/1000 trials — best sharpe: 1.54
+  [ 87%] 875/1000 trials — best sharpe: 1.65
+  [ 90%] 900/1000 trials — best sharpe: 1.65
+  [ 92%] 925/1000 trials — best sharpe: 1.65
+  [ 95%] 950/1000 trials — best sharpe: 1.65
+  [ 97%] 975/1000 trials — best sharpe: 1.65
+  [100%] 1000/1000 trials — best sharpe: 1.65
+Optimization complete — best sharpe: 1.65
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.88% | Sharpe: 1.65 | Win rate: 47.16%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 11/13: test 2023-09-13 → 2023-12-11
+restart 1/4 (as of 2023-09-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-09-12
+  objective: sharpe | train window: 2015-07-28 → 2023-09-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.73
+  [  5%] 50/1000 trials — best sharpe: 1.73
+  [  7%] 75/1000 trials — best sharpe: 1.73
+  [ 10%] 100/1000 trials — best sharpe: 1.73
+  [ 12%] 125/1000 trials — best sharpe: 1.73
+  [ 15%] 150/1000 trials — best sharpe: 1.73
+  [ 17%] 175/1000 trials — best sharpe: 1.73
+  [ 20%] 200/1000 trials — best sharpe: 1.73
+  [ 22%] 225/1000 trials — best sharpe: 1.73
+  [ 25%] 250/1000 trials — best sharpe: 1.73
+  [ 27%] 275/1000 trials — best sharpe: 1.73
+  [ 30%] 300/1000 trials — best sharpe: 1.73
+  [ 32%] 325/1000 trials — best sharpe: 1.73
+  [ 35%] 350/1000 trials — best sharpe: 1.73
+  [ 37%] 375/1000 trials — best sharpe: 1.73
+  [ 40%] 400/1000 trials — best sharpe: 1.73
+  [ 42%] 425/1000 trials — best sharpe: 1.73
+  [ 45%] 450/1000 trials — best sharpe: 1.73
+  [ 47%] 475/1000 trials — best sharpe: 1.73
+  [ 50%] 500/1000 trials — best sharpe: 1.73
+  [ 52%] 525/1000 trials — best sharpe: 1.73
+  [ 55%] 550/1000 trials — best sharpe: 1.73
+  [ 57%] 575/1000 trials — best sharpe: 1.73
+  [ 60%] 600/1000 trials — best sharpe: 1.73
+  [ 62%] 625/1000 trials — best sharpe: 1.73
+  [ 65%] 650/1000 trials — best sharpe: 1.73
+  [ 67%] 675/1000 trials — best sharpe: 1.73
+  [ 70%] 700/1000 trials — best sharpe: 1.73
+  [ 72%] 725/1000 trials — best sharpe: 1.73
+  [ 75%] 750/1000 trials — best sharpe: 1.73
+  [ 77%] 775/1000 trials — best sharpe: 1.73
+  [ 80%] 800/1000 trials — best sharpe: 1.73
+  [ 82%] 825/1000 trials — best sharpe: 1.73
+  [ 85%] 850/1000 trials — best sharpe: 1.73
+  [ 87%] 875/1000 trials — best sharpe: 1.73
+  [ 90%] 900/1000 trials — best sharpe: 1.73
+  [ 92%] 925/1000 trials — best sharpe: 1.73
+  [ 95%] 950/1000 trials — best sharpe: 1.73
+  [ 97%] 975/1000 trials — best sharpe: 1.73
+  [100%] 1000/1000 trials — best sharpe: 1.73
+Optimization complete — best sharpe: 1.73
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.73 | Win rate: 43.46%
+restart 2/4 (as of 2023-09-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-09-12
+  objective: sharpe | train window: 2015-07-28 → 2023-09-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.31
+  [  5%] 50/1000 trials — best sharpe: 1.31
+  [  7%] 75/1000 trials — best sharpe: 1.31
+  [ 10%] 100/1000 trials — best sharpe: 1.38
+  [ 12%] 125/1000 trials — best sharpe: 1.44
+  [ 15%] 150/1000 trials — best sharpe: 1.44
+  [ 17%] 175/1000 trials — best sharpe: 1.51
+  [ 20%] 200/1000 trials — best sharpe: 1.51
+  [ 22%] 225/1000 trials — best sharpe: 1.51
+  [ 25%] 250/1000 trials — best sharpe: 1.51
+  [ 27%] 275/1000 trials — best sharpe: 1.51
+  [ 30%] 300/1000 trials — best sharpe: 1.51
+  [ 32%] 325/1000 trials — best sharpe: 1.51
+  [ 35%] 350/1000 trials — best sharpe: 1.51
+  [ 37%] 375/1000 trials — best sharpe: 1.51
+  [ 40%] 400/1000 trials — best sharpe: 1.51
+  [ 42%] 425/1000 trials — best sharpe: 1.52
+  [ 45%] 450/1000 trials — best sharpe: 1.52
+  [ 47%] 475/1000 trials — best sharpe: 1.52
+  [ 50%] 500/1000 trials — best sharpe: 1.52
+  [ 52%] 525/1000 trials — best sharpe: 1.52
+  [ 55%] 550/1000 trials — best sharpe: 1.52
+  [ 57%] 575/1000 trials — best sharpe: 1.52
+  [ 60%] 600/1000 trials — best sharpe: 1.52
+  [ 62%] 625/1000 trials — best sharpe: 1.52
+  [ 65%] 650/1000 trials — best sharpe: 1.52
+  [ 67%] 675/1000 trials — best sharpe: 1.52
+  [ 70%] 700/1000 trials — best sharpe: 1.52
+  [ 72%] 725/1000 trials — best sharpe: 1.52
+  [ 75%] 750/1000 trials — best sharpe: 1.52
+  [ 77%] 775/1000 trials — best sharpe: 1.52
+  [ 80%] 800/1000 trials — best sharpe: 1.52
+  [ 82%] 825/1000 trials — best sharpe: 1.52
+  [ 85%] 850/1000 trials — best sharpe: 1.52
+  [ 87%] 875/1000 trials — best sharpe: 1.52
+  [ 90%] 900/1000 trials — best sharpe: 1.52
+  [ 92%] 925/1000 trials — best sharpe: 1.52
+  [ 95%] 950/1000 trials — best sharpe: 1.52
+  [ 97%] 975/1000 trials — best sharpe: 1.52
+  [100%] 1000/1000 trials — best sharpe: 1.52
+Optimization complete — best sharpe: 1.52
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.82% | Sharpe: 1.52 | Win rate: 48.94%
+restart 3/4 (as of 2023-09-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-09-12
+  objective: sharpe | train window: 2015-07-28 → 2023-09-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.33
+  [  5%] 50/1000 trials — best sharpe: 1.33
+  [  7%] 75/1000 trials — best sharpe: 1.44
+  [ 10%] 100/1000 trials — best sharpe: 1.44
+  [ 12%] 125/1000 trials — best sharpe: 1.46
+  [ 15%] 150/1000 trials — best sharpe: 1.46
+  [ 17%] 175/1000 trials — best sharpe: 1.46
+  [ 20%] 200/1000 trials — best sharpe: 1.47
+  [ 22%] 225/1000 trials — best sharpe: 1.48
+  [ 25%] 250/1000 trials — best sharpe: 1.48
+  [ 27%] 275/1000 trials — best sharpe: 1.48
+  [ 30%] 300/1000 trials — best sharpe: 1.48
+  [ 32%] 325/1000 trials — best sharpe: 1.57
+  [ 35%] 350/1000 trials — best sharpe: 1.57
+  [ 37%] 375/1000 trials — best sharpe: 1.57
+  [ 40%] 400/1000 trials — best sharpe: 1.57
+  [ 42%] 425/1000 trials — best sharpe: 1.57
+  [ 45%] 450/1000 trials — best sharpe: 1.57
+  [ 47%] 475/1000 trials — best sharpe: 1.57
+  [ 50%] 500/1000 trials — best sharpe: 1.57
+  [ 52%] 525/1000 trials — best sharpe: 1.57
+  [ 55%] 550/1000 trials — best sharpe: 1.57
+  [ 57%] 575/1000 trials — best sharpe: 1.57
+  [ 60%] 600/1000 trials — best sharpe: 1.57
+  [ 62%] 625/1000 trials — best sharpe: 1.57
+  [ 65%] 650/1000 trials — best sharpe: 1.58
+  [ 67%] 675/1000 trials — best sharpe: 1.58
+  [ 70%] 700/1000 trials — best sharpe: 1.58
+  [ 72%] 725/1000 trials — best sharpe: 1.58
+  [ 75%] 750/1000 trials — best sharpe: 1.58
+  [ 77%] 775/1000 trials — best sharpe: 1.58
+  [ 80%] 800/1000 trials — best sharpe: 1.58
+  [ 82%] 825/1000 trials — best sharpe: 1.58
+  [ 85%] 850/1000 trials — best sharpe: 1.58
+  [ 87%] 875/1000 trials — best sharpe: 1.58
+  [ 90%] 900/1000 trials — best sharpe: 1.58
+  [ 92%] 925/1000 trials — best sharpe: 1.58
+  [ 95%] 950/1000 trials — best sharpe: 1.58
+  [ 97%] 975/1000 trials — best sharpe: 1.58
+  [100%] 1000/1000 trials — best sharpe: 1.58
+Optimization complete — best sharpe: 1.58
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 25.67% | Sharpe: 1.58 | Win rate: 44.85%
+restart 4/4 (as of 2023-09-13)
+Optimizing 2 strategies over 2015-07-28 to 2023-09-12
+  objective: sharpe | train window: 2015-07-28 → 2023-09-12
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.34
+  [  5%] 50/1000 trials — best sharpe: 1.34
+  [  7%] 75/1000 trials — best sharpe: 1.34
+  [ 10%] 100/1000 trials — best sharpe: 1.39
+  [ 12%] 125/1000 trials — best sharpe: 1.49
+  [ 15%] 150/1000 trials — best sharpe: 1.49
+  [ 17%] 175/1000 trials — best sharpe: 1.49
+  [ 20%] 200/1000 trials — best sharpe: 1.49
+  [ 22%] 225/1000 trials — best sharpe: 1.49
+  [ 25%] 250/1000 trials — best sharpe: 1.49
+  [ 27%] 275/1000 trials — best sharpe: 1.49
+  [ 30%] 300/1000 trials — best sharpe: 1.49
+  [ 32%] 325/1000 trials — best sharpe: 1.49
+  [ 35%] 350/1000 trials — best sharpe: 1.49
+  [ 37%] 375/1000 trials — best sharpe: 1.49
+  [ 40%] 400/1000 trials — best sharpe: 1.49
+  [ 42%] 425/1000 trials — best sharpe: 1.54
+  [ 45%] 450/1000 trials — best sharpe: 1.54
+  [ 47%] 475/1000 trials — best sharpe: 1.62
+  [ 50%] 500/1000 trials — best sharpe: 1.62
+  [ 52%] 525/1000 trials — best sharpe: 1.62
+  [ 55%] 550/1000 trials — best sharpe: 1.62
+  [ 57%] 575/1000 trials — best sharpe: 1.62
+  [ 60%] 600/1000 trials — best sharpe: 1.62
+  [ 62%] 625/1000 trials — best sharpe: 1.62
+  [ 65%] 650/1000 trials — best sharpe: 1.62
+  [ 67%] 675/1000 trials — best sharpe: 1.62
+  [ 70%] 700/1000 trials — best sharpe: 1.62
+  [ 72%] 725/1000 trials — best sharpe: 1.62
+  [ 75%] 750/1000 trials — best sharpe: 1.62
+  [ 77%] 775/1000 trials — best sharpe: 1.62
+  [ 80%] 800/1000 trials — best sharpe: 1.62
+  [ 82%] 825/1000 trials — best sharpe: 1.62
+  [ 85%] 850/1000 trials — best sharpe: 1.62
+  [ 87%] 875/1000 trials — best sharpe: 1.62
+  [ 90%] 900/1000 trials — best sharpe: 1.62
+  [ 92%] 925/1000 trials — best sharpe: 1.62
+  [ 95%] 950/1000 trials — best sharpe: 1.62
+  [ 97%] 975/1000 trials — best sharpe: 1.62
+  [100%] 1000/1000 trials — best sharpe: 1.62
+Optimization complete — best sharpe: 1.62
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.00% | Sharpe: 1.62 | Win rate: 45.03%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 12/13: test 2023-12-12 → 2024-03-13
+restart 1/4 (as of 2023-12-12)
+Optimizing 2 strategies over 2015-07-28 to 2023-12-11
+  objective: sharpe | train window: 2015-07-28 → 2023-12-11
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.69
+  [  5%] 50/1000 trials — best sharpe: 1.69
+  [  7%] 75/1000 trials — best sharpe: 1.69
+  [ 10%] 100/1000 trials — best sharpe: 1.69
+  [ 12%] 125/1000 trials — best sharpe: 1.69
+  [ 15%] 150/1000 trials — best sharpe: 1.69
+  [ 17%] 175/1000 trials — best sharpe: 1.69
+  [ 20%] 200/1000 trials — best sharpe: 1.69
+  [ 22%] 225/1000 trials — best sharpe: 1.69
+  [ 25%] 250/1000 trials — best sharpe: 1.69
+  [ 27%] 275/1000 trials — best sharpe: 1.69
+  [ 30%] 300/1000 trials — best sharpe: 1.69
+  [ 32%] 325/1000 trials — best sharpe: 1.69
+  [ 35%] 350/1000 trials — best sharpe: 1.69
+  [ 37%] 375/1000 trials — best sharpe: 1.69
+  [ 40%] 400/1000 trials — best sharpe: 1.69
+  [ 42%] 425/1000 trials — best sharpe: 1.69
+  [ 45%] 450/1000 trials — best sharpe: 1.69
+  [ 47%] 475/1000 trials — best sharpe: 1.69
+  [ 50%] 500/1000 trials — best sharpe: 1.69
+  [ 52%] 525/1000 trials — best sharpe: 1.69
+  [ 55%] 550/1000 trials — best sharpe: 1.69
+  [ 57%] 575/1000 trials — best sharpe: 1.69
+  [ 60%] 600/1000 trials — best sharpe: 1.69
+  [ 62%] 625/1000 trials — best sharpe: 1.69
+  [ 65%] 650/1000 trials — best sharpe: 1.69
+  [ 67%] 675/1000 trials — best sharpe: 1.69
+  [ 70%] 700/1000 trials — best sharpe: 1.69
+  [ 72%] 725/1000 trials — best sharpe: 1.69
+  [ 75%] 750/1000 trials — best sharpe: 1.69
+  [ 77%] 775/1000 trials — best sharpe: 1.69
+  [ 80%] 800/1000 trials — best sharpe: 1.69
+  [ 82%] 825/1000 trials — best sharpe: 1.69
+  [ 85%] 850/1000 trials — best sharpe: 1.69
+  [ 87%] 875/1000 trials — best sharpe: 1.69
+  [ 90%] 900/1000 trials — best sharpe: 1.69
+  [ 92%] 925/1000 trials — best sharpe: 1.69
+  [ 95%] 950/1000 trials — best sharpe: 1.69
+  [ 97%] 975/1000 trials — best sharpe: 1.69
+  [100%] 1000/1000 trials — best sharpe: 1.69
+Optimization complete — best sharpe: 1.69
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.69 | Win rate: 43.65%
+restart 2/4 (as of 2023-12-12)
+Optimizing 2 strategies over 2015-07-28 to 2023-12-11
+  objective: sharpe | train window: 2015-07-28 → 2023-12-11
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.29
+  [  5%] 50/1000 trials — best sharpe: 1.37
+  [  7%] 75/1000 trials — best sharpe: 1.37
+  [ 10%] 100/1000 trials — best sharpe: 1.37
+  [ 12%] 125/1000 trials — best sharpe: 1.43
+  [ 15%] 150/1000 trials — best sharpe: 1.43
+  [ 17%] 175/1000 trials — best sharpe: 1.43
+  [ 20%] 200/1000 trials — best sharpe: 1.46
+  [ 22%] 225/1000 trials — best sharpe: 1.46
+  [ 25%] 250/1000 trials — best sharpe: 1.46
+  [ 27%] 275/1000 trials — best sharpe: 1.55
+  [ 30%] 300/1000 trials — best sharpe: 1.55
+  [ 32%] 325/1000 trials — best sharpe: 1.55
+  [ 35%] 350/1000 trials — best sharpe: 1.55
+  [ 37%] 375/1000 trials — best sharpe: 1.55
+  [ 40%] 400/1000 trials — best sharpe: 1.55
+  [ 42%] 425/1000 trials — best sharpe: 1.55
+  [ 45%] 450/1000 trials — best sharpe: 1.59
+  [ 47%] 475/1000 trials — best sharpe: 1.59
+  [ 50%] 500/1000 trials — best sharpe: 1.60
+  [ 52%] 525/1000 trials — best sharpe: 1.60
+  [ 55%] 550/1000 trials — best sharpe: 1.60
+  [ 57%] 575/1000 trials — best sharpe: 1.60
+  [ 60%] 600/1000 trials — best sharpe: 1.60
+  [ 62%] 625/1000 trials — best sharpe: 1.60
+  [ 65%] 650/1000 trials — best sharpe: 1.60
+  [ 67%] 675/1000 trials — best sharpe: 1.60
+  [ 70%] 700/1000 trials — best sharpe: 1.60
+  [ 72%] 725/1000 trials — best sharpe: 1.60
+  [ 75%] 750/1000 trials — best sharpe: 1.60
+  [ 77%] 775/1000 trials — best sharpe: 1.60
+  [ 80%] 800/1000 trials — best sharpe: 1.60
+  [ 82%] 825/1000 trials — best sharpe: 1.60
+  [ 85%] 850/1000 trials — best sharpe: 1.60
+  [ 87%] 875/1000 trials — best sharpe: 1.66
+  [ 90%] 900/1000 trials — best sharpe: 1.66
+  [ 92%] 925/1000 trials — best sharpe: 1.66
+  [ 95%] 950/1000 trials — best sharpe: 1.66
+  [ 97%] 975/1000 trials — best sharpe: 1.66
+  [100%] 1000/1000 trials — best sharpe: 1.66
+Optimization complete — best sharpe: 1.66
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 29.96% | Sharpe: 1.66 | Win rate: 50.75%
+restart 3/4 (as of 2023-12-12)
+Optimizing 2 strategies over 2015-07-28 to 2023-12-11
+  objective: sharpe | train window: 2015-07-28 → 2023-12-11
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.25
+  [  5%] 50/1000 trials — best sharpe: 1.35
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.48
+  [ 12%] 125/1000 trials — best sharpe: 1.48
+  [ 15%] 150/1000 trials — best sharpe: 1.48
+  [ 17%] 175/1000 trials — best sharpe: 1.48
+  [ 20%] 200/1000 trials — best sharpe: 1.48
+  [ 22%] 225/1000 trials — best sharpe: 1.48
+  [ 25%] 250/1000 trials — best sharpe: 1.48
+  [ 27%] 275/1000 trials — best sharpe: 1.48
+  [ 30%] 300/1000 trials — best sharpe: 1.50
+  [ 32%] 325/1000 trials — best sharpe: 1.50
+  [ 35%] 350/1000 trials — best sharpe: 1.50
+  [ 37%] 375/1000 trials — best sharpe: 1.50
+  [ 40%] 400/1000 trials — best sharpe: 1.50
+  [ 42%] 425/1000 trials — best sharpe: 1.50
+  [ 45%] 450/1000 trials — best sharpe: 1.50
+  [ 47%] 475/1000 trials — best sharpe: 1.50
+  [ 50%] 500/1000 trials — best sharpe: 1.50
+  [ 52%] 525/1000 trials — best sharpe: 1.50
+  [ 55%] 550/1000 trials — best sharpe: 1.50
+  [ 57%] 575/1000 trials — best sharpe: 1.51
+  [ 60%] 600/1000 trials — best sharpe: 1.51
+  [ 62%] 625/1000 trials — best sharpe: 1.51
+  [ 65%] 650/1000 trials — best sharpe: 1.51
+  [ 67%] 675/1000 trials — best sharpe: 1.64
+  [ 70%] 700/1000 trials — best sharpe: 1.64
+  [ 72%] 725/1000 trials — best sharpe: 1.64
+  [ 75%] 750/1000 trials — best sharpe: 1.64
+  [ 77%] 775/1000 trials — best sharpe: 1.64
+  [ 80%] 800/1000 trials — best sharpe: 1.64
+  [ 82%] 825/1000 trials — best sharpe: 1.64
+  [ 85%] 850/1000 trials — best sharpe: 1.64
+  [ 87%] 875/1000 trials — best sharpe: 1.64
+  [ 90%] 900/1000 trials — best sharpe: 1.64
+  [ 92%] 925/1000 trials — best sharpe: 1.64
+  [ 95%] 950/1000 trials — best sharpe: 1.64
+  [ 97%] 975/1000 trials — best sharpe: 1.64
+  [100%] 1000/1000 trials — best sharpe: 1.64
+Optimization complete — best sharpe: 1.64
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 25.46% | Sharpe: 1.64 | Win rate: 44.95%
+restart 4/4 (as of 2023-12-12)
+Optimizing 2 strategies over 2015-07-28 to 2023-12-11
+  objective: sharpe | train window: 2015-07-28 → 2023-12-11
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.23
+  [  5%] 50/1000 trials — best sharpe: 1.39
+  [  7%] 75/1000 trials — best sharpe: 1.39
+  [ 10%] 100/1000 trials — best sharpe: 1.40
+  [ 12%] 125/1000 trials — best sharpe: 1.40
+  [ 15%] 150/1000 trials — best sharpe: 1.40
+  [ 17%] 175/1000 trials — best sharpe: 1.47
+  [ 20%] 200/1000 trials — best sharpe: 1.47
+  [ 22%] 225/1000 trials — best sharpe: 1.47
+  [ 25%] 250/1000 trials — best sharpe: 1.59
+  [ 27%] 275/1000 trials — best sharpe: 1.59
+  [ 30%] 300/1000 trials — best sharpe: 1.59
+  [ 32%] 325/1000 trials — best sharpe: 1.59
+  [ 35%] 350/1000 trials — best sharpe: 1.59
+  [ 37%] 375/1000 trials — best sharpe: 1.59
+  [ 40%] 400/1000 trials — best sharpe: 1.59
+  [ 42%] 425/1000 trials — best sharpe: 1.59
+  [ 45%] 450/1000 trials — best sharpe: 1.59
+  [ 47%] 475/1000 trials — best sharpe: 1.59
+  [ 50%] 500/1000 trials — best sharpe: 1.59
+  [ 52%] 525/1000 trials — best sharpe: 1.59
+  [ 55%] 550/1000 trials — best sharpe: 1.59
+  [ 57%] 575/1000 trials — best sharpe: 1.59
+  [ 60%] 600/1000 trials — best sharpe: 1.59
+  [ 62%] 625/1000 trials — best sharpe: 1.59
+  [ 65%] 650/1000 trials — best sharpe: 1.59
+  [ 67%] 675/1000 trials — best sharpe: 1.59
+  [ 70%] 700/1000 trials — best sharpe: 1.59
+  [ 72%] 725/1000 trials — best sharpe: 1.59
+  [ 75%] 750/1000 trials — best sharpe: 1.59
+  [ 77%] 775/1000 trials — best sharpe: 1.59
+  [ 80%] 800/1000 trials — best sharpe: 1.59
+  [ 82%] 825/1000 trials — best sharpe: 1.59
+  [ 85%] 850/1000 trials — best sharpe: 1.59
+  [ 87%] 875/1000 trials — best sharpe: 1.59
+  [ 90%] 900/1000 trials — best sharpe: 1.59
+  [ 92%] 925/1000 trials — best sharpe: 1.59
+  [ 95%] 950/1000 trials — best sharpe: 1.59
+  [ 97%] 975/1000 trials — best sharpe: 1.59
+  [100%] 1000/1000 trials — best sharpe: 1.59
+Optimization complete — best sharpe: 1.59
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.44% | Sharpe: 1.59 | Win rate: 41.67%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+Fold 13/13: test 2024-03-14 → 2024-08-27
+restart 1/4 (as of 2024-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2024-03-13
+  objective: sharpe | train window: 2015-07-28 → 2024-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.66
+  [  5%] 50/1000 trials — best sharpe: 1.66
+  [  7%] 75/1000 trials — best sharpe: 1.66
+  [ 10%] 100/1000 trials — best sharpe: 1.66
+  [ 12%] 125/1000 trials — best sharpe: 1.66
+  [ 15%] 150/1000 trials — best sharpe: 1.66
+  [ 17%] 175/1000 trials — best sharpe: 1.66
+  [ 20%] 200/1000 trials — best sharpe: 1.66
+  [ 22%] 225/1000 trials — best sharpe: 1.66
+  [ 25%] 250/1000 trials — best sharpe: 1.66
+  [ 27%] 275/1000 trials — best sharpe: 1.66
+  [ 30%] 300/1000 trials — best sharpe: 1.66
+  [ 32%] 325/1000 trials — best sharpe: 1.66
+  [ 35%] 350/1000 trials — best sharpe: 1.66
+  [ 37%] 375/1000 trials — best sharpe: 1.66
+  [ 40%] 400/1000 trials — best sharpe: 1.66
+  [ 42%] 425/1000 trials — best sharpe: 1.66
+  [ 45%] 450/1000 trials — best sharpe: 1.66
+  [ 47%] 475/1000 trials — best sharpe: 1.66
+  [ 50%] 500/1000 trials — best sharpe: 1.66
+  [ 52%] 525/1000 trials — best sharpe: 1.66
+  [ 55%] 550/1000 trials — best sharpe: 1.66
+  [ 57%] 575/1000 trials — best sharpe: 1.66
+  [ 60%] 600/1000 trials — best sharpe: 1.66
+  [ 62%] 625/1000 trials — best sharpe: 1.66
+  [ 65%] 650/1000 trials — best sharpe: 1.66
+  [ 67%] 675/1000 trials — best sharpe: 1.66
+  [ 70%] 700/1000 trials — best sharpe: 1.66
+  [ 72%] 725/1000 trials — best sharpe: 1.66
+  [ 75%] 750/1000 trials — best sharpe: 1.66
+  [ 77%] 775/1000 trials — best sharpe: 1.66
+  [ 80%] 800/1000 trials — best sharpe: 1.66
+  [ 82%] 825/1000 trials — best sharpe: 1.66
+  [ 85%] 850/1000 trials — best sharpe: 1.66
+  [ 87%] 875/1000 trials — best sharpe: 1.66
+  [ 90%] 900/1000 trials — best sharpe: 1.66
+  [ 92%] 925/1000 trials — best sharpe: 1.66
+  [ 95%] 950/1000 trials — best sharpe: 1.66
+  [ 97%] 975/1000 trials — best sharpe: 1.66
+  [100%] 1000/1000 trials — best sharpe: 1.66
+Optimization complete — best sharpe: 1.66
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.33% | Sharpe: 1.66 | Win rate: 42.44%
+restart 2/4 (as of 2024-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2024-03-13
+  objective: sharpe | train window: 2015-07-28 → 2024-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.38
+  [  5%] 50/1000 trials — best sharpe: 1.40
+  [  7%] 75/1000 trials — best sharpe: 1.40
+  [ 10%] 100/1000 trials — best sharpe: 1.40
+  [ 12%] 125/1000 trials — best sharpe: 1.54
+  [ 15%] 150/1000 trials — best sharpe: 1.54
+  [ 17%] 175/1000 trials — best sharpe: 1.58
+  [ 20%] 200/1000 trials — best sharpe: 1.58
+  [ 22%] 225/1000 trials — best sharpe: 1.58
+  [ 25%] 250/1000 trials — best sharpe: 1.58
+  [ 27%] 275/1000 trials — best sharpe: 1.58
+  [ 30%] 300/1000 trials — best sharpe: 1.58
+  [ 32%] 325/1000 trials — best sharpe: 1.58
+  [ 35%] 350/1000 trials — best sharpe: 1.58
+  [ 37%] 375/1000 trials — best sharpe: 1.58
+  [ 40%] 400/1000 trials — best sharpe: 1.58
+  [ 42%] 425/1000 trials — best sharpe: 1.58
+  [ 45%] 450/1000 trials — best sharpe: 1.58
+  [ 47%] 475/1000 trials — best sharpe: 1.58
+  [ 50%] 500/1000 trials — best sharpe: 1.58
+  [ 52%] 525/1000 trials — best sharpe: 1.58
+  [ 55%] 550/1000 trials — best sharpe: 1.62
+  [ 57%] 575/1000 trials — best sharpe: 1.62
+  [ 60%] 600/1000 trials — best sharpe: 1.62
+  [ 62%] 625/1000 trials — best sharpe: 1.62
+  [ 65%] 650/1000 trials — best sharpe: 1.62
+  [ 67%] 675/1000 trials — best sharpe: 1.62
+  [ 70%] 700/1000 trials — best sharpe: 1.62
+  [ 72%] 725/1000 trials — best sharpe: 1.62
+  [ 75%] 750/1000 trials — best sharpe: 1.62
+  [ 77%] 775/1000 trials — best sharpe: 1.62
+  [ 80%] 800/1000 trials — best sharpe: 1.62
+  [ 82%] 825/1000 trials — best sharpe: 1.62
+  [ 85%] 850/1000 trials — best sharpe: 1.62
+  [ 87%] 875/1000 trials — best sharpe: 1.62
+  [ 90%] 900/1000 trials — best sharpe: 1.62
+  [ 92%] 925/1000 trials — best sharpe: 1.62
+  [ 95%] 950/1000 trials — best sharpe: 1.62
+  [ 97%] 975/1000 trials — best sharpe: 1.62
+  [100%] 1000/1000 trials — best sharpe: 1.62
+Optimization complete — best sharpe: 1.62
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 31.83% | Sharpe: 1.62 | Win rate: 45.41%
+restart 3/4 (as of 2024-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2024-03-13
+  objective: sharpe | train window: 2015-07-28 → 2024-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.27
+  [  5%] 50/1000 trials — best sharpe: 1.31
+  [  7%] 75/1000 trials — best sharpe: 1.38
+  [ 10%] 100/1000 trials — best sharpe: 1.38
+  [ 12%] 125/1000 trials — best sharpe: 1.38
+  [ 15%] 150/1000 trials — best sharpe: 1.38
+  [ 17%] 175/1000 trials — best sharpe: 1.41
+  [ 20%] 200/1000 trials — best sharpe: 1.41
+  [ 22%] 225/1000 trials — best sharpe: 1.44
+  [ 25%] 250/1000 trials — best sharpe: 1.44
+  [ 27%] 275/1000 trials — best sharpe: 1.44
+  [ 30%] 300/1000 trials — best sharpe: 1.44
+  [ 32%] 325/1000 trials — best sharpe: 1.44
+  [ 35%] 350/1000 trials — best sharpe: 1.44
+  [ 37%] 375/1000 trials — best sharpe: 1.48
+  [ 40%] 400/1000 trials — best sharpe: 1.48
+  [ 42%] 425/1000 trials — best sharpe: 1.48
+  [ 45%] 450/1000 trials — best sharpe: 1.48
+  [ 47%] 475/1000 trials — best sharpe: 1.49
+  [ 50%] 500/1000 trials — best sharpe: 1.52
+  [ 52%] 525/1000 trials — best sharpe: 1.52
+  [ 55%] 550/1000 trials — best sharpe: 1.52
+  [ 57%] 575/1000 trials — best sharpe: 1.52
+  [ 60%] 600/1000 trials — best sharpe: 1.52
+  [ 62%] 625/1000 trials — best sharpe: 1.52
+  [ 65%] 650/1000 trials — best sharpe: 1.52
+  [ 67%] 675/1000 trials — best sharpe: 1.52
+  [ 70%] 700/1000 trials — best sharpe: 1.52
+  [ 72%] 725/1000 trials — best sharpe: 1.52
+  [ 75%] 750/1000 trials — best sharpe: 1.52
+  [ 77%] 775/1000 trials — best sharpe: 1.52
+  [ 80%] 800/1000 trials — best sharpe: 1.52
+  [ 82%] 825/1000 trials — best sharpe: 1.52
+  [ 85%] 850/1000 trials — best sharpe: 1.52
+  [ 87%] 875/1000 trials — best sharpe: 1.52
+  [ 90%] 900/1000 trials — best sharpe: 1.52
+  [ 92%] 925/1000 trials — best sharpe: 1.52
+  [ 95%] 950/1000 trials — best sharpe: 1.52
+  [ 97%] 975/1000 trials — best sharpe: 1.52
+  [100%] 1000/1000 trials — best sharpe: 1.52
+Optimization complete — best sharpe: 1.52
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 27.04% | Sharpe: 1.52 | Win rate: 40.30%
+restart 4/4 (as of 2024-03-14)
+Optimizing 2 strategies over 2015-07-28 to 2024-03-13
+  objective: sharpe | train window: 2015-07-28 → 2024-03-13
+  1000 trials across 5 workers
+  [  2%] 25/1000 trials — best sharpe: 1.41
+  [  5%] 50/1000 trials — best sharpe: 1.41
+  [  7%] 75/1000 trials — best sharpe: 1.41
+  [ 10%] 100/1000 trials — best sharpe: 1.56
+  [ 12%] 125/1000 trials — best sharpe: 1.56
+  [ 15%] 150/1000 trials — best sharpe: 1.56
+  [ 17%] 175/1000 trials — best sharpe: 1.56
+  [ 20%] 200/1000 trials — best sharpe: 1.56
+  [ 22%] 225/1000 trials — best sharpe: 1.60
+  [ 25%] 250/1000 trials — best sharpe: 1.60
+  [ 27%] 275/1000 trials — best sharpe: 1.60
+  [ 30%] 300/1000 trials — best sharpe: 1.60
+  [ 32%] 325/1000 trials — best sharpe: 1.60
+  [ 35%] 350/1000 trials — best sharpe: 1.60
+  [ 37%] 375/1000 trials — best sharpe: 1.60
+  [ 40%] 400/1000 trials — best sharpe: 1.60
+  [ 42%] 425/1000 trials — best sharpe: 1.60
+  [ 45%] 450/1000 trials — best sharpe: 1.60
+  [ 47%] 475/1000 trials — best sharpe: 1.60
+  [ 50%] 500/1000 trials — best sharpe: 1.62
+  [ 52%] 525/1000 trials — best sharpe: 1.62
+  [ 55%] 550/1000 trials — best sharpe: 1.62
+  [ 57%] 575/1000 trials — best sharpe: 1.62
+  [ 60%] 600/1000 trials — best sharpe: 1.62
+  [ 62%] 625/1000 trials — best sharpe: 1.62
+  [ 65%] 650/1000 trials — best sharpe: 1.62
+  [ 67%] 675/1000 trials — best sharpe: 1.62
+  [ 70%] 700/1000 trials — best sharpe: 1.62
+  [ 72%] 725/1000 trials — best sharpe: 1.62
+  [ 75%] 750/1000 trials — best sharpe: 1.62
+  [ 77%] 775/1000 trials — best sharpe: 1.62
+  [ 80%] 800/1000 trials — best sharpe: 1.62
+  [ 82%] 825/1000 trials — best sharpe: 1.62
+  [ 85%] 850/1000 trials — best sharpe: 1.62
+  [ 87%] 875/1000 trials — best sharpe: 1.62
+  [ 90%] 900/1000 trials — best sharpe: 1.62
+  [ 92%] 925/1000 trials — best sharpe: 1.62
+  [ 95%] 950/1000 trials — best sharpe: 1.62
+  [ 97%] 975/1000 trials — best sharpe: 1.62
+  [100%] 1000/1000 trials — best sharpe: 1.62
+Optimization complete — best sharpe: 1.62
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+  Max drawdown: 26.44% | Sharpe: 1.62 | Win rate: 47.09%
+max_position_pct (0.66) is above 5x equal weight (0.09) — provides little concentration protection
+cell 4/4 done in 55m (elapsed 117m; ~0m remaining at the mean cell pace — frozen
+cells run far faster than re-fit cells)
+stonks/default: mean OOS CAGR +21.45% across 2 seed(s), spread 3.29%  bootstrap95% [-6.90%, +64.67%]  after-tax fold mean +3.91%  DSR~0.95 (proxy: trials from folds, SR var from seeds)
+stonks/none: mean OOS CAGR +25.66% across 2 seed(s), spread 2.38%  bootstrap95% [-8.39%, +73.31%]  after-tax fold mean +4.78%  DSR~0.97 (proxy: trials from folds, SR var from seeds)
+stonks: variant spread 4.21% exceeds seed noise 3.29% (on these windows)

@@ -51,8 +51,46 @@ midas sweep -p sample-portfolios/stonks.yaml -s exp1-stonks-strategies.yaml \
 
 Logs: `exp1-etf.log`, `exp1-stonks.log` (committed with results).
 
-**Results** — pending (sweeps running; this section is filled from the
-summary lines when they finish, before any judgment is written).
+**Results** (2026-08-30; logs `exp1-etf.log`, `exp1-stonks.log`;
+per-cell data `exp1-*-strategies.sweep-cells.jsonl`)
+
+etf (after-tax fold mean is the criterion column):
+
+| variant | OOS CAGR (mean of 2 seeds) | seed spread | after-tax fold mean | per-seed after-tax |
+|---|---|---|---|---|
+| re-fit (default) | +11.56% | 2.67% | +2.50% | +2.72% / +2.28% |
+| frozen (none)    |  +8.97% | 1.03% | +2.00% | +1.86% / +2.13% |
+
+Sweep verdict line: variant spread 2.59% vs seed noise 2.67% — **not
+resolvable at this budget** (on these windows).
+
+stonks:
+
+| variant | OOS CAGR (mean of 2 seeds) | seed spread | after-tax fold mean | per-seed after-tax |
+|---|---|---|---|---|
+| re-fit (default) | +21.45% | 3.29% | +3.91% | +3.31% / +4.51% |
+| frozen (none)    | +25.66% | 2.38% | +4.78% | +4.93% / +4.64% |
+
+Sweep verdict line: variant spread 4.21% **exceeds** seed noise 3.29%.
+
+**Pre-registered judgment:** re-fit ships enabled only if adoption does
+not lose to frozen on after-tax OOS on both baskets. Re-fit **loses on
+stonks in both seeds** (frozen ahead by ~0.9 pt after-tax per fold,
+with the CAGR gap beyond the seed-noise floor), and its etf edge is not
+resolvable from noise. **Criterion not met → `--refit` stays opt-in and
+off by default.** No polarity flip.
+
+Observations recorded for future work (not acted on here):
+
+- The default trigger adopted in 6–8 of 13 folds on every re-fit cell —
+  far more often than "degradation-gated" suggests. The drawdown arm
+  arms after a single prior fold, so early folds breach the prior-worst
+  easily; trigger sensitivity is the first suspect for the stonks loss
+  (churn + short-term tax drag without OOS benefit).
+- Run mechanics: both original two-at-once sweeps were killed by
+  system-wide memory pressure (no leak — sweep tree RSS flat ~1.2 GB);
+  results above come from sequential re-runs with per-cell JSONL
+  checkpointing added in response.
 
 ## Experiment 2 — best vs ensemble vs sampled SPP
 
