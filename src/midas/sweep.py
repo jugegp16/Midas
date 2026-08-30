@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import random
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -255,11 +256,21 @@ def run_sweep(
     """
     log = log_fn or (lambda _msg: None)
     cells: list[SweepCell] = []
-    for variant_name, variant in make_variants(policy, vary, values):
+    variants = make_variants(policy, vary, values)
+    total_cells = len(variants) * len(portfolios) * seeds
+    cell_index = 0
+    durations: list[float] = []
+    sweep_started = time.monotonic()
+    for variant_name, variant in variants:
         for portfolio_name, portfolio in portfolios.items():
             for i in range(seeds):
                 seeded = dataclasses.replace(variant, base_seed=variant.base_seed + i)
-                log(f"sweep: {variant_name} on {portfolio_name}, seed base {seeded.base_seed}")
+                cell_index += 1
+                log(
+                    f"sweep: {variant_name} on {portfolio_name}, seed base {seeded.base_seed} "
+                    f"[cell {cell_index}/{total_cells}]"
+                )
+                cell_started = time.monotonic()
                 baselines = validate(
                     portfolio,
                     price_data_by_portfolio[portfolio_name],
@@ -273,6 +284,16 @@ def run_sweep(
                     forecast_scaling=forecast_scaling,
                     tax_config=portfolio.tax_config,
                     strategy_names=strategy_names,
+                    log_fn=log_fn,
+                )
+                durations.append(time.monotonic() - cell_started)
+                mean_cell = sum(durations) / len(durations)
+                remaining = (total_cells - cell_index) * mean_cell
+                elapsed = time.monotonic() - sweep_started
+                log(
+                    f"cell {cell_index}/{total_cells} done in {durations[-1] / 60:.0f}m "
+                    f"(elapsed {elapsed / 60:.0f}m; ~{remaining / 60:.0f}m remaining "
+                    f"at the mean cell pace — frozen cells run far faster than re-fit cells)"
                 )
                 path = [r for fold in baselines.folds for r in fold.daily_returns]
                 after_tax = [f.after_tax_return_raw for f in baselines.folds if f.after_tax_return_raw is not None]

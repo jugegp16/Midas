@@ -195,3 +195,21 @@ def test_fit_ignores_tickers_not_yet_listed() -> None:
         strategy_names=["MeanReversion"],
     )
     assert result.members
+
+
+def test_fit_logs_restart_headers() -> None:
+    """Each restart announces itself so long fits show progress structure."""
+    portfolio, price_data = _data()
+    logs: list[str] = []
+    fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        SMALL,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+        log_fn=logs.append,
+    )
+    text = "\n".join(logs)
+    assert f"restart 1/{SMALL.restarts}" in text

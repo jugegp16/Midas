@@ -82,6 +82,8 @@ def fit_as_of(
 
     results = []
     for restart in range(policy.restarts):
+        if log_fn is not None:
+            log_fn(f"restart {restart + 1}/{policy.restarts} (as of {as_of.isoformat()})")
         results.append(
             optimize(
                 portfolio=portfolio,

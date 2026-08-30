@@ -259,3 +259,48 @@ def test_summary_reports_after_tax_when_available() -> None:
     text = "\n".join(SweepReport(cells=[cell], holdout_trimmed_to=None).summary_lines())
     assert "after-tax" in text
     assert "+8.00%" in text
+
+
+def test_run_sweep_threads_progress_logging_through_validate() -> None:
+    """A 24-hour sweep must not be silent between cells.
+
+    The optimizer already emits per-trial progress and the validator
+    per-fold lines — but only if run_sweep hands its log_fn down. The
+    cell header carries a counter and, after the first cell, a rough
+    remaining-time estimate.
+    """
+    from datetime import date
+
+    from midas.models import AllocationConstraints, Holding, PortfolioConfig
+    from midas.policy import Policy
+    from midas.sweep import run_sweep
+
+    seen_log_fns: list[object] = []
+
+    def spy_validate(portfolio, price_data, start, end, policy, **kwargs):
+        seen_log_fns.append(kwargs.get("log_fn"))
+        return _stub_validate_factory({("gross", 42): 0.1, ("gross", 43): 0.1})(
+            portfolio, price_data, start, end, policy, **kwargs
+        )
+
+    lines: list[str] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=1, cost_basis=1.0)], available_cash=1.0)
+    run_sweep(
+        {"etf": portfolio},
+        {"etf": {}},
+        date(2016, 1, 4),
+        date(2024, 6, 28),
+        Policy(objective="gross"),
+        "objective",
+        [],
+        seeds=2,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        validate=spy_validate,
+        log_fn=lines.append,
+    )
+    assert all(fn is not None for fn in seen_log_fns), "log_fn not passed to validate"
+    text = "\n".join(lines)
+    assert "cell 1/2" in text
+    assert "cell 2/2" in text
+    assert "remaining" in text  # estimate appears once a cell has completed
