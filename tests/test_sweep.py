@@ -485,7 +485,6 @@ def test_render_recommended_yaml_is_surgical() -> None:
         vary="deployment",
         winner=winner,
         winner_name="best",
-        old_name="ensemble",
         verdict="RESOLVED (+0.22% ± 0.09%)",
     )
     assert out.startswith("# recommended by midas sweep")
@@ -505,9 +504,7 @@ def test_render_recommended_yaml_refuses_missing_knob() -> None:
 
     text = STRATEGIES_TEXT.replace("  deployment: ensemble\n", "")
     with pytest.raises(ValueError, match="deployment"):
-        render_recommended_yaml(
-            text, vary="deployment", winner=Policy(), winner_name="best", old_name="ensemble", verdict="RESOLVED"
-        )
+        render_recommended_yaml(text, vary="deployment", winner=Policy(), winner_name="best", verdict="RESOLVED")
 
 
 def test_recommendation_object_none_on_noise() -> None:
@@ -525,3 +522,115 @@ def test_recommendation_object_on_resolved() -> None:
     assert rec.winner_name == "net"
     assert rec.old_name == "sharpe"
     assert rec.confidence == "RESOLVED"
+
+
+def test_three_variants_get_descriptive_verdict_not_noise_claim() -> None:
+    """With 3+ variants the paired test never ran — the verdict must say
+    that instead of claiming 'within seed noise'."""
+    from midas.policy import Policy
+    from midas.sweep import SweepCell, SweepReport
+
+    variants = [(n, Policy(objective="sharpe")) for n in ("a", "b", "c")]
+    cells = [
+        SweepCell(
+            variant=name,
+            portfolio="p",
+            seed_base=42 + i,
+            aggregate_oos_cagr=cagr,
+            oos_sharpe=1.0,
+            daily_returns=[0.001] * 30,
+            n_folds=4,
+            after_tax_mean=cagr / 4,
+        )
+        for name, cagr in (("a", 0.13), ("b", 0.10), ("c", 0.09))
+        for i in range(3)
+    ]
+    report = SweepReport(cells=cells, holdout_trimmed_to=None, variants=variants, vary="objective")
+    text = "\n".join(report.decision_lines())
+    assert "paired test unavailable" in text
+    assert "seed noise" not in text
+    assert report.recommendation() is None  # no promotion file without a test
+
+
+def test_resolved_requires_enough_pairs() -> None:
+    """Two seeds cannot be RESOLVED — mean > 2·SE is asymptotic (t at n=2
+    is 12.7) and zero observed variance gives a 0.00% SE."""
+    rec = _decision_report([0.020, 0.020], [0.025, 0.025]).recommendation()
+    assert rec is None
+
+
+def test_pretax_scoreboard_shows_cagr_not_na() -> None:
+    from midas.policy import Policy
+    from midas.sweep import SweepCell, SweepReport
+
+    variants = [("a", Policy(objective="gross")), ("b", Policy(objective="sharpe"))]
+    cells = [
+        SweepCell(
+            variant=name,
+            portfolio="p",
+            seed_base=42 + i,
+            aggregate_oos_cagr=cagr,
+            oos_sharpe=1.0,
+            daily_returns=[0.001] * 30,
+            n_folds=4,
+        )
+        for name, cagr in (("a", 0.13), ("b", 0.10))
+        for i in range(3)
+    ]
+    report = SweepReport(cells=cells, holdout_trimmed_to=None, variants=variants, vary="objective")
+    text = "\n".join(report.decision_lines())
+    assert "n/a" not in text
+    assert "+13.00%" in text
+
+
+def test_render_header_reports_the_files_actual_value() -> None:
+    """The 'was X' claim must come from the file, not the runner-up."""
+    from midas.policy import Policy
+    from midas.sweep import render_recommended_yaml
+
+    text = STRATEGIES_TEXT.replace("  objective: sharpe", "  objective: calmar")
+    out = render_recommended_yaml(
+        text,
+        vary="objective",
+        winner=Policy(objective="net", budget=1000, restarts=4),
+        winner_name="net",
+        verdict="RESOLVED",
+    )
+    assert "objective: calmar -> net" in out  # the file said calmar, whatever the sweep's runner-up was
+
+
+def test_lean_verdict_still_recommends() -> None:
+    """LEAN (consistent direction, under the t bar) names a winner too."""
+
+    base = [0.020, 0.021, 0.019, 0.022, 0.020, 0.021, 0.018, 0.023]
+    winner = [t + (0.002 if i % 2 else 0.0005) for i, t in enumerate(base)]
+    rec = _decision_report(base, winner).recommendation()
+    assert rec is not None and rec.confidence in ("LEAN", "RESOLVED")
+
+
+def test_render_swaps_scalar_trigger_for_nested_block() -> None:
+    from midas.policy import AdoptTrigger, Policy
+    from midas.sweep import render_recommended_yaml
+
+    winner = Policy(objective="sharpe", adopt_trigger=AdoptTrigger(oos_percentile_below=10.0, drawdown_breach=True))
+    out = render_recommended_yaml(
+        STRATEGIES_TEXT, vary="adopt_trigger", winner=winner, winner_name="default", verdict="RESOLVED"
+    )
+    assert "adopt_trigger:\n" in out
+    assert "oos_percentile_below: 10" in out
+    assert "drawdown_breach: true" in out
+    assert "adopt_trigger: none" not in out.split("verdict")[1]  # header may name the old value
+
+
+def test_render_swaps_nested_trigger_for_none() -> None:
+    from midas.policy import AdoptTrigger, Policy
+    from midas.sweep import render_recommended_yaml
+
+    nested = STRATEGIES_TEXT.replace(
+        "  adopt_trigger: none\n",
+        "  adopt_trigger:\n    oos_percentile_below: 10\n    drawdown_breach: true\n",
+    )
+    winner = Policy(objective="sharpe", adopt_trigger=AdoptTrigger.never())
+    out = render_recommended_yaml(nested, vary="adopt_trigger", winner=winner, winner_name="none", verdict="RESOLVED")
+    assert "adopt_trigger: none" in out
+    assert "oos_percentile_below" not in out.split("verdict")[1]  # old nested lines swallowed

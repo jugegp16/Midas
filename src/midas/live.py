@@ -348,9 +348,12 @@ class LiveEngine:
                         # 16:00 — the report must still go out before the
                         # overnight sleep.
                         self._maybe_send_report(now)
-                        self._maybe_spawn_refit(now)
                     except Exception:
                         logger.exception("end-of-day report failed; continuing")
+                    try:
+                        self._maybe_spawn_refit(now)
+                    except Exception:
+                        logger.exception("re-fit spawn failed; continuing")
                     self._sleep_until_open(now)
                     continue
                 try:
@@ -594,6 +597,7 @@ class LiveEngine:
             fit = read_fit_entry(self._strategies_path, proposal.fit_as_of, proposal.input_hash)
             if fit is None:
                 logger.error("confirmed proposal's fit not found in history; clearing")
+                self._confirmer.mark_expired(self._state.proposal_message_id)
             else:
                 deploy_fit(self._strategies_path, fit)
                 self._confirmer.mark_booked(self._state.proposal_message_id, "adopted")

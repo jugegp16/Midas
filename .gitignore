@@ -22,5 +22,5 @@ CLAUDE.md
 *.state.yaml
 *.state.yaml.lock
 .DS_Store
-exp[0-9]-*
+/exp[0-9]-*
 WORKFLOW.md

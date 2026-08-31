@@ -219,7 +219,12 @@ def validate_policy(
     compounded = math.prod(1.0 + fold.return_raw for fold in completed)
     oos_days = (completed[-1].test_end - completed[0].test_start).days
     years = oos_days / 365.25
-    aggregate = compounded ** (1.0 / years) - 1.0 if years > 0 and compounded > 0 else 0.0
+    if years > 0 and compounded > 0:
+        aggregate = compounded ** (1.0 / years) - 1.0
+    elif compounded <= 0:
+        aggregate = -1.0  # a blown-up book is -100%, never a flat 0
+    else:
+        aggregate = 0.0
 
     return Baselines(
         folds=completed,

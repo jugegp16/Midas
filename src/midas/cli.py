@@ -453,6 +453,17 @@ def live(
                 ],
             )
             live_anchor = members.as_of if members is not None else None
+            # Live must never trade the YAML's hand-written params as a
+            # silent fallback: a policy-driven session requires a deployed,
+            # matching fit before the first tick — same hard gate as refit.
+            if members is None:
+                raise click.ClickException(
+                    "policy is set but no members are deployed — run midas fit for a fresh deployment"
+                )
+            if members.input_hash != live_input_hash:
+                raise click.ClickException(
+                    "deployed members were fitted under a different configuration — run midas fit before going live"
+                )
         if live_policy is not None:
             live_strategies_path = strategies_file
             live_cadence = live_policy.cadence_days
@@ -1531,33 +1542,40 @@ def sweep(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    recommendation = report.recommendation()
-    if recommendation is not None:
-        recommended_path = strategies_path.with_name(f"{strategies_path.stem}.recommended.yaml")
-        try:
-            recommended_path.write_text(
-                render_recommended_yaml(
-                    strategies_path.read_text(encoding="utf-8"),
-                    vary=recommendation.vary,
-                    winner=recommendation.winner_policy,
-                    winner_name=recommendation.winner_name,
-                    old_name=recommendation.old_name,
-                    verdict=f"{recommendation.confidence}{recommendation.note}",
-                ),
-                encoding="utf-8",
-            )
-        except ValueError as exc:
-            click.echo(f"recommended file not written: {exc}")
-        else:
-            click.echo("")
-            click.echo(
-                f"wrote {recommended_path.name} ({recommendation.vary}: "
-                f"{recommendation.old_name} -> {recommendation.winner_name})"
-            )
-            click.echo(f"review it, then:  mv {recommended_path.name} {strategies_path.name}")
-            click.echo("                  midas fit ... && midas validate ...")
     for line in report.summary_lines() + report.decision_lines():
         click.echo(line)
+    recommendation = report.recommendation()
+    if recommendation is not None:
+        # After the report: a failed write must never cost hours of printed results.
+        recommended_path = strategies_path.with_name(f"{strategies_path.stem}.recommended.yaml")
+        try:
+            source_text = strategies_path.read_text(encoding="utf-8")
+            rendered = render_recommended_yaml(
+                source_text,
+                vary=recommendation.vary,
+                winner=recommendation.winner_policy,
+                winner_name=recommendation.winner_name,
+                verdict=f"{recommendation.confidence}{recommendation.note}",
+            )
+            body = "".join(rendered.splitlines(keepends=True)[2:])
+            already_deployed = body == source_text
+            if already_deployed:
+                click.echo("")
+                click.echo(
+                    f"your strategies file already uses {recommendation.vary}: "
+                    f"{recommendation.winner_name} — nothing to change"
+                )
+            else:
+                recommended_path.write_text(rendered, encoding="utf-8")
+        except (ValueError, OSError) as exc:
+            click.echo(f"recommended file not written: {exc}")
+        else:
+            if already_deployed:
+                return
+            click.echo("")
+            click.echo(f"wrote {recommended_path.name} ({recommendation.vary} -> {recommendation.winner_name})")
+            click.echo(f"review it, then:  mv {recommended_path.name} {strategies_path.name}")
+            click.echo("                  midas fit ... && midas validate ...")
 
 
 @cli.command()

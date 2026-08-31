@@ -185,6 +185,11 @@ def test_fit_ignores_tickers_not_yet_listed() -> None:
         {"open": [], "high": [], "low": [], "close": [], "volume": []},
         index=pd.DatetimeIndex([], name="date"),
     )
+    # A ticker with real data that ALL lands after as_of — the case the
+    # empty-frame guard alone does not cover.
+    from conftest import make_price_series
+
+    price_data["LISTS_LATER"] = make_price_series(date(2023, 11, 1), 30, 50.0, [0.001] * 30, name="LISTS_LATER")
     result = fit_as_of(
         portfolio,
         price_data,

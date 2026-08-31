@@ -125,9 +125,7 @@ class Recommendation:
     note: str
 
 
-def render_recommended_yaml(
-    source_text: str, *, vary: str, winner: Policy, winner_name: str, old_name: str, verdict: str
-) -> str:
+def render_recommended_yaml(source_text: str, *, vary: str, winner: Policy, winner_name: str, verdict: str) -> str:
     """The source strategies file with only the winning knob edited.
 
     Surgical: every other byte (comments included) survives. The edit is
@@ -148,14 +146,14 @@ def render_recommended_yaml(
         if in_policy and stripped and not stripped.startswith((" ", "\t")):
             in_policy = False
         if in_policy:
-            match = re.match(rf"^(\s+){re.escape(vary)}:", stripped)
+            match = re.match(rf"^(\s+){re.escape(vary)}:\s*(.*)$", stripped)
             if match:
-                target = (i, match.group(1))
+                target = (i, match.group(1), match.group(2).split("#")[0].strip() or "(nested)")
                 break
     if target is None:
         msg = f"policy block has no explicit '{vary}:' line — add it before promoting a recommendation"
         raise ValueError(msg)
-    index, indent = target
+    index, indent, file_value = target
     if vary == "adopt_trigger":
         if winner.adopt_trigger.disabled:
             replacement = [f"{indent}adopt_trigger: none\n"]
@@ -173,8 +171,23 @@ def render_recommended_yaml(
     else:
         value = getattr(winner, vary)
         lines[index] = f"{indent}{vary}: {value}\n"
-    header = f"# recommended by midas sweep — {vary}: {old_name} -> {winner_name}\n# verdict: {verdict}\n"
+    header = f"# recommended by midas sweep — {vary}: {file_value} -> {winner_name}\n# verdict: {verdict}\n"
     return header + "".join(lines)
+
+
+MIN_RESOLVED_PAIRS = 6
+T95_BY_PAIRS = {6: 2.571, 7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262, 12: 2.201, 14: 2.160, 16: 2.131}
+
+
+def _t95(n_pairs: int) -> float:
+    """Two-sided 95% t critical value for n_pairs-1 df (2.0 beyond the table)."""
+    if n_pairs in T95_BY_PAIRS:
+        return T95_BY_PAIRS[n_pairs]
+    if n_pairs > max(T95_BY_PAIRS):
+        return 2.0
+    keys = sorted(T95_BY_PAIRS)
+    below = max(k for k in keys if k <= n_pairs)
+    return T95_BY_PAIRS[below]
 
 
 def _paired_after_tax(
@@ -209,7 +222,7 @@ class SweepReport:
         decided = self._decide()
         if decided is None:
             return None
-        ranked, confidence, note, _use_after_tax = decided
+        ranked, confidence, note, _use_after_tax, _paired_ran = decided
         if confidence == "NOT RESOLVABLE":
             return None
         return Recommendation(
@@ -221,7 +234,9 @@ class SweepReport:
             note=note,
         )
 
-    def _decide(self) -> tuple[list[tuple[str, Policy, float | None, float, list[SweepCell]]], str, str, bool] | None:
+    def _decide(
+        self,
+    ) -> tuple[list[tuple[str, Policy, float | None, float, list[SweepCell]]], str, str, bool, bool] | None:
         """Rank variants and grade the comparison.
 
         Ranks by after-tax fold mean (falling back to pre-tax CAGR when no
@@ -246,6 +261,7 @@ class SweepReport:
 
         confidence = "NOT RESOLVABLE"
         conf_note = ""
+        paired_ran = False
         if len(ranked) == 2 and use_after_tax:
             portfolios = sorted({c.portfolio for c in self.cells})
             per_port = []
@@ -255,35 +271,49 @@ class SweepReport:
                 result = _paired_after_tax(cells_a, cells_b)
                 if result is not None:
                     per_port.append(result)
-            if per_port and all(mean > 2 * se for mean, se, _w, _n in per_port):
+            enough = bool(per_port) and all(n >= MIN_RESOLVED_PAIRS for _m, _se, _w, n in per_port)
+            paired_ran = bool(per_port)
+            if enough and all(mean > _t95(n) * se for mean, se, _w, n in per_port):
                 confidence = "RESOLVED"
-            elif per_port and all(mean > 0 and wins >= 0.65 * n for mean, _se, wins, n in per_port):
+            elif enough and all(mean > 0 and wins >= 0.65 * n for mean, _se, wins, n in per_port):
                 # A positive mean alone can be a coin flip; LEAN needs most
-                # pairs pointing the same way.
+                # pairs pointing the same way, and never fewer pairs than
+                # RESOLVED would need.
                 confidence = "LEAN"
             if confidence != "NOT RESOLVABLE":
-                mean0, se0, wins0, n0 = per_port[0]
-                scope = "" if len(per_port) == 1 else f" (consistent across {len(per_port)} portfolios)"
+                # Show the weakest portfolio's numbers — the claim holds
+                # everywhere only if it holds there.
+                mean0, se0, wins0, n0 = min(per_port, key=lambda r: r[0])
+                scope = "" if len(per_port) == 1 else f" (weakest of {len(per_port)} portfolios shown)"
                 conf_note = f" — paired after-tax {mean0:+.2%} ± {se0:.2%} SE, {wins0}/{n0} pairs{scope}"
 
-        return ranked, confidence, conf_note, use_after_tax
+        return ranked, confidence, conf_note, use_after_tax, paired_ran
 
     def decision_lines(self) -> list[str]:
         """A ranked scoreboard and a recommendation for the terminal."""
         decided = self._decide()
         if decided is None:
             return []
-        ranked, confidence, conf_note, use_after_tax = decided
-        metric_label = "after-tax/fold" if use_after_tax else "OOS CAGR (pre-tax — no tax accounting)"
+        ranked, confidence, conf_note, use_after_tax, paired_ran = decided
         lines = ["", "-- decision " + "-" * 44]
-        lines.append(f"  rank  {self.vary:<14} {metric_label:<18} OOS CAGR")
-        for rank, (name, _policy, after_tax, cagr, _cells) in enumerate(ranked, start=1):
-            metric_text = f"{after_tax:+.2%}" if after_tax is not None else "n/a"
-            lines.append(f"  {rank:<5} {name:<14} {metric_text:<18} {cagr:+.2%}")
+        if use_after_tax:
+            lines.append(f"  rank  {self.vary:<14} {'after-tax/fold':<18} OOS CAGR")
+            for rank, (name, _policy, after_tax, cagr, _cells) in enumerate(ranked, start=1):
+                lines.append(f"  {rank:<5} {name:<14} {after_tax:+.2%}{'':12} {cagr:+.2%}")
+        else:
+            lines.append(f"  rank  {self.vary:<14} OOS CAGR (pre-tax — no tax accounting)")
+            for rank, (name, _policy, _after_tax, cagr, _cells) in enumerate(ranked, start=1):
+                lines.append(f"  {rank:<5} {name:<14} {cagr:+.2%}")
         lines.append("")
         if confidence == "NOT RESOLVABLE":
-            lines.append(f"  recommendation: keep your current {self.vary} — differences are within seed noise")
-            lines.append("  confidence: NOT RESOLVABLE (no variant separates from the paired noise floor)")
+            if paired_ran:
+                lines.append(f"  recommendation: keep your current {self.vary} — differences are within seed noise")
+                lines.append("  confidence: NOT RESOLVABLE (no variant separates from the paired noise floor)")
+            else:
+                lines.append(
+                    "  recommendation: none — paired test unavailable "
+                    "(needs exactly 2 variants with after-tax accounting); ranking above is descriptive only"
+                )
             return lines
         winner_name = ranked[0][0]
         lines.append(f"  recommendation: {self.vary}: {winner_name}")

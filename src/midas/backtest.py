@@ -1245,9 +1245,11 @@ class BacktestEngine:
             target_series=state.target_series,
             daily_returns=adjusted_returns,
             end_state=CarriedState(
-                lots=state.lots,
+                # Deep-copied so the result owns its state — resuming from it
+                # must never alias a live simulation's books.
+                lots=copy.deepcopy(state.lots),
                 cash=state.cash,
-                high_water_marks=state.high_water_marks,
+                high_water_marks=dict(state.high_water_marks),
                 peak_value=state.peak_value,
                 deferred={
                     ticker: shares

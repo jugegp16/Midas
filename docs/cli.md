@@ -410,8 +410,16 @@ uv run midas sweep -p etf.yaml -p test.yaml -s strategies.yaml \
 | `--use-holdout` | off | One-shot holdout report; single variant only |
 | `--budget` + `--force` | policy's | Overriding the deployment budget breaks coherence and must be forced |
 
-The sweep prints a trial-count preflight before running. It compares; it
-does not write artifacts — produce baselines with `validate`.
+The sweep prints a trial-count preflight before running, and streams
+per-cell progress. It writes two sidecar files: every finished cell
+appends to `<strategies>.sweep-cells.jsonl` (crash-safe raw data, one
+header line per run), and when the paired same-seed test resolves a
+winner it writes `<strategies>.recommended.yaml` — your strategies file
+with only the winning knob changed and a two-line provenance header.
+The report ends with a decision section: a ranked scoreboard (after-tax
+first), a recommendation graded RESOLVED / LEAN / NOT RESOLVABLE, and
+the mv instruction. It never edits your strategies file and never
+produces baselines — those come from `validate`.
 
 ## doctor
 

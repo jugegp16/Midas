@@ -104,7 +104,7 @@ def test_resolved_sweep_writes_recommended_file(tmp_path: Path, fake_prices: Non
             ("ensemble", Policy(objective="sharpe", budget=4, restarts=1, deployment="ensemble", ensemble_size=4)),
         ]
         cells = []
-        for name, tax in (("best", 0.03), ("ensemble", 0.01)):
+        for name, tax in (("best", 0.01), ("ensemble", 0.03)):
             for i in range(6):
                 cells.append(
                     SweepCell(
@@ -139,5 +139,58 @@ def test_resolved_sweep_writes_recommended_file(tmp_path: Path, fake_prices: Non
     assert recommended, result.output
     text = recommended[0].read_text()
     assert text.startswith("# recommended by midas sweep")
-    assert "deployment: best" in text
+    assert "deployment: best -> ensemble" in text
     assert "wrote" in result.output and "mv " in result.output
+    strategies = next(p for p in tmp_path.glob("*.yaml") if "recommended" not in p.name and "portfolio" not in p.name)
+    original = strategies.read_text()
+    assert "# recommended" not in original  # the operator's file is untouched
+    # The recommended body differs from the original by exactly the knob.
+    body = "\n".join(text.splitlines()[2:]) + "\n"
+    assert body != original
+    assert body.replace("deployment: ensemble", "deployment: best") == original
+
+
+def test_no_file_when_winner_already_deployed(tmp_path: Path, fake_prices: None, monkeypatch) -> None:
+    from midas.policy import Policy
+    from midas.sweep import SweepCell, SweepReport
+
+    def fake_run_sweep(*args, **kwargs):
+        base = Policy(objective="gross", budget=4, restarts=1)
+        variants = [
+            ("best", base),
+            ("ensemble", Policy(objective="gross", budget=4, restarts=1, deployment="ensemble", ensemble_size=4)),
+        ]
+        cells = []
+        for name, tax in (("best", 0.03), ("ensemble", 0.01)):  # file already says best
+            for i in range(6):
+                cells.append(
+                    SweepCell(
+                        variant=name,
+                        portfolio="p",
+                        seed_base=42 + i,
+                        aggregate_oos_cagr=0.1,
+                        oos_sharpe=1.0,
+                        daily_returns=[0.001] * 30,
+                        n_folds=4,
+                        after_tax_mean=tax + 0.0001 * i,
+                    )
+                )
+        return SweepReport(cells=cells, holdout_trimmed_to=None, variants=variants, vary="deployment")
+
+    monkeypatch.setattr(midas.cli, "run_sweep", fake_run_sweep)
+    result = _invoke_sweep(
+        tmp_path,
+        "--seeds",
+        "1",
+        "--holdout-days",
+        "30",
+        "--vary",
+        "deployment",
+        "--value",
+        "best",
+        "--value",
+        "ensemble",
+    )
+    assert result.exit_code == 0, result.output
+    assert not list(tmp_path.glob("*.recommended.yaml"))
+    assert "already uses" in result.output

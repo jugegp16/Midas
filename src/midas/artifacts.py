@@ -71,7 +71,7 @@ def list_fits(strategies_path: Path) -> list[Path]:
     history_dir = fits_dir(strategies_path)
     if not history_dir.is_dir():
         return []
-    return sorted(history_dir.glob("*.yaml"), key=lambda p: (p.name[:10], p.stat().st_mtime, p.name))
+    return sorted(history_dir.glob("*.yaml"), key=lambda p: (p.name[:10], p.name))
 
 
 def latest_fit_as_of(strategies_path: Path) -> date | None:
