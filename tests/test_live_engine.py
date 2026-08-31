@@ -2141,3 +2141,27 @@ def test_reload_refuses_members_from_a_different_configuration(tmp_path: Path, m
     deploy_fit(strategies, matching)
     engine._handle_policy_artifacts(now)
     assert engine._allocator is not before  # matching fingerprint loads
+
+
+def test_reload_grows_the_fetch_window_for_longer_members(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An adopted member with a longer lookback must widen the price fetch.
+
+    The fetch window was frozen at construction; a reloaded member with a
+    longer window would then abstain on every ticker forever (short
+    history scores 0.0) — a silent trading stop.
+    """
+    import dataclasses
+
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    short_window_days = engine._history_days
+    long_member = dataclasses.replace(
+        _phase7_fit(date(2026, 6, 1), window=200),
+        input_hash="i" * 64,
+    )
+    deploy_fit(strategies, long_member)
+    engine._handle_policy_artifacts(now)
+    assert engine._history_days > short_window_days

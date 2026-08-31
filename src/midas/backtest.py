@@ -467,8 +467,17 @@ class BacktestEngine:
         return index
 
     def _warmup_bars(self) -> int:
-        """Max warmup required across entry signals and exit rules."""
-        return max_warmup([*self._allocator.strategies, *self._exit_rules])
+        """Max warmup required across entry signals, exit rules, and risk overlays.
+
+        The vol overlay estimates from ``vol_lookback_days`` of history and
+        skips itself when history is short — omitting it here made a resumed
+        window run overlay-free where the continuous run applied it.
+        """
+        bars = max_warmup([*self._allocator.strategies, *self._exit_rules])
+        risk = self._allocator.risk_config
+        if risk is not None:
+            bars = max(bars, risk.vol_lookback_days)
+        return bars
 
     def _first_data_dates(
         self,

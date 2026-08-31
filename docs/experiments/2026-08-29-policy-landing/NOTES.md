@@ -86,9 +86,19 @@ Observations recorded for future work (not acted on here):
 
 - The default trigger adopted in 6–8 of 13 folds on every re-fit cell —
   far more often than "degradation-gated" suggests. The drawdown arm
-  arms after a single prior fold, so early folds breach the prior-worst
-  easily; trigger sensitivity is the first suspect for the stonks loss
-  (churn + short-term tax drag without OOS benefit).
+  armed after a single prior fold, so early folds breached the
+  prior-worst easily; trigger sensitivity is the first suspect for the
+  stonks loss (churn + short-term tax drag without OOS benefit).
+  **Kill-criterion follow-through (2026-08-30):** the spec pre-registered
+  "retune if the rule false-alarms on more than ~1 in 5 normal folds";
+  ~50% fired that gate, and per its terms DRAWDOWN_ARM_MIN_FOLDS was
+  raised 1→3. The retuned trigger has NOT been re-validated — this
+  experiment's numbers describe the old trigger, re-fit stays off by
+  default, and enabling it requires a fresh pre-registered experiment
+  under the retuned rule. Note also the validator's trigger ranks
+  against an expanding prior-fold window while live ranks against all
+  folds (see spec Deviations) — the validated rule is more sensitive in
+  early folds than the deployed one.
 - Run mechanics: both original two-at-once sweeps were killed by
   system-wide memory pressure (no leak — sweep tree RSS flat ~1.2 GB);
   results above come from sequential re-runs with per-cell JSONL

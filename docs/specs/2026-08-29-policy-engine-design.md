@@ -413,8 +413,19 @@ the defaults; results are committed under
 - **Restriction-tracker state is not carried across fold boundaries** —
   the round-trip clock resets; a disclosed coherence gap alongside the
   three listed above (phase 4).
-- **Trigger arming thresholds:** the drawdown arm needs ≥1 completed
-  fold, the percentile arm ≥5; both latch over the full daily path
+- **The validator's trigger sees an expanding prior-fold window; live
+  sees all of them.** Inside validation, fold k's adoption decision can
+  only rank against folds 1..k-1 (anything else is look-ahead), while
+  the deployed trigger ranks the live window against the complete
+  baselines. The validated rule is therefore systematically more
+  trigger-happy in early folds than the deployed one — Experiment 1's
+  adoption rate partially measures that asymmetry, and any future
+  re-fit experiment must account for it.
+- **Trigger arming thresholds:** the drawdown arm needs ≥3 completed
+  folds (raised from 1 on 2026-08-30 when Experiment 1 measured
+  adoptions on ~50% of folds — past this section's own ~1-in-5
+  false-alarm kill criterion), the percentile arm ≥5; both latch over
+  the full daily path
   (phase 4).
 - **The sidecar watch is the single adoption mechanism** (phase 7): ✅,
   `refit --adopt`, and offline deploys all converge on "the members

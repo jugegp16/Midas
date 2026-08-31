@@ -88,6 +88,7 @@ def fit_as_of(
         tax_config=tax_config,
         cash_infusion=portfolio.cash_infusion,
         trading_restrictions=portfolio.trading_restrictions,
+        strategy_names=strategy_names or [],
     )
     if incumbent is not None and incumbent.input_hash != current_hash:
         # Warm-starting from members fitted under another configuration

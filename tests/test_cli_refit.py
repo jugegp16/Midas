@@ -57,21 +57,25 @@ def _setup(tmp_path: Path, *, monitor_returns: list[float] | None = None, worst_
     )
     assert result.exit_code == 0, result.output
 
-    fold = FoldRecord(
-        fold=1,
-        test_start=date(2023, 10, 2),
-        test_end=date(2023, 12, 29),
-        daily_returns=[0.001] * 60,
-        return_raw=0.06,
-        return_annualized=0.27,
-        drawdown=worst_dd,
-        after_tax_return_raw=None,
-        adopted=True,
-    )
+    folds = [
+        FoldRecord(
+            fold=i,
+            test_start=date(2023, 10, 2),
+            test_end=date(2023, 12, 29),
+            daily_returns=[0.001] * 60,
+            return_raw=0.06,
+            return_annualized=0.27,
+            drawdown=worst_dd,
+            after_tax_return_raw=None,
+            adopted=(i == 1),
+        )
+        # Three folds: the drawdown arm requires >=3 priors to arm.
+        for i in (1, 2, 3)
+    ]
     write_baselines(
         strategies,
         Baselines(
-            folds=[fold],
+            folds=folds,
             aggregate_oos_cagr=0.27,
             policy_hash="p" * 64,
             input_hash=_current_hash(strategies, portfolio),
@@ -106,6 +110,7 @@ def _current_hash(strategies: Path, portfolio: Path) -> str:
         tax_config=port.tax_config,
         cash_infusion=port.cash_infusion,
         trading_restrictions=port.trading_restrictions,
+        strategy_names=["MeanReversion"],
     )
 
 

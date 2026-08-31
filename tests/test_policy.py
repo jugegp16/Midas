@@ -61,6 +61,7 @@ def test_input_fingerprint_moves_with_every_input() -> None:
         tax_config=None,
         cash_infusion=None,
         trading_restrictions=None,
+        strategy_names=["MeanReversion"],
     )
     ref = input_fingerprint(**base)
     assert input_fingerprint(**{**base, "tickers": ["BBB", "AAA"]}) == ref  # order-insensitive
@@ -112,6 +113,7 @@ class TestFingerprintCoversPortfolioBehavior:
             tax_config=None,
             cash_infusion=None,
             trading_restrictions=None,
+            strategy_names=["MeanReversion"],
         )
 
     def test_cash_infusion_changes_hash(self) -> None:
@@ -137,3 +139,27 @@ def test_parse_policy_rejects_non_integral_counts() -> None:
     """budget: 2.5 must fail loudly, never silently truncate to 2."""
     with pytest.raises(ValueError, match="whole number"):
         parse_policy({"objective": "sharpe", "budget": 2.5})
+
+
+def test_fingerprint_covers_the_entry_strategy_set() -> None:
+    """Swapping an entry strategy must change the hash — otherwise every
+    gate accepts a fit built for different strategies."""
+    from midas.models import AllocationConstraints
+
+    base = dict(
+        policy=Policy(objective="sharpe"),
+        tickers=["AAPL"],
+        constraints=AllocationConstraints(),
+        exit_params=None,
+        risk_config=None,
+        min_cash_pct=0.05,
+        forecast_scaling="linear",
+        tax_config=None,
+        cash_infusion=None,
+        trading_restrictions=None,
+        strategy_names=["MeanReversion", "Momentum"],
+    )
+    ref = input_fingerprint(**base)
+    assert input_fingerprint(**{**base, "strategy_names": ["Momentum", "MeanReversion"]}) == ref  # order-insensitive
+    assert input_fingerprint(**{**base, "strategy_names": ["MeanReversion"]}) != ref
+    assert input_fingerprint(**{**base, "strategy_names": ["MeanReversion", "RSIOversold"]}) != ref

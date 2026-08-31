@@ -339,6 +339,13 @@ def _snap_high(lo: float, hi: float, step: float) -> float:
     return float((d_hi - d_lo) // d_step * d_step + d_lo)
 
 
+# Ask/tell batch size: shapes the sampler's history at ask time, so it is a
+# machine-independent constant — identical inputs must reproduce identical
+# members on any core count. Worker-pool sizing stays dynamic (throughput
+# only); batches larger than the pool simply queue.
+ASK_BATCH_SIZE = 8
+
+
 def _pool_workers(n_trials: int) -> int:
     """Worker-pool size: half the CPUs, capped by the trial count, at least one."""
     return min((os.cpu_count() or 4) // 2, n_trials) or 1
@@ -867,7 +874,7 @@ def optimize(
             names,
             ranges,
             n_trials,
-            batch_size=max_workers,
+            batch_size=ASK_BATCH_SIZE,
             objective=objective,
             submit=lambda params: pool.submit(_trial_worker, params),
             log=log,
@@ -1137,7 +1144,7 @@ def walk_forward_optimize(
                 names,
                 ranges,
                 trials_per_fold,
-                batch_size=max_workers,
+                batch_size=ASK_BATCH_SIZE,
                 objective=objective,
                 submit=submit_fold,
                 log=log,

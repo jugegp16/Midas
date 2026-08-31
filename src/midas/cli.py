@@ -426,9 +426,12 @@ def live(
 
         strategies_file = Path(strategies)
         live_policy = load_policy(strategies_file)
-        live_baselines = read_baselines(strategies_file)
+        live_baselines = read_baselines(strategies_file) if load_policy(strategies_file) is not None else None
         members = read_members(strategies_file)
-        if live_policy is not None and live_baselines is not None:
+        if live_policy is not None:
+            # The fingerprint gates member hot-reloads too, so it must exist
+            # whenever a policy does — even before midas validate has ever
+            # produced baselines.
             live_exit_params = {
                 c.name: dict(c.params)
                 for c in strat_configs or []
@@ -445,10 +448,11 @@ def live(
                 tax_config=port.tax_config,
                 cash_infusion=port.cash_infusion,
                 trading_restrictions=port.trading_restrictions,
+                strategy_names=[
+                    c.name for c in strat_configs or [] if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)
+                ],
             )
             live_anchor = members.as_of if members is not None else None
-        else:
-            live_baselines = None
         if live_policy is not None:
             live_strategies_path = strategies_file
             live_cadence = live_policy.cadence_days
@@ -1610,6 +1614,7 @@ def refit(
         tax_config=port.tax_config,
         cash_infusion=port.cash_infusion,
         trading_restrictions=port.trading_restrictions,
+        strategy_names=strategy_names,
     )
     incumbent = read_members(strategies_path)
     if incumbent is not None and incumbent.input_hash != current_hash:

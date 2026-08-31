@@ -507,6 +507,10 @@ class LiveEngine:
                 members=member_entries,
             )
             self._loaded_fit_key = (members.as_of, members.input_hash)
+            # A longer-lookback member needs a wider price fetch, or it
+            # abstains on every ticker forever (short history scores 0.0).
+            warmup_bars = max_warmup([*self._allocator.strategies, *self._exit_rules])
+            self._history_days = max(self._history_days, warmup_bars_to_calendar_days(warmup_bars))
             print_status(f"Members reloaded: fit of {members.as_of.isoformat()} ({len(members.members)} member(s))")
 
         # The monitor window anchors on the latest fit — adoption or not, a

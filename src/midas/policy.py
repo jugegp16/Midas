@@ -171,6 +171,7 @@ def input_fingerprint(
     tax_config: TaxConfig | None,
     cash_infusion: CashInfusion | None,
     trading_restrictions: TradingRestrictions | None,
+    strategy_names: Sequence[str],
 ) -> str:
     """SHA-256 over everything a fit's outcome depends on besides prices.
 
@@ -191,6 +192,7 @@ def input_fingerprint(
         "trading_restrictions": (
             dataclasses.asdict(trading_restrictions) if trading_restrictions is not None else None
         ),
+        "strategy_names": sorted(strategy_names),
     }
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()

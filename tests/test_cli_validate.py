@@ -78,6 +78,7 @@ def test_validate_writes_baselines_with_matching_hash(tmp_path: Path, fake_price
         tax_config=None,
         cash_infusion=None,
         trading_restrictions=None,
+        strategy_names=["MeanReversion"],
     )
     assert baselines.input_hash == expected
     assert "fold" in result.output.lower()

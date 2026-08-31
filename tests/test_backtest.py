@@ -2284,11 +2284,16 @@ def _carry_fixture():
 
 
 def _carry_engine() -> BacktestEngine:
+    from midas.models import RiskConfig
     from midas.strategies.mean_reversion import MeanReversion
 
     constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.6)
+    # The vol overlay is part of the resume contract: its lookback needs
+    # warmup history or a resumed window silently skips the overlay where
+    # the continuous run applies it.
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60, vol_target=0.08)
     return BacktestEngine(
-        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 2),
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 2, risk_config=risk),
         order_sizer=OrderSizer(),
         exit_rules=[StopLoss(loss_threshold=0.12)],
         constraints=constraints,

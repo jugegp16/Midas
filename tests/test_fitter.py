@@ -251,3 +251,36 @@ def test_incumbent_from_different_config_is_not_enqueued(monkeypatch) -> None:
     )
     assert all(e is None for e in captured), "stale incumbent was enqueued"
     assert any("different configuration" in line for line in logs)
+
+
+def test_fit_is_deterministic_across_cpu_counts(monkeypatch) -> None:
+    """The sampler's ask/tell history must not depend on the machine.
+
+    Batching by worker-pool size made the TPE trajectory a function of
+    cpu_count — "identical inputs reproduce identical members anywhere"
+    was false on any machine with a different core count.
+    """
+
+    import midas.optimizer as optimizer_module
+
+    portfolio, price_data = _data()
+    kwargs = dict(constraints=AllocationConstraints(), exit_params={}, strategy_names=["MeanReversion"])
+    policy = Policy(objective="gross", budget=16, restarts=1, base_seed=42, deployment="best")
+
+    seen_batches: list[int] = []
+    real_run = optimizer_module._run_trials_batched
+
+    def spy(*args, **spy_kwargs):
+        seen_batches.append(spy_kwargs["batch_size"])
+        return real_run(*args, **spy_kwargs)
+
+    monkeypatch.setattr(optimizer_module, "_run_trials_batched", spy)
+    monkeypatch.setattr(optimizer_module.os, "cpu_count", lambda: 4)
+    a = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
+    monkeypatch.setattr(optimizer_module.os, "cpu_count", lambda: 32)
+    b = fit_as_of(portfolio, price_data, date(2023, 10, 2), policy, **kwargs)
+    assert a.members == b.members
+    assert a.restart_bests == b.restart_bests
+    # The ask/tell batch size is what shapes the sampler's history — it
+    # must be a machine-independent constant, not the worker-pool size.
+    assert len(set(seen_batches)) == 1, f"batch size varies with cpu_count: {seen_batches}"

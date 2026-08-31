@@ -42,8 +42,8 @@ def test_no_priors_never_fires() -> None:
     assert trigger_fired([], CRASH, TRIGGER) is False
 
 
-def test_drawdown_breach_fires_with_one_prior() -> None:
-    priors = [_fold(1, HEALTHY)]  # tiny drawdown history
+def test_drawdown_breach_fires_once_armed() -> None:
+    priors = [_fold(i, HEALTHY) for i in range(3)]  # tiny drawdown history
     assert trigger_fired(priors, CRASH, TRIGGER) is True
 
 
@@ -251,3 +251,15 @@ def test_frozen_policy_fits_only_fold_zero(monkeypatch) -> None:
     assert len(baselines.folds) >= 2
     assert len(calls) == 1  # fold 0 only
     assert all(fold.adopted == (fold.fold == baselines.folds[0].fold) for fold in baselines.folds)
+
+
+def test_drawdown_arm_waits_for_enough_priors() -> None:
+    """One prior fold's worst drawdown is a trivially low bar — early folds
+    breached it almost surely, producing the ~50% adoption rate that fired
+    the spec's false-alarm kill criterion. The arm now waits for three."""
+    priors_two = [_fold(i, [0.001] * 60) for i in range(2)]
+    crash = [-0.02] * 20
+    trigger = AdoptTrigger(oos_percentile_below=0.0, drawdown_breach=True)
+    assert trigger_fired(priors_two, crash, trigger) is False  # under-armed
+    priors_three = [_fold(i, [0.001] * 60) for i in range(3)]
+    assert trigger_fired(priors_three, crash, trigger) is True

@@ -35,7 +35,10 @@ from midas.policy import AdoptTrigger, Policy, input_fingerprint, policy_hash
 # Arming thresholds: an arm stays silent until enough validation history
 # exists to give it meaning — mirroring what live could have known at the
 # same point in time.
-DRAWDOWN_ARM_MIN_FOLDS = 1
+# Three priors, not one: a single fold's worst drawdown is a trivially low
+# bar, and Experiment 1 measured the resulting adoptions at ~50% of folds —
+# past the spec's ~1-in-5 false-alarm kill criterion.
+DRAWDOWN_ARM_MIN_FOLDS = 3
 PERCENTILE_ARM_MIN_FOLDS = 5
 
 
@@ -233,6 +236,7 @@ def validate_policy(
             tax_config=tax_config,
             cash_infusion=portfolio.cash_infusion,
             trading_restrictions=portfolio.trading_restrictions,
+            strategy_names=strategy_names or [],
         ),
         validation_start=days[0],
         validation_end=days[-1],
