@@ -33,7 +33,20 @@ uv run midas optimize -p portfolio.yaml --start 2020-01-01 --end 2025-01-01 --wa
 | `--walk-forward` | off | Enable walk-forward optimization |
 | `--wf-min-train-pct` | 0.60 | Minimum initial training window as fraction of data. Requires `--walk-forward` |
 | `--wf-min-test-days` | 63 | Minimum trading days per test fold (~3 months). Requires `--walk-forward` |
+| `--search-globals` | off | Legacy full search space: exit-rule parameters and allocator globals become searchable again. Incompatible with a strategies file that pins exits. |
 | `--objective` | `calmar` | What trials maximize: `gross` (raw return), `sharpe` (risk-adjusted), `net` (return after tax; requires a `tax:` block in the portfolio), `calmar` (return over max drawdown), `ulcer` (return over Ulcer Index), `robust` (lower-quartile block return) |
+
+### What gets searched
+
+By default the optimizer searches **entry-signal parameters and weights
+only**. Exit rules, `softmax_temperature`, `min_buy_delta`,
+`max_position_pct`, `min_cash_pct`, `forecast_scaling`, and `risk:` are
+policy-owned: the strategies file sets them, every trial runs them
+unchanged, and the optimized YAML round-trips them verbatim. This
+roughly triples search density at a fixed trial budget and keeps exactly
+one sizing and exit configuration in play. Without `-s`, all entry
+signals are searched and no exit rules run — pin exits in a strategies
+file for any run you intend to act on.
 
 ### Objectives
 
@@ -143,6 +156,7 @@ uv run midas live -p portfolio.yaml -s strategies.yaml --interval 30 --dry-run
 | `--interval` | 60 | Poll interval in seconds |
 | `--dry-run` | off | Observe signals with in-memory fills — never writes state, trade log, or Discord |
 | `--ignore-market-hours` | off | Poll 24/7 instead of only during US equity sessions (debugging) |
+| `--refit` | off | Spawn `midas refit` at the policy cadence after the close report (adoption still needs ✅ or `--adopt`) |
 
 ### Market hours
 
@@ -171,6 +185,28 @@ The report posts to `discord_end_of_day_channel_id` when set — keeping the
 alerts channel action-only — and falls back to the alerts channel
 otherwise. Terminal always gets it. The day-over-day anchor persists in
 the state file, so the delta survives restarts.
+
+### Validation monitor
+
+When the strategies file has a `policy:` block and has been validated
+(`midas validate` wrote `<name>.baselines.json`), the end-of-day report
+gains monitor lines comparing the live trailing fold-window against the
+validation distribution:
+
+```
+fold-window day 23/63: +2.8% TWR (pre-tax) — p41 of validation folds at this offset (pre-holdout baselines)
+drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
+```
+
+The window anchors on the members sidecar's fit date (a declined proposal
+still closed a window), compares cumulative TWR at the same day offset as
+the folds (no annualizing of partial windows), and excludes deposits from
+returns — engine-credited infusions and any cash change the engine didn't
+make itself are treated as inflows. A breach of the validated worst-fold
+drawdown warns once per episode (edge-triggered) and the engine takes no
+action itself: notify-and-act. A baselines artifact whose configuration
+hash no longer matches the running setup prints one "stale" line and
+refuses percentages rather than comparing against a different engine.
 
 ### Discord push notifications + fill confirmation
 
@@ -253,6 +289,137 @@ real session against the same state file.)
 > Migration note: the `discord_webhook_url` key from the earlier
 > webhook-based delivery was removed and is rejected at config load —
 > delete the webhook in Discord and switch to the bot setup above.
+
+## fit
+
+Fit deployable members per the strategies file's `policy:` block — the
+policy-driven entry point that the walk-forward validator and live re-fit
+share (`optimize` remains the low-level single-search tool).
+
+```bash
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --as-of 2026-08-01
+uv run midas fit -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --rollback 1
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `-s`, `--strategies` | required | Strategies YAML containing a `policy:` block |
+| `--start` | required | Earliest data to fit on |
+| `--as-of` | today | Fit on data strictly before this date (exclusive) |
+| `--rollback` | 0 | Restore the members deployed N fits ago instead of fitting |
+
+The fit runs `policy.restarts` independent seeded searches (seeds derive
+from the base seed, the as-of date, and the restart index, so identical
+inputs reproduce identical members anywhere) and selects per
+`policy.deployment`: `best` keeps the single best trial across restarts;
+`ensemble` keeps a stratified, behaviorally deduplicated top-K. The
+currently deployed members warm-start restart 0 of the next fit.
+
+Artifacts are machine-owned and live beside the strategies file, which
+`fit` never edits: `<name>.members.yaml` (the deployed members) and
+`<name>.fits/` (every fit, so `--rollback` always has history).
+
+```yaml
+policy:
+  objective: calmar      # what fits maximize
+  budget: 2000           # trials per restart
+  restarts: 4
+  base_seed: 42
+  deployment: best       # best | ensemble
+  ensemble_size: 20
+  cadence_days: 63       # re-fit interval (used by the validator and live)
+```
+
+When a strategies file has a `policy:` block, `optimize --objective`
+refuses to run — the policy's objective governs, and a flag that silently
+disagreed with it would validate one procedure and deploy another.
+
+## refit
+
+Cadence re-fit: always record, deploy only through adoption.
+
+```bash
+uv run midas refit -p portfolio.yaml -s strategies.yaml            # fit + maybe propose
+uv run midas refit -p portfolio.yaml -s strategies.yaml --adopt    # deploy latest fit
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p` / `-s` | required | Portfolio / strategies (with `policy:` block) |
+| `--start` | as-of − 10y | Earliest data to fit on |
+| `--as-of` | today | Fit on data strictly before this date |
+| `--state` | none | Live state file (read-only) for degradation evidence |
+| `--adopt` | off | Deploy the latest recorded fit and clear any proposal |
+
+The fit lands in `<name>.fits/` unconditionally; the deployed members
+change only through adoption. When the live monitor window (from
+`--state`) breaches the validated baselines, a proposal is written:
+live's confirm tier posts it to Discord for a ✅/❌ (estimates marked;
+expires after `pending_ttl_hours`; re-raised only by the next cadence
+fit), while terminal-only live prints it once with the `--adopt`
+instruction — **no tier ever adopts silently**. Any adoption path —
+✅, `--adopt`, or an offline deploy — converges on the members sidecar,
+which live watches every tick and hot-reloads from. A mismatched input
+hash (portfolio or policy changed since the deployment) refuses with
+the fresh-`midas fit` path. `live --refit` (opt-in) spawns this command
+in a detached process once per session after the close report when the
+deployed fit is older than `cadence_days`.
+
+## validate
+
+Run the strategies file's `policy:` block over history exactly as live
+would — cadence folds, one fit per fold, degradation-gated adoption, a
+portfolio carried across fold boundaries — and write the baselines
+artifact (`<name>.baselines.json`) that the live monitor compares
+against.
+
+```bash
+uv run midas validate -p portfolio.yaml -s strategies.yaml --start 2016-01-01 --end 2026-08-01
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required | Path to portfolio YAML |
+| `-s`, `--strategies` | required | Strategies YAML with a `policy:` block |
+| `--start` / `--end` | required | Validation range |
+| `--min-train-pct` | 0.60 | Initial training reserve before the first fold |
+
+## sweep
+
+Compare policy variants with seed replication and statistics that respect
+the measured noise: per-cell means with the seed spread as an OOS-unit
+noise floor, a stationary-block-bootstrap confidence interval, a Deflated
+Sharpe Ratio line that names its proxies, and a verdict that refuses to
+resolve differences inside the noise. Single-portfolio verdicts are
+qualified with "(on these windows)".
+
+```bash
+uv run midas sweep -p etf.yaml -p test.yaml -s strategies.yaml \
+  --start 2016-01-01 --end 2026-08-01 \
+  --vary deployment --value best --value ensemble --seeds 3
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-p`, `--portfolio` | required, repeatable | Each portfolio is validated side by side, never pooled into one error bar |
+| `--vary` / `--value` | `objective` / none | Policy field and variant values; no values sweeps seeds only |
+| `--seeds` | 3 | Replications per cell (`base_seed + i`) |
+| `--holdout-days` | 730 | Withheld from the end of the range so policy selection cannot overfit the folds it reports |
+| `--use-holdout` | off | One-shot holdout report; single variant only |
+| `--budget` + `--force` | policy's | Overriding the deployment budget breaks coherence and must be forced |
+
+The sweep prints a trial-count preflight before running, and streams
+per-cell progress. It writes two sidecar files: every finished cell
+appends to `<strategies>.sweep-cells.jsonl` (crash-safe raw data, one
+header line per run), and when the paired same-seed test resolves a
+winner it writes `<strategies>.recommended.yaml` — your strategies file
+with only the winning knob changed and a two-line provenance header.
+The report ends with a decision section: a ranked scoreboard (after-tax
+first), a recommendation graded RESOLVED / LEAN / NOT RESOLVABLE, and
+the mv instruction. It never edits your strategies file and never
+produces baselines — those come from `validate`.
 
 ## doctor
 

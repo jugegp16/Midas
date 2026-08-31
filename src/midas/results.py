@@ -20,10 +20,32 @@ from midas.metrics import (
     compute_annualized_return,
     pair_sells_with_basis,
 )
-from midas.models import Direction, TradeRecord
+from midas.models import Direction, PositionLot, TradeRecord
 from midas.risk_metrics import RiskHistory, RiskMetrics
 from midas.tax import AnnualTaxSummary
 from midas.trade_log import TRADE_LOG_COLUMNS, format_holding_period, format_purchase_date
+
+
+@dataclass
+class CarriedState:
+    """Everything a resumed simulation needs to continue a book seamlessly.
+
+    Restriction-tracker state is deliberately not carried: fold boundaries
+    reset the round-trip clock (disclosed coherence gap).
+    """
+
+    lots: dict[str, list[PositionLot]]
+    cash: float
+    high_water_marks: dict[str, float]
+    peak_value: float
+    deferred: dict[str, float]
+    bh_positions: dict[str, float]
+    infusion_next_date: date | None
+    # In-memory only (never serialized): the boundary-day decision awaiting
+    # its next-open fill, and the final recorded bar so the resumed window's
+    # first return is measured from the prior close.
+    pending: object | None = None
+    last_bar: tuple[date, float] | None = None
 
 
 @dataclass
@@ -63,6 +85,15 @@ class BacktestResult:
     risk_history: RiskHistory | None = None  # per-bar risk telemetry across the run
     bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
     """Per-bar buy-and-hold equity, parallel to ``equity_curve``."""
+
+    target_series: list[dict[str, float]] = field(default_factory=list)
+    """Per recorded bar allocation targets; populated only under ``record_targets``."""
+
+    end_state: CarriedState | None = None
+    """The final book, resumable via ``BacktestEngine.run(carried=...)``."""
+
+    daily_returns: list[float] = field(default_factory=list)
+    """Inflow-adjusted TWR returns per bar — the series every risk figure reads."""
 
     ulcer_index: float = 0.0
     """RMS drawdown depth of the inflow-adjusted equity path (0 = never underwater)."""

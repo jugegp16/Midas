@@ -569,6 +569,7 @@ class FakeConfirmer:
 
     def __init__(self) -> None:
         self.posted: list[Order] = []
+        self.messages: list[dict] = []
         self.decisions: dict[str, str | None] = {}
         self.booked: list[tuple[str, str]] = []
         self.declined: list[str] = []
@@ -580,6 +581,13 @@ class FakeConfirmer:
 
     def post_order(self, order: Order, timestamp: datetime) -> str | None:
         self.posted.append(order)
+        if self.fail_posts:
+            return None
+        self._counter += 1
+        return f"msg-{self._counter}"
+
+    def post_message(self, embed: dict) -> str | None:
+        self.messages.append(embed)
         if self.fail_posts:
             return None
         self._counter += 1
@@ -1598,3 +1606,562 @@ def test_dry_run_writes_no_trade_log_on_fills(tmp_path: Path, make_provider: Pro
         assert engine._state.available_cash == 1_500.0  # in-memory fill applied
 
     assert not (tmp_path / "state.yaml.trades.csv").exists()
+
+
+# ---------------------------------------------------------------------------
+# Monitor integration (policy-engine phase 6).
+# ---------------------------------------------------------------------------
+
+
+def _monitor_baselines(worst_dd: float = 0.15):
+    from midas.baselines import Baselines, FoldRecord
+
+    daily = [0.001] * 63
+    fold = FoldRecord(
+        fold=1,
+        test_start=date(2026, 1, 2),
+        test_end=date(2026, 3, 31),
+        daily_returns=daily,
+        return_raw=0.065,
+        return_annualized=0.28,
+        drawdown=worst_dd,
+        after_tax_return_raw=None,
+        adopted=True,
+    )
+    return Baselines(
+        folds=[fold],
+        aggregate_oos_cagr=0.28,
+        policy_hash="p" * 64,
+        input_hash="i" * 64,
+        validation_start=date(2016, 1, 4),
+        validation_end=date(2026, 3, 31),
+        cadence_days=63,
+    )
+
+
+class _CapturingReporter:
+    def __init__(self) -> None:
+        self.reports = []
+
+    def post_report(self, report) -> bool:
+        self.reports.append(report)
+        return True
+
+
+def _monitor_engine(tmp_path: Path, make_provider, *, worst_dd: float = 0.15, anchor=None):
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=1000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    reporter = _CapturingReporter()
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+        reporter=reporter,
+        baselines=_monitor_baselines(worst_dd),
+        monitor_input_hash="i" * 64,
+        monitor_anchor=anchor or date(2026, 5, 1),
+    )
+    return engine, reporter
+
+
+def test_report_includes_monitor_lines(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, reporter = _monitor_engine(tmp_path, make_provider)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash
+    engine._send_report(date(2026, 5, 7), 101_000.0)
+    assert reporter.reports, "report not delivered"
+    lines = reporter.reports[-1].monitor_lines
+    assert any("fold-window day 1/63" in line for line in lines)
+    assert any("normal" in line for line in lines)
+
+
+def test_manual_deposit_does_not_read_as_return(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, _reporter = _monitor_engine(tmp_path, make_provider)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash - 1_000.0  # manual +1000 deposit
+    engine._send_report(date(2026, 5, 7), 101_000.0)
+    ret = engine._state.monitor_returns[-1]
+    assert abs(ret) < 1e-9  # the 1k equity gain was the deposit, not performance
+
+
+def test_new_fit_anchor_resets_window(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.live_state import load_state, save_atomic
+
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    state_path = tmp_path / "state.yaml"
+    # Seed a state with an old anchor and a stale window.
+    seeder = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=state_path,
+    )
+    seeder.close()
+    state = load_state(state_path)
+    state.monitor_anchor = date(2026, 4, 1)
+    state.monitor_returns = [0.01, 0.02]
+    state.monitor_dd_warned = True
+    save_atomic(state, state_path)
+
+    engine, _ = _monitor_engine(tmp_path, make_provider, anchor=date(2026, 5, 1))
+    assert engine._state.monitor_anchor == date(2026, 5, 1)
+    assert engine._state.monitor_returns == []
+    assert engine._state.monitor_dd_warned is False
+
+
+def test_breach_warns_once_and_rearms_after_recovery(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    engine, reporter = _monitor_engine(tmp_path, make_provider, worst_dd=0.01)
+    engine._state.last_report_equity = 100_000.0
+    engine._state.expected_cash = engine._state.available_cash
+    engine._send_report(date(2026, 5, 7), 95_000.0)  # -5% day: breaches 1% worst-dd
+    first_lines = reporter.reports[-1].monitor_lines
+    assert any("BREACH" in line for line in first_lines)
+    assert any("first breach" in line for line in first_lines)
+    assert engine._state.monitor_dd_warned is True
+
+    engine._state.last_report_equity = 95_000.0
+    engine._send_report(date(2026, 5, 8), 94_500.0)  # still underwater
+    second_lines = reporter.reports[-1].monitor_lines
+    assert any("BREACH" in line for line in second_lines)
+    assert not any("first breach" in line for line in second_lines)  # edge, not level
+
+
+# ---------------------------------------------------------------------------
+# Adoption proposals and member reload (policy-engine phase 7).
+# ---------------------------------------------------------------------------
+
+
+def _phase7_fit(as_of, window: int = 20):
+    from midas.fitter import FitResult
+
+    return FitResult(
+        members=[{"MeanReversion": {"window": float(window), "threshold": 0.05, "_weight": 1.0}}],
+        member_scores=[1.0],
+        restart_bests=[1.0],
+        as_of=as_of,
+        policy_hash="p" * 64,
+        input_hash="i" * 64,
+    )
+
+
+def _phase7_engine(tmp_path: Path, make_provider, *, confirmer=None):
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        confirmer=confirmer,
+        strategies_path=strategies,
+    )
+    return engine, strategies
+
+
+def test_member_reload_swaps_allocator_on_sidecar_change(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    before = engine._allocator
+    deploy_fit(strategies, _phase7_fit(date(2026, 6, 1), window=40))
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before
+    windows = [s._window for s in engine._allocator.strategies]  # MeanReversion window
+    assert windows == [40]
+
+
+def test_proposal_posts_once_in_confirm_tier(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies,
+        fit_as_of=challenger.as_of,
+        input_hash=challenger.input_hash,
+        evidence=["drawdown breach"],
+        created_at=now,
+    )
+    engine._handle_policy_artifacts(now)
+    engine._handle_policy_artifacts(now)
+    assert len(confirmer.messages) == 1
+    assert engine._state.proposal_message_id is not None
+
+
+def test_confirmed_proposal_deploys_and_clears(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    confirmer.decisions[engine._state.proposal_message_id] = "confirmed"
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 6, 1)
+    assert read_proposal(strategies) is None
+    assert engine._state.proposal_message_id is None
+
+
+def test_declined_proposal_clears_without_deploying(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    confirmer.decisions[engine._state.proposal_message_id] = "declined"
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 5, 1)  # incumbent kept
+    assert read_proposal(strategies) is None
+
+
+def test_stale_proposal_expires(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_proposal, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    posted = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=posted
+    )
+    engine._handle_policy_artifacts(posted)
+    engine._handle_policy_artifacts(posted + timedelta(hours=9))  # past default 8h TTL
+    assert read_proposal(strategies) is None
+    assert engine._state.proposal_message_id is None
+
+
+def test_terminal_tier_never_auto_adopts(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import read_members, record_fit, write_proposal
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=None)
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=now
+    )
+    engine._handle_policy_artifacts(now)
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 5, 1)  # never deployed
+
+
+def test_refit_spawner_fires_once_when_sidecar_stale(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 1, 5)))  # months stale vs cadence 40
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+    )
+    now = datetime(2026, 5, 7, 21, 0, tzinfo=UTC)
+    engine._maybe_spawn_refit(now)
+    engine._maybe_spawn_refit(now)  # same session: no double spawn
+    assert spawns == [1]
+
+
+def test_refit_spawner_quiet_when_fresh_or_unconfigured(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))  # fresh vs cadence 40
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+    )
+    engine._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
+    assert spawns == []
+    # No spawner configured: must be a silent no-op even when stale.
+    engine2 = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state2.yaml",
+        strategies_path=strategies,
+    )
+    engine2._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
+
+
+def test_recorded_but_undeployed_fit_suppresses_respawn(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A fresh history entry counts as the last fit even before adoption.
+
+    Otherwise an unadopted (trigger-silent or declined) re-fit leaves the
+    deployed sidecar stale forever and live spawns a new fit every day.
+    """
+    from midas.artifacts import record_fit, write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 1, 5)))  # deployed: months stale vs cadence 40
+    record_fit(strategies, _phase7_fit(date(2026, 5, 6), window=40))  # yesterday's un-adopted refit
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+    )
+    engine._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
+    assert spawns == []
+
+
+def test_fresh_history_entry_resets_monitor_window(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A fit landing mid-run opens a new monitor window — adoption or not."""
+    from midas.artifacts import record_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    engine._state.monitor_anchor = date(2026, 5, 1)
+    engine._state.monitor_returns = [0.01, -0.02]
+    engine._state.monitor_dd_warned = True
+    record_fit(strategies, _phase7_fit(date(2026, 6, 1), window=40))
+    engine._handle_policy_artifacts(datetime(2026, 6, 2, 12, 0, tzinfo=UTC))
+    assert engine._state.monitor_anchor == date(2026, 6, 1)
+    assert engine._state.monitor_returns == []
+    assert engine._state.monitor_dd_warned is False
+
+
+def test_dry_run_never_touches_proposals(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Dry-run must leave the shared proposal artifact and its state alone."""
+    from midas.artifacts import read_proposal, record_fit, write_fit, write_proposal
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))
+    challenger = _phase7_fit(date(2026, 6, 1), window=40)
+    record_fit(strategies, challenger)
+    posted = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(
+        strategies, fit_as_of=challenger.as_of, input_hash=challenger.input_hash, evidence=["x"], created_at=posted
+    )
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 6, 2)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        dry_run=True,
+    )
+    engine._handle_policy_artifacts(posted)
+    engine._handle_policy_artifacts(posted + timedelta(hours=9))  # would expire in a real run
+    assert read_proposal(strategies) is not None  # file untouched
+    assert engine._state.proposal_posted_at is None
+    assert engine._state.proposal_message_id is None
+
+
+def test_dry_run_never_spawns_refit(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    from midas.artifacts import write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 1, 5)))  # months stale vs cadence 40
+    spawns: list[int] = []
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        refit_spawner=lambda: spawns.append(1),
+        cadence_days=40,
+        dry_run=True,
+    )
+    engine._maybe_spawn_refit(datetime(2026, 5, 7, 21, 0, tzinfo=UTC))
+    assert spawns == []
+
+
+def test_superseded_proposal_expires_old_message_and_reposts(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A newer proposal replaces the posted one instead of hijacking its ✅.
+
+    The operator's reaction answers the embed they read — if the file now
+    describes a different fit, the old message must expire and the new
+    proposal must be posted fresh, never deployed off the stale ✅.
+    """
+    from midas.artifacts import read_members, record_fit, write_proposal
+
+    confirmer = FakeConfirmer()
+    engine, strategies = _phase7_engine(tmp_path, make_provider, confirmer=confirmer)
+    fit_a = _phase7_fit(date(2026, 6, 1), window=40)
+    fit_b = _phase7_fit(date(2026, 6, 5), window=60)
+    record_fit(strategies, fit_a)
+    record_fit(strategies, fit_b)
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    write_proposal(strategies, fit_as_of=fit_a.as_of, input_hash=fit_a.input_hash, evidence=["a"], created_at=now)
+    engine._handle_policy_artifacts(now)
+    old_message = engine._state.proposal_message_id
+    confirmer.decisions[old_message] = "confirmed"  # ✅ lands just as the file is replaced
+    write_proposal(strategies, fit_as_of=fit_b.as_of, input_hash=fit_b.input_hash, evidence=["b"], created_at=now)
+    engine._handle_policy_artifacts(now)
+    assert read_members(strategies).as_of == date(2026, 5, 1)  # stale ✅ deployed nothing
+    assert old_message in confirmer.expired
+    engine._handle_policy_artifacts(now)
+    assert len(confirmer.messages) == 2  # fit B posted fresh
+    assert engine._state.proposal_fit_as_of == fit_b.as_of
+
+
+def test_deposit_while_engine_down_survives_intermediate_saves(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A manual deposit made between sessions must not read as performance.
+
+    Every engine save re-syncs expected_cash, so the unexplained delta must
+    be captured once at startup — not left to be absorbed by whichever save
+    happens first.
+    """
+    from midas.live_state import LiveState, save_atomic
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=2_000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    seed = LiveState(available_cash=2_000.0, cash_infusion_next_date=None)
+    seed.expected_cash = 1_000.0  # engine last saw 1000; user deposited 1000 while it was down
+    seed.last_report_date = date(2026, 5, 6)
+    seed.last_report_equity = 100_000.0
+    save_atomic(seed, state_path)
+    reporter = _CapturingReporter()
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=state_path,
+        reporter=reporter,
+        baselines=_monitor_baselines(0.15),
+        monitor_input_hash="i" * 64,
+        monitor_anchor=date(2026, 5, 1),
+    )
+    engine._save_state()  # any engine-owned save before the report
+    engine._send_report(date(2026, 5, 7), 101_000.0)
+    ret = engine._state.monitor_returns[-1]
+    assert abs(ret) < 1e-9  # the 1k equity gain was the deposit, not performance
+    engine.close()
+
+
+def test_member_reload_keys_on_input_hash_too(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """A same-day redeploy under a changed configuration must still reload."""
+    import dataclasses
+
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    before = engine._allocator
+    same_day_new_config = dataclasses.replace(_phase7_fit(date(2026, 5, 1), window=40), input_hash="j" * 64)
+    deploy_fit(strategies, same_day_new_config)
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before
+    assert [s._window for s in engine._allocator.strategies] == [40]
+
+
+def test_reload_refuses_members_from_a_different_configuration(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Members fitted under another portfolio must never be hot-loaded.
+
+    Edit the YAML, restart, and the sidecar still holds the old config's
+    fit — tick one must refuse loudly, not silently trade it.
+    """
+    import dataclasses
+
+    from midas.artifacts import deploy_fit, write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        monitor_input_hash="c" * 64,  # the running configuration's fingerprint
+    )
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    before = engine._allocator
+    engine._handle_policy_artifacts(now)  # sidecar hash is "i"*64 — mismatch
+    assert engine._allocator is before  # refused
+    matching = dataclasses.replace(_phase7_fit(date(2026, 6, 1), window=40), input_hash="c" * 64)
+    deploy_fit(strategies, matching)
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before  # matching fingerprint loads
+
+
+def test_reload_grows_the_fetch_window_for_longer_members(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """An adopted member with a longer lookback must widen the price fetch.
+
+    The fetch window was frozen at construction; a reloaded member with a
+    longer window would then abstain on every ticker forever (short
+    history scores 0.0) — a silent trading stop.
+    """
+    import dataclasses
+
+    from midas.artifacts import deploy_fit
+
+    engine, strategies = _phase7_engine(tmp_path, make_provider)
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    engine._handle_policy_artifacts(now)
+    short_window_days = engine._history_days
+    long_member = dataclasses.replace(
+        _phase7_fit(date(2026, 6, 1), window=200),
+        input_hash="i" * 64,
+    )
+    deploy_fit(strategies, long_member)
+    engine._handle_policy_artifacts(now)
+    assert engine._history_days > short_window_days

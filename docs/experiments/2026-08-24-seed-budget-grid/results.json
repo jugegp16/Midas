@@ -1,0 +1,746 @@
+[
+ {
+  "fold": 1,
+  "seed": 42,
+  "trials": 666,
+  "train": 20.7727,
+  "oos": -0.0778,
+  "best_params": {
+   "Momentum": {
+    "window": 5.0,
+    "momentum_scale": 0.06,
+    "_weight": 1.75
+   },
+   "MeanReversion": {
+    "window": 35.0,
+    "threshold": 0.09,
+    "_weight": 0.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.33999999999999997
+   },
+   "ChandelierStop": {
+    "window": 32.0,
+    "multiplier": 2.5
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.045000000000000005,
+    "max_position_pct": 0.73
+   }
+  }
+ },
+ {
+  "fold": 1,
+  "seed": 42,
+  "trials": 2000,
+  "train": 28.6245,
+  "oos": 0.0722,
+  "best_params": {
+   "Momentum": {
+    "window": 5.0,
+    "momentum_scale": 0.06,
+    "_weight": 1.75
+   },
+   "MeanReversion": {
+    "window": 40.0,
+    "threshold": 0.11,
+    "_weight": 0.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.42999999999999994
+   },
+   "ChandelierStop": {
+    "window": 14.0,
+    "multiplier": 2.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.05,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 1,
+  "seed": 7,
+  "trials": 666,
+  "train": 13.2392,
+  "oos": -0.0929,
+  "best_params": {
+   "Momentum": {
+    "window": 45.0,
+    "momentum_scale": 0.06,
+    "_weight": 2.75
+   },
+   "MeanReversion": {
+    "window": 10.0,
+    "threshold": 0.23,
+    "_weight": 1.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.58
+   },
+   "ChandelierStop": {
+    "window": 40.0,
+    "multiplier": 5.0
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.03,
+    "max_position_pct": 0.52
+   }
+  }
+ },
+ {
+  "fold": 1,
+  "seed": 7,
+  "trials": 2000,
+  "train": 14.5652,
+  "oos": -0.1491,
+  "best_params": {
+   "Momentum": {
+    "window": 45.0,
+    "momentum_scale": 0.06,
+    "_weight": 2.75
+   },
+   "MeanReversion": {
+    "window": 10.0,
+    "threshold": 0.23,
+    "_weight": 1.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.58
+   },
+   "ChandelierStop": {
+    "window": 38.0,
+    "multiplier": 5.0
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.03,
+    "max_position_pct": 0.52
+   }
+  }
+ },
+ {
+  "fold": 1,
+  "seed": 123,
+  "trials": 666,
+  "train": 13.3064,
+  "oos": -0.0415,
+  "best_params": {
+   "Momentum": {
+    "window": 7.0,
+    "momentum_scale": 0.06,
+    "_weight": 2.25
+   },
+   "MeanReversion": {
+    "window": 100.0,
+    "threshold": 0.06,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.64
+   },
+   "ChandelierStop": {
+    "window": 24.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.5,
+    "min_buy_delta": 0.025,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 1,
+  "seed": 123,
+  "trials": 2000,
+  "train": 16.1924,
+  "oos": 0.0853,
+  "best_params": {
+   "Momentum": {
+    "window": 9.0,
+    "momentum_scale": 0.05,
+    "_weight": 3.0
+   },
+   "MeanReversion": {
+    "window": 35.0,
+    "threshold": 0.11,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.45999999999999996
+   },
+   "ChandelierStop": {
+    "window": 22.0,
+    "multiplier": 3.5
+   },
+   "_global": {
+    "softmax_temperature": 0.30000000000000004,
+    "min_buy_delta": 0.025,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 42,
+  "trials": 666,
+  "train": 18.7425,
+  "oos": 0.3303,
+  "best_params": {
+   "Momentum": {
+    "window": 11.0,
+    "momentum_scale": 0.1,
+    "_weight": 1.5
+   },
+   "MeanReversion": {
+    "window": 80.0,
+    "threshold": 0.22,
+    "_weight": 1.0
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.58
+   },
+   "ChandelierStop": {
+    "window": 18.0,
+    "multiplier": 2.5
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.04,
+    "max_position_pct": 0.52
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 42,
+  "trials": 2000,
+  "train": 20.6286,
+  "oos": 0.3027,
+  "best_params": {
+   "Momentum": {
+    "window": 11.0,
+    "momentum_scale": 0.08,
+    "_weight": 1.75
+   },
+   "MeanReversion": {
+    "window": 70.0,
+    "threshold": 0.22,
+    "_weight": 1.0
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.61
+   },
+   "ChandelierStop": {
+    "window": 16.0,
+    "multiplier": 2.25
+   },
+   "_global": {
+    "softmax_temperature": 0.30000000000000004,
+    "min_buy_delta": 0.035,
+    "max_position_pct": 0.52
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 7,
+  "trials": 666,
+  "train": 19.8184,
+  "oos": 0.3225,
+  "best_params": {
+   "Momentum": {
+    "window": 9.0,
+    "momentum_scale": 0.08,
+    "_weight": 1.5
+   },
+   "MeanReversion": {
+    "window": 30.0,
+    "threshold": 0.18,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.42999999999999994
+   },
+   "ChandelierStop": {
+    "window": 10.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.05,
+    "max_position_pct": 0.52
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 7,
+  "trials": 2000,
+  "train": 29.5475,
+  "oos": 0.3197,
+  "best_params": {
+   "Momentum": {
+    "window": 9.0,
+    "momentum_scale": 0.08,
+    "_weight": 1.5
+   },
+   "MeanReversion": {
+    "window": 30.0,
+    "threshold": 0.19,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.4
+   },
+   "ChandelierStop": {
+    "window": 10.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.05,
+    "max_position_pct": 0.5900000000000001
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 123,
+  "trials": 666,
+  "train": 24.2141,
+  "oos": 0.3324,
+  "best_params": {
+   "Momentum": {
+    "window": 7.0,
+    "momentum_scale": 0.02,
+    "_weight": 1.5
+   },
+   "MeanReversion": {
+    "window": 75.0,
+    "threshold": 0.16,
+    "_weight": 0.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.42999999999999994
+   },
+   "ChandelierStop": {
+    "window": 18.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.03,
+    "max_position_pct": 0.5900000000000001
+   }
+  }
+ },
+ {
+  "fold": 5,
+  "seed": 123,
+  "trials": 2000,
+  "train": 25.6506,
+  "oos": 0.3187,
+  "best_params": {
+   "Momentum": {
+    "window": 9.0,
+    "momentum_scale": 0.02,
+    "_weight": 1.0
+   },
+   "MeanReversion": {
+    "window": 65.0,
+    "threshold": 0.19,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.42999999999999994
+   },
+   "ChandelierStop": {
+    "window": 20.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.03,
+    "max_position_pct": 0.5900000000000001
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 42,
+  "trials": 666,
+  "train": 38.1264,
+  "oos": 0.4247,
+  "best_params": {
+   "Momentum": {
+    "window": 19.0,
+    "momentum_scale": 0.05,
+    "_weight": 2.0
+   },
+   "MeanReversion": {
+    "window": 80.0,
+    "threshold": 0.09,
+    "_weight": 1.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.7599999999999999
+   },
+   "ChandelierStop": {
+    "window": 20.0,
+    "multiplier": 2.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.02,
+    "max_position_pct": 0.73
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 42,
+  "trials": 2000,
+  "train": 49.1914,
+  "oos": 0.404,
+  "best_params": {
+   "Momentum": {
+    "window": 19.0,
+    "momentum_scale": 0.04,
+    "_weight": 2.25
+   },
+   "MeanReversion": {
+    "window": 30.0,
+    "threshold": 0.23,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.7599999999999999
+   },
+   "ChandelierStop": {
+    "window": 22.0,
+    "multiplier": 2.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.05,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 7,
+  "trials": 666,
+  "train": 41.5135,
+  "oos": 0.3634,
+  "best_params": {
+   "Momentum": {
+    "window": 39.0,
+    "momentum_scale": 0.02,
+    "_weight": 3.0
+   },
+   "MeanReversion": {
+    "window": 10.0,
+    "threshold": 0.17,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.49
+   },
+   "ChandelierStop": {
+    "window": 36.0,
+    "multiplier": 5.0
+   },
+   "_global": {
+    "softmax_temperature": 0.30000000000000004,
+    "min_buy_delta": 0.04,
+    "max_position_pct": 0.5900000000000001
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 7,
+  "trials": 2000,
+  "train": 48.5203,
+  "oos": 0.3922,
+  "best_params": {
+   "Momentum": {
+    "window": 41.0,
+    "momentum_scale": 0.03,
+    "_weight": 2.0
+   },
+   "MeanReversion": {
+    "window": 10.0,
+    "threshold": 0.13,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.5499999999999999
+   },
+   "ChandelierStop": {
+    "window": 34.0,
+    "multiplier": 4.75
+   },
+   "_global": {
+    "softmax_temperature": 0.5,
+    "min_buy_delta": 0.035,
+    "max_position_pct": 0.73
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 123,
+  "trials": 666,
+  "train": 44.8522,
+  "oos": 0.5671,
+  "best_params": {
+   "Momentum": {
+    "window": 5.0,
+    "momentum_scale": 0.08,
+    "_weight": 2.5
+   },
+   "MeanReversion": {
+    "window": 55.0,
+    "threshold": 0.12,
+    "_weight": 1.25
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.6699999999999999
+   },
+   "ChandelierStop": {
+    "window": 40.0,
+    "multiplier": 2.5
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.035,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 10,
+  "seed": 123,
+  "trials": 2000,
+  "train": 71.0486,
+  "oos": 0.539,
+  "best_params": {
+   "Momentum": {
+    "window": 9.0,
+    "momentum_scale": 0.06,
+    "_weight": 2.5
+   },
+   "MeanReversion": {
+    "window": 40.0,
+    "threshold": 0.17,
+    "_weight": 1.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.58
+   },
+   "ChandelierStop": {
+    "window": 12.0,
+    "multiplier": 2.5
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.025,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 42,
+  "trials": 666,
+  "train": 128.5996,
+  "oos": -0.2186,
+  "best_params": {
+   "Momentum": {
+    "window": 7.0,
+    "momentum_scale": 0.08,
+    "_weight": 2.75
+   },
+   "MeanReversion": {
+    "window": 70.0,
+    "threshold": 0.13,
+    "_weight": 2.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.4
+   },
+   "ChandelierStop": {
+    "window": 20.0,
+    "multiplier": 3.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.015,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 42,
+  "trials": 2000,
+  "train": 128.5996,
+  "oos": -0.2186,
+  "best_params": {
+   "Momentum": {
+    "window": 7.0,
+    "momentum_scale": 0.08,
+    "_weight": 2.75
+   },
+   "MeanReversion": {
+    "window": 70.0,
+    "threshold": 0.13,
+    "_weight": 2.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.4
+   },
+   "ChandelierStop": {
+    "window": 20.0,
+    "multiplier": 3.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.015,
+    "max_position_pct": 0.66
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 7,
+  "trials": 666,
+  "train": 84.3376,
+  "oos": -0.1697,
+  "best_params": {
+   "Momentum": {
+    "window": 33.0,
+    "momentum_scale": 0.03,
+    "_weight": 1.75
+   },
+   "MeanReversion": {
+    "window": 60.0,
+    "threshold": 0.17,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.7899999999999999
+   },
+   "ChandelierStop": {
+    "window": 38.0,
+    "multiplier": 4.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.025,
+    "max_position_pct": 0.73
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 7,
+  "trials": 2000,
+  "train": 112.3503,
+  "oos": -0.1922,
+  "best_params": {
+   "Momentum": {
+    "window": 33.0,
+    "momentum_scale": 0.03,
+    "_weight": 2.25
+   },
+   "MeanReversion": {
+    "window": 75.0,
+    "threshold": 0.17,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.7899999999999999
+   },
+   "ChandelierStop": {
+    "window": 36.0,
+    "multiplier": 4.75
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.025,
+    "max_position_pct": 0.73
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 123,
+  "trials": 666,
+  "train": 73.3599,
+  "oos": -0.1694,
+  "best_params": {
+   "Momentum": {
+    "window": 5.0,
+    "momentum_scale": 0.07,
+    "_weight": 2.5
+   },
+   "MeanReversion": {
+    "window": 60.0,
+    "threshold": 0.17,
+    "_weight": 0.75
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.6699999999999999
+   },
+   "ChandelierStop": {
+    "window": 26.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.4,
+    "min_buy_delta": 0.03,
+    "max_position_pct": 0.5900000000000001
+   }
+  }
+ },
+ {
+  "fold": 15,
+  "seed": 123,
+  "trials": 2000,
+  "train": 106.8532,
+  "oos": -0.1472,
+  "best_params": {
+   "Momentum": {
+    "window": 5.0,
+    "momentum_scale": 0.06,
+    "_weight": 1.5
+   },
+   "MeanReversion": {
+    "window": 70.0,
+    "threshold": 0.17,
+    "_weight": 0.5
+   },
+   "ProfitTaking": {
+    "gain_threshold": 0.7899999999999999
+   },
+   "ChandelierStop": {
+    "window": 26.0,
+    "multiplier": 3.25
+   },
+   "_global": {
+    "softmax_temperature": 0.2,
+    "min_buy_delta": 0.04,
+    "max_position_pct": 0.45
+   }
+  }
+ }
+]

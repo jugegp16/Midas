@@ -9,7 +9,7 @@ import os
 import statistics
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, get_args
 
@@ -28,6 +28,7 @@ from midas.models import (
     Objective,
     PortfolioConfig,
     RiskConfig,
+    StrategyConfig,
     TaxConfig,
     objective_error,
 )
@@ -148,6 +149,19 @@ PARAM_RANGES: dict[str, dict[str, tuple[float, float, float]]] = {
 
 DEFAULT_N_TRIALS = 200
 
+
+def entry_search_names() -> list[str]:
+    """Entry-signal strategies the optimizer may search.
+
+    Exit rules and allocator globals are policy-owned: the operator sets
+    them and the search never samples them, so ensembles differ only in
+    forecasts and the engine has exactly one sizing/exit configuration.
+    """
+    return [
+        name for name in PARAM_RANGES if name != ALLOCATION_KEY and issubclass(STRATEGY_REGISTRY[name], EntrySignal)
+    ]
+
+
 # Sampler seed: fixed so a given (inputs, seed) pair reproduces its search
 # byte for byte. Walk-forward offsets it per fold so folds stay distinct.
 DEFAULT_SEED = 42
@@ -254,6 +268,7 @@ class OptimizeResult:
     best_test_return: float
     trials_run: int
     best_result: BacktestResult | None = None
+    top_trials: list[tuple[float, dict[str, dict[str, float]]]] = field(default_factory=list)
 
 
 @dataclass
@@ -324,9 +339,25 @@ def _snap_high(lo: float, hi: float, step: float) -> float:
     return float((d_hi - d_lo) // d_step * d_step + d_lo)
 
 
+# Ask/tell batch size: shapes the sampler's history at ask time, so it is a
+# machine-independent constant — identical inputs must reproduce identical
+# members on any core count. Worker-pool sizing stays dynamic (throughput
+# only); batches larger than the pool simply queue.
+ASK_BATCH_SIZE = 8
+
+
 def _pool_workers(n_trials: int) -> int:
     """Worker-pool size: half the CPUs, capped by the trial count, at least one."""
     return min((os.cpu_count() or 4) // 2, n_trials) or 1
+
+
+def flatten_params(params: dict[str, dict[str, float]]) -> dict[str, float]:
+    """Nested optimizer params -> flat Optuna param names (``Strategy__param``).
+
+    The inverse of what ``_suggest_params`` builds; used to enqueue known
+    parameter sets (warm starts) into a study.
+    """
+    return {f"{strategy}__{param}": value for strategy, block in params.items() for param, value in block.items()}
 
 
 def _suggest_params(
@@ -392,24 +423,43 @@ def _run_trial(
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
     track_vol_contribution: bool = True,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> tuple[TrialMetrics, BacktestResult]:
     """Run a single backtest trial with the allocator + order_sizer + exit_rules system.
 
     Returns the scoring metrics alongside the full result. Callers that want
     in-sample-only metrics must pass a train-only window with
     ``enable_split=False``; the metrics cover whatever window was run.
-    """
-    # Extract global allocation knobs
-    global_params = strategy_params.get(ALLOCATION_KEY, {})
-    entries, exits = _instantiate_strategies(strategy_params)
 
-    constraints = AllocationConstraints(
-        max_position_pct=global_params.get("max_position_pct"),
-        min_cash_pct=min_cash_pct,
-        softmax_temperature=global_params.get("softmax_temperature", 0.5),
-        min_buy_delta=global_params.get("min_buy_delta", 0.02),
-        forecast_scaling=forecast_scaling,
-    )
+    When ``constraints`` is given it is used as-is (policy-owned) instead of
+    being built from sampled globals; when ``exit_params`` is given, those
+    exit rules run with exactly those parameters and ``strategy_params``
+    must carry entries only. With both ``None``, globals and exits are read
+    from ``strategy_params`` — the ``search_globals`` legacy path.
+
+    Raises:
+        ValueError: If ``strategy_params`` contains exit rules while
+            ``exit_params`` is also given.
+    """
+    global_params = strategy_params.get(ALLOCATION_KEY, {})
+    if constraints is None:
+        constraints = AllocationConstraints(
+            max_position_pct=global_params.get("max_position_pct"),
+            min_cash_pct=min_cash_pct,
+            softmax_temperature=global_params.get("softmax_temperature", 0.5),
+            min_buy_delta=global_params.get("min_buy_delta", 0.02),
+            forecast_scaling=forecast_scaling,
+        )
+    entries, exits = _instantiate_strategies(strategy_params)
+    if exit_params is not None:
+        if exits:
+            msg = "strategy_params contains exit rules but exit_params is also given"
+            raise ValueError(msg)
+        # Exit params are numeric by construction; float() keeps the shared
+        # instantiation path typed and fails loudly on anything else.
+        numeric_exits = {name: {k: float(v) for k, v in params.items()} for name, params in exit_params.items()}
+        _, exits = _instantiate_strategies(numeric_exits)
 
     allocator = Allocator(entries, constraints, portfolio.active_ticker_count(), risk_config=risk_config)
     order_sizer = OrderSizer()
@@ -499,6 +549,22 @@ def format_objective(value: float, objective: Objective) -> str:
     return f"{value:.2%}" if objective in ("gross", "net", "robust") else f"{value:.2f}"
 
 
+def _require_split_consistency(
+    search_globals: bool,
+    exit_params: dict[str, dict[str, float | int | str]] | None,
+    constraints: AllocationConstraints | None,
+) -> None:
+    """Reject the contradictory combination of searching and fixing the same knobs.
+
+    Raises:
+        ValueError: When ``search_globals`` is combined with fixed exits or
+            constraints.
+    """
+    if search_globals and (exit_params is not None or constraints is not None):
+        msg = "search_globals searches what exit_params/constraints would fix; pass one or the other"
+        raise ValueError(msg)
+
+
 def _require_tax_for_net(objective: Objective, tax_config: TaxConfig | None) -> None:
     """Fail before any work starts when ``net`` has nothing to tax.
 
@@ -524,6 +590,8 @@ def _init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise standard-optimizer workers with the train-window trial state."""
     # Suppress allocator warnings during trial evaluation — the optimizer
@@ -543,6 +611,8 @@ def _init_worker(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
 
@@ -563,6 +633,8 @@ def _wf_init_worker(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     tax_config: TaxConfig | None = None,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Initialise walk-forward workers with static state only (dates vary per call)."""
     logging.getLogger("midas.allocator").setLevel(logging.ERROR)
@@ -573,6 +645,8 @@ def _wf_init_worker(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
 
@@ -594,6 +668,8 @@ def _wf_trial_worker(
         forecast_scaling=worker_state.get("forecast_scaling", "none"),
         tax_config=worker_state.get("tax_config"),
         track_vol_contribution=False,
+        exit_params=worker_state.get("exit_params"),
+        constraints=worker_state.get("constraints"),
     )
     return metrics
 
@@ -636,26 +712,42 @@ def _prepare_names_and_ranges(
     strategy_names: list[str] | None,
     min_cash_pct: float,
     n_tickers: int,
+    search_globals: bool = False,
 ) -> tuple[list[str], dict[str, dict[str, tuple[float, float, float]]]]:
-    """Resolve strategy names and build parameter ranges (shared by optimize/walk-forward)."""
-    names = strategy_names or [key for key in PARAM_RANGES if key != ALLOCATION_KEY]
-    names = [name for name in names if name in PARAM_RANGES]
+    """Resolve searched strategies and their ranges (shared by optimize/walk-forward).
+
+    By default only entry signals are searched; exit rules and allocator
+    globals are policy-owned. ``search_globals=True`` restores the full
+    legacy space for experiments.
+
+    Raises:
+        ValueError: If no searchable strategies remain, or a policy-owned
+            name is requested without ``search_globals``.
+    """
+    searchable = set(PARAM_RANGES) if search_globals else set(entry_search_names())
+    names = strategy_names or sorted(searchable - {ALLOCATION_KEY})
+    rejected = [n for n in names if n in PARAM_RANGES and n not in searchable]
+    if rejected:
+        msg = f"{sorted(rejected)} are policy-owned (exit rules); set search_globals to search them"
+        raise ValueError(msg)
+    names = [name for name in names if name in searchable]
 
     if not names:
         msg = "No optimizable strategies found"
         raise ValueError(msg)
 
-    names.append(ALLOCATION_KEY)
+    ranges = {name: dict(PARAM_RANGES[name]) for name in names}
 
-    equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
-    lo = max(round(1.5 * equal_weight, 2), 0.10)
-    hi = min(round(5.0 * equal_weight, 2), 0.80)
-    if lo >= hi:
-        lo, hi = 0.10, 0.80
-    step = round((hi - lo) / 8, 2) or 0.01
-    ranges = {name: dict(PARAM_RANGES[name]) for name in names if name in PARAM_RANGES}
-    ranges.setdefault(ALLOCATION_KEY, {})
-    ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
+    if search_globals:
+        names.append(ALLOCATION_KEY)
+        equal_weight = (1.0 - min_cash_pct) / max(n_tickers, 1)
+        lo = max(round(1.5 * equal_weight, 2), 0.10)
+        hi = min(round(5.0 * equal_weight, 2), 0.80)
+        if lo >= hi:
+            lo, hi = 0.10, 0.80
+        step = round((hi - lo) / 8, 2) or 0.01
+        ranges.setdefault(ALLOCATION_KEY, dict(PARAM_RANGES[ALLOCATION_KEY]))
+        ranges[ALLOCATION_KEY]["max_position_pct"] = (lo, hi, step)
 
     return names, ranges
 
@@ -713,6 +805,11 @@ def optimize(
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
+    search_globals: bool = False,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
+    constraints: AllocationConstraints | None = None,
+    enqueue: list[dict[str, float]] | None = None,
+    record_top: int = 0,
 ) -> OptimizeResult:
     """Bayesian optimization over strategy parameters using Optuna TPE.
 
@@ -729,8 +826,11 @@ def optimize(
     """
     log = log_fn or (lambda _: None)
     _require_tax_for_net(objective, tax_config)
+    _require_split_consistency(search_globals, exit_params, constraints)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
+    names, ranges = _prepare_names_and_ranges(
+        strategy_names, min_cash_pct, portfolio.active_ticker_count(), search_globals=search_globals
+    )
     train_end = train_window_end(_trading_days(price_data, start, end), train_pct)
 
     max_workers = _pool_workers(n_trials)
@@ -747,12 +847,25 @@ def optimize(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
+    for flat in enqueue or []:
+        study.enqueue_trial(flat)
 
     # -- Objective that runs in the main process but farms backtest to pool --
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(portfolio, price_data, start, train_end, min_cash_pct, risk_config, forecast_scaling, tax_config),
+        initargs=(
+            portfolio,
+            price_data,
+            start,
+            train_end,
+            min_cash_pct,
+            risk_config,
+            forecast_scaling,
+            tax_config,
+            exit_params,
+            constraints,
+        ),
     )
 
     try:
@@ -761,7 +874,7 @@ def optimize(
             names,
             ranges,
             n_trials,
-            batch_size=max_workers,
+            batch_size=ASK_BATCH_SIZE,
             objective=objective,
             submit=lambda params: pool.submit(_trial_worker, params),
             log=log,
@@ -789,6 +902,8 @@ def optimize(
         risk_config=risk_config,
         forecast_scaling=forecast_scaling,
         tax_config=tax_config,
+        exit_params=exit_params,
+        constraints=constraints,
     )
 
     log(
@@ -796,6 +911,12 @@ def optimize(
         f"Sharpe: {best_result.sharpe_ratio:.2f} | "
         f"Win rate: {best_result.win_rate:.2%}"
     )
+
+    top_trials: list[tuple[float, dict[str, dict[str, float]]]] = []
+    if record_top > 0:
+        completed = [t for t in study.trials if t.value is not None and "params" in t.user_attrs]
+        ranked = sorted(completed, key=lambda t: (-(t.value or 0.0), t.number))
+        top_trials = [(float(t.value or 0.0), t.user_attrs["params"]) for t in ranked[:record_top]]
 
     return OptimizeResult(
         best_params=best_params,
@@ -806,6 +927,7 @@ def optimize(
         best_test_return=round(best_result.test_return, 4),
         trials_run=len(study.trials),
         best_result=best_result,
+        top_trials=top_trials,
     )
 
 
@@ -929,6 +1051,9 @@ def walk_forward_optimize(
     objective: Objective = DEFAULT_OBJECTIVE,
     tax_config: TaxConfig | None = None,
     seed: int = DEFAULT_SEED,
+    search_globals: bool = False,
+    exit_params: dict[str, dict[str, float | int | str]] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> WalkForwardResult:
     """Walk-forward optimisation with anchored training windows.
 
@@ -944,8 +1069,11 @@ def walk_forward_optimize(
     """
     log = log_fn or (lambda _: None)
     _require_tax_for_net(objective, tax_config)
+    _require_split_consistency(search_globals, exit_params, constraints)
 
-    names, ranges = _prepare_names_and_ranges(strategy_names, min_cash_pct, portfolio.active_ticker_count())
+    names, ranges = _prepare_names_and_ranges(
+        strategy_names, min_cash_pct, portfolio.active_ticker_count(), search_globals=search_globals
+    )
     trading_days = _trading_days(price_data, start, end)
 
     fold_boundaries = _fold_boundaries(len(trading_days), min_train_pct, min_test_days)
@@ -969,7 +1097,16 @@ def walk_forward_optimize(
     pool = ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_wf_init_worker,
-        initargs=(portfolio, price_data, min_cash_pct, risk_config, forecast_scaling, tax_config),
+        initargs=(
+            portfolio,
+            price_data,
+            min_cash_pct,
+            risk_config,
+            forecast_scaling,
+            tax_config,
+            exit_params,
+            constraints,
+        ),
     )
 
     try:
@@ -1007,7 +1144,7 @@ def walk_forward_optimize(
                 names,
                 ranges,
                 trials_per_fold,
-                batch_size=max_workers,
+                batch_size=ASK_BATCH_SIZE,
                 objective=objective,
                 submit=submit_fold,
                 log=log,
@@ -1031,6 +1168,8 @@ def walk_forward_optimize(
                 forecast_scaling=forecast_scaling,
                 tax_config=tax_config,
                 track_vol_contribution=False,
+                exit_params=exit_params,
+                constraints=constraints,
             )
             test_twr = test_metrics.twr
 
@@ -1078,6 +1217,8 @@ def write_strategies_yaml(
     risk_config: RiskConfig | None = None,
     forecast_scaling: ForecastScaling = "none",
     objective: Objective | None = None,
+    exit_configs: list[StrategyConfig] | None = None,
+    constraints: AllocationConstraints | None = None,
 ) -> None:
     """Write optimized parameters to a strategies YAML file.
 
@@ -1100,11 +1241,21 @@ def write_strategies_yaml(
         objective: When given, recorded as a leading comment so the file says
             what it was optimized for. A comment, never a key — the loader
             must not see it as config.
+        exit_configs: Policy-owned exit rules, appended to the strategies
+            list verbatim (never optimized).
+        constraints: Policy-owned allocator globals; when given, their
+            values are emitted instead of anything sampled.
     """
     output: dict[str, object] = {}
 
-    # Emit global allocation knobs as top-level keys
-    if ALLOCATION_KEY in params:
+    if constraints is not None:
+        # Policy-owned globals round-trip from the operator's config.
+        output["softmax_temperature"] = round(constraints.softmax_temperature, 4)
+        output["min_buy_delta"] = round(constraints.min_buy_delta, 4)
+        if constraints.max_position_pct is not None:
+            output["max_position_pct"] = round(constraints.max_position_pct, 4)
+    elif ALLOCATION_KEY in params:
+        # Legacy search_globals path: emit the sampled values.
         for key, val in params[ALLOCATION_KEY].items():
             output[key] = round(val, 4)
 
@@ -1136,6 +1287,12 @@ def write_strategies_yaml(
         if clean_params:
             entry["params"] = clean_params
         strategies.append(entry)
+
+    for cfg in exit_configs or []:
+        exit_entry: dict[str, object] = {"name": cfg.name}
+        if cfg.params:
+            exit_entry["params"] = dict(cfg.params)
+        strategies.append(exit_entry)
 
     output["strategies"] = strategies
 

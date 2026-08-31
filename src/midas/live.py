@@ -20,6 +20,7 @@ except ImportError:  # Windows
 
 from midas.alerts import DailyReport, DiscordReporter, OrderConfirmer, ReportPosition, report_embed
 from midas.allocator import AllocationResult, Allocator
+from midas.baselines import Baselines
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
 from midas.live_state import (
@@ -47,6 +48,7 @@ from midas.models import (
     PortfolioConfig,
     TradeRecord,
 )
+from midas.monitor import monitor_lines
 from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
@@ -129,6 +131,12 @@ class LiveEngine:
         realert_hours: float = DEFAULT_REALERT_HOURS,
         reporter: DiscordReporter | None = None,
         market_hours_only: bool = True,
+        baselines: Baselines | None = None,
+        monitor_input_hash: str | None = None,
+        monitor_anchor: date | None = None,
+        strategies_path: Path | None = None,
+        refit_spawner: Callable[[], None] | None = None,
+        cadence_days: int | None = None,
     ) -> None:
         """Acquire the state lock, then load or seed persistent state.
 
@@ -219,6 +227,31 @@ class LiveEngine:
             self._pending_ttl = timedelta(hours=pending_ttl_hours)
             self._realert_cooldown = timedelta(hours=realert_hours)
             self._reporter = reporter
+            self._baselines = baselines
+            self._monitor_input_hash = monitor_input_hash
+            self._strategies_path = strategies_path
+            self._loaded_fit_key: tuple[date, str] | None = None
+            self._proposal_ttl = timedelta(hours=pending_ttl_hours)
+            self._refit_spawner = refit_spawner
+            self._cadence_days = cadence_days
+            self._refit_spawned_on: date | None = None
+            # Inflows the engine itself credited since the last report; a
+            # restart mid-session forgets them (accepted: one day's monitor
+            # return reads slightly high on that rare path).
+            self._session_inflows = 0.0
+            if self._state.expected_cash is not None:
+                # Cash moved while the engine was down (a manual deposit or
+                # withdrawal) — capture it now, because every later save
+                # re-syncs expected_cash and would silently absorb it.
+                self._session_inflows += self._state.available_cash - self._state.expected_cash
+                self._state.expected_cash = self._state.available_cash
+            if monitor_anchor is not None and self._state.monitor_anchor != monitor_anchor:
+                # A new fit opened a new window — adoption or not, the fit
+                # date is the anchor (a declined proposal still closed one).
+                self._state.monitor_anchor = monitor_anchor
+                self._state.monitor_returns = []
+                self._state.monitor_dd_warned = False
+                self._save_state()
             self._market_hours_only = market_hours_only
             # Equity observation and the ET session it belongs to: a report
             # must never be built from another session's equity (a machine
@@ -264,6 +297,10 @@ class LiveEngine:
         Dry runs read real state for a realistic starting book but every
         fill, cooldown, and report anchor stays in memory only.
         """
+        # Sync the fill-explained cash level: every engine-owned mutation is
+        # followed by a save, so an unexplained delta at report time is an
+        # out-of-band edit (a manual deposit or withdrawal).
+        self._state.expected_cash = self._state.available_cash
         if self._dry_run:
             return
         save_atomic(self._state, self._state_path)
@@ -313,9 +350,14 @@ class LiveEngine:
                         self._maybe_send_report(now)
                     except Exception:
                         logger.exception("end-of-day report failed; continuing")
+                    try:
+                        self._maybe_spawn_refit(now)
+                    except Exception:
+                        logger.exception("re-fit spawn failed; continuing")
                     self._sleep_until_open(now)
                     continue
                 try:
+                    self._handle_policy_artifacts(self._now())
                     self._tick(tickers)
                 except Exception:
                     # A live process watching real money must not die
@@ -389,8 +431,217 @@ class LiveEngine:
             return
         self._send_report(session_date, self._last_equity)
 
+    def _maybe_spawn_refit(self, now: datetime) -> None:
+        """Spawn the re-fit process once per session when the fit is stale.
+
+        The fit itself runs in its own process (midas refit): live is
+        single-threaded, holds the state lock, and must keep polling
+        reactions — a crash in a 10-minute fit must never take the trading
+        loop with it. Cadence is measured in calendar days approximating
+        trading days (cadence * 7/5).
+        """
+        if self._refit_spawner is None or self._cadence_days is None or self._strategies_path is None:
+            return
+        if self._dry_run:
+            return
+        today = now.date()
+        if self._refit_spawned_on == today:
+            return
+        from midas.artifacts import latest_fit_as_of, read_members
+
+        members = read_members(self._strategies_path)
+        if members is None:
+            return
+        # A recorded-but-unadopted fit still counts as the last fit — else a
+        # trigger-silent re-fit leaves the sidecar stale and live spawns a
+        # fresh fit every single day.
+        last_fit = latest_fit_as_of(self._strategies_path) or members.as_of
+        last_fit = max(last_fit, members.as_of)
+        stale_after = int(self._cadence_days * 7 / 5)
+        if (today - last_fit).days < stale_after:
+            return
+        self._refit_spawned_on = today
+        print_status(f"Last fit of {last_fit.isoformat()} is past cadence — spawning midas refit.")
+        self._refit_spawner()
+
+    def _handle_policy_artifacts(self, now: datetime) -> None:
+        """Reload members on sidecar change; surface and settle adoption proposals.
+
+        The sidecar watch is the single adoption mechanism: a ✅ here, a
+        ``midas refit --adopt`` in a terminal, or an offline adoption all
+        converge on "the members sidecar changed", and the allocator swap
+        happens on the next tick. Terminal tier never auto-adopts — the
+        proposal prints once with the --adopt instruction and expires.
+        """
+        if self._strategies_path is None:
+            return
+        from midas.artifacts import (
+            clear_proposal,
+            deploy_fit,
+            latest_fit_as_of,
+            read_fit_entry,
+            read_members,
+            read_proposal,
+        )
+        from midas.optimizer import _instantiate_strategies
+
+        members = read_members(self._strategies_path)
+        if (
+            members is not None
+            and self._monitor_input_hash is not None
+            and members.input_hash != self._monitor_input_hash
+        ):
+            # Members fitted under a different configuration must never be
+            # hot-loaded — refuse once per offending sidecar, loudly.
+            if self._loaded_fit_key != (members.as_of, members.input_hash):
+                print_status(
+                    f"Members sidecar (fit of {members.as_of.isoformat()}) was fitted under a different "
+                    "configuration — refusing to load; run midas fit for a fresh deployment."
+                )
+                self._loaded_fit_key = (members.as_of, members.input_hash)
+            members = None
+        if members is not None and members.members and (members.as_of, members.input_hash) != self._loaded_fit_key:
+            member_entries = [_instantiate_strategies(member)[0] for member in members.members]
+            self._allocator = Allocator(
+                [],
+                self._constraints,
+                self._portfolio.active_ticker_count(),
+                risk_config=self._allocator.risk_config,
+                members=member_entries,
+            )
+            self._loaded_fit_key = (members.as_of, members.input_hash)
+            # A longer-lookback member needs a wider price fetch, or it
+            # abstains on every ticker forever (short history scores 0.0).
+            warmup_bars = max_warmup([*self._allocator.strategies, *self._exit_rules])
+            self._history_days = max(self._history_days, warmup_bars_to_calendar_days(warmup_bars))
+            print_status(f"Members reloaded: fit of {members.as_of.isoformat()} ({len(members.members)} member(s))")
+
+        # The monitor window anchors on the latest fit — adoption or not, a
+        # fit landing mid-run (the spawned refit finishing) opens a new
+        # window right then, never on the next restart.
+        anchor = latest_fit_as_of(self._strategies_path) or (members.as_of if members is not None else None)
+        if anchor is not None and self._state.monitor_anchor != anchor:
+            self._state.monitor_anchor = anchor
+            self._state.monitor_returns = []
+            self._state.monitor_dd_warned = False
+            self._save_state()
+
+        if self._dry_run:
+            # Dry-run reloads members (read-only, keeps the book realistic)
+            # but must never post, settle, or clear a shared proposal.
+            return
+
+        proposal = read_proposal(self._strategies_path)
+        if proposal is None:
+            if self._state.proposal_posted_at is not None:
+                self._state.proposal_message_id = None
+                self._state.proposal_fit_as_of = None
+                self._state.proposal_posted_at = None
+                self._save_state()
+            return
+
+        if self._state.proposal_posted_at is None:
+            embed = {
+                "title": f"Parameter change proposal — fit of {proposal.fit_as_of.isoformat()}",
+                "description": (
+                    "\n".join(proposal.evidence)
+                    + "\n\nImplied trades are estimates at proposal-time prices."
+                    + "\n✅ adopts · ❌ keeps the incumbent"
+                ),
+                "color": 0xFEE75C,
+            }
+            if self._confirmer is not None:
+                message_id = self._confirmer.post_message(embed)
+                if message_id is None:
+                    return  # transport failure; retry next tick
+                self._state.proposal_message_id = message_id
+            else:
+                print_status(
+                    f"Adoption proposal (fit of {proposal.fit_as_of.isoformat()}): " + "; ".join(proposal.evidence)
+                )
+                print_status("Terminal mode never auto-adopts — run: midas refit --adopt")
+                self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = proposal.fit_as_of
+            self._state.proposal_posted_at = now
+            self._save_state()
+            return
+
+        if self._state.proposal_fit_as_of != proposal.fit_as_of:
+            # The file now describes a different fit than the posted embed —
+            # the operator's reaction answers what they read, so the old
+            # message expires and the new proposal posts fresh next tick.
+            if self._confirmer is not None and self._state.proposal_message_id is not None:
+                self._confirmer.mark_expired(self._state.proposal_message_id)
+            print_status("Adoption proposal superseded by a newer fit — re-posting.")
+            self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = None
+            self._state.proposal_posted_at = None
+            self._save_state()
+            return
+
+        if now - self._state.proposal_posted_at > self._proposal_ttl:
+            if self._confirmer is not None and self._state.proposal_message_id is not None:
+                self._confirmer.mark_expired(self._state.proposal_message_id)
+            clear_proposal(self._strategies_path)
+            print_status("Adoption proposal expired — will be re-raised at the next cadence fit.")
+            self._state.proposal_message_id = None
+            self._state.proposal_fit_as_of = None
+            self._state.proposal_posted_at = None
+            self._save_state()
+            return
+
+        if self._confirmer is None or self._state.proposal_message_id is None:
+            return
+        decision = self._confirmer.poll_decision(self._state.proposal_message_id)
+        if decision == "confirmed":
+            fit = read_fit_entry(self._strategies_path, proposal.fit_as_of, proposal.input_hash)
+            if fit is None:
+                logger.error("confirmed proposal's fit not found in history; clearing")
+                self._confirmer.mark_expired(self._state.proposal_message_id)
+            else:
+                deploy_fit(self._strategies_path, fit)
+                self._confirmer.mark_booked(self._state.proposal_message_id, "adopted")
+                print_status(f"Adoption confirmed — deployed fit of {fit.as_of.isoformat()}.")
+        elif decision == "declined":
+            self._confirmer.mark_declined(self._state.proposal_message_id)
+            print_status("Adoption declined — incumbent stays deployed.")
+        else:
+            return
+        clear_proposal(self._strategies_path)
+        self._state.proposal_message_id = None
+        self._state.proposal_fit_as_of = None
+        self._state.proposal_posted_at = None
+        self._save_state()
+
+    def _monitor_report_lines(self, equity: float) -> tuple[str, ...]:
+        """Advance the monitor window one session and render its lines.
+
+        The day's return is TWR: engine-credited infusions and any
+        unexplained cash delta (a manual deposit or withdrawal made outside
+        the engine) are excluded, so deposits never read as performance.
+        """
+        if self._baselines is None:
+            return ()
+        previous = self._state.last_report_equity
+        expected = self._state.expected_cash
+        unexplained = (self._state.available_cash - expected) if expected is not None else 0.0
+        inflow = self._session_inflows + unexplained
+        if previous is not None and previous > 0:
+            self._state.monitor_returns.append((equity - inflow) / previous - 1.0)
+        self._session_inflows = 0.0
+        lines, breached = monitor_lines(
+            self._baselines,
+            self._state.monitor_returns,
+            current_input_hash=self._monitor_input_hash or "",
+        )
+        if breached and not self._state.monitor_dd_warned:
+            lines.append("first breach of the validated worst-fold drawdown — review before acting")
+        self._state.monitor_dd_warned = breached
+        return tuple(lines)
+
     def _send_report(self, session_date: date, equity: float) -> None:
         """Assemble and deliver the report; persist the equity anchor."""
+        monitor = self._monitor_report_lines(equity)
         report = DailyReport(
             session_date=session_date,
             equity=equity,
@@ -411,6 +662,7 @@ class LiveEngine:
             expired=self._state.tally_expired,
             cppi_scale=self._last_risk_telemetry[0],
             vol_target_scale=self._last_risk_telemetry[1],
+            monitor_lines=monitor,
         )
         # Persist the anchor BEFORE delivery: a Discord failure must not
         # re-arm the report and double-post on a later tick, and the
@@ -543,6 +795,7 @@ class LiveEngine:
             and today >= self._state.cash_infusion_next_date
         ):
             self._state.available_cash += infusion.amount
+            self._session_inflows += infusion.amount
             # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
             infusion.next_date = self._state.cash_infusion_next_date
             infusion.advance()

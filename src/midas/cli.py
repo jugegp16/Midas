@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import sys
 from collections.abc import Sequence
-from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, get_args
 
@@ -47,6 +47,7 @@ from midas.output import (
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
+from midas.sweep import render_recommended_yaml, run_sweep
 from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
 from midas.trade_log import LoggedTrade, TradeLogError, read_trades
 
@@ -365,6 +366,13 @@ def backtest(
     help="Observe signals with in-memory fills: no state file, trade log, or Discord writes.",
 )
 @click.option(
+    "--refit",
+    "refit_enabled",
+    is_flag=True,
+    default=False,
+    help="Spawn midas refit at the policy cadence after the close report (adoption still needs ✅ or --adopt).",
+)
+@click.option(
     "--ignore-market-hours",
     is_flag=True,
     help="Poll 24/7 instead of only during US equity sessions (debugging).",
@@ -374,6 +382,7 @@ def live(
     strategies: str | None,
     interval: int,
     dry_run: bool,
+    refit_enabled: bool,
     ignore_market_hours: bool,
 ) -> None:
     """Run live analysis with real-time price polling."""
@@ -399,6 +408,91 @@ def live(
     strat_configs, constraints, risk_config = _load_strategy_bundle(strategies)
     provider = CachedYFinanceProvider()
 
+    # Monitor wiring: only when the strategies file is policy-driven and has
+    # been validated. Missing pieces disable the monitor silently.
+    live_baselines = None
+    live_input_hash: str | None = None
+    live_anchor: date | None = None
+    live_strategies_path: Path | None = None
+    live_cadence: int | None = None
+    refit_spawner = None
+    if strategies:
+        from midas.artifacts import read_members
+        from midas.baselines import read_baselines
+        from midas.config import load_policy
+        from midas.policy import input_fingerprint
+        from midas.strategies import STRATEGY_REGISTRY
+        from midas.strategies.base import EntrySignal
+
+        strategies_file = Path(strategies)
+        live_policy = load_policy(strategies_file)
+        live_baselines = read_baselines(strategies_file) if load_policy(strategies_file) is not None else None
+        members = read_members(strategies_file)
+        if live_policy is not None:
+            # The fingerprint gates member hot-reloads too, so it must exist
+            # whenever a policy does — even before midas validate has ever
+            # produced baselines.
+            live_exit_params = {
+                c.name: dict(c.params)
+                for c in strat_configs or []
+                if not issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)
+            }
+            live_input_hash = input_fingerprint(
+                policy=live_policy,
+                tickers=[h.ticker for h in port.holdings],
+                constraints=constraints,
+                exit_params=live_exit_params,
+                risk_config=risk_config,
+                min_cash_pct=constraints.min_cash_pct,
+                forecast_scaling=constraints.forecast_scaling,
+                tax_config=port.tax_config,
+                cash_infusion=port.cash_infusion,
+                trading_restrictions=port.trading_restrictions,
+                strategy_names=[
+                    c.name for c in strat_configs or [] if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)
+                ],
+            )
+            live_anchor = members.as_of if members is not None else None
+            # Live must never trade the YAML's hand-written params as a
+            # silent fallback: a policy-driven session requires a deployed,
+            # matching fit before the first tick — same hard gate as refit.
+            if members is None:
+                raise click.ClickException(
+                    "policy is set but no members are deployed — run midas fit for a fresh deployment"
+                )
+            if members.input_hash != live_input_hash:
+                raise click.ClickException(
+                    "deployed members were fitted under a different configuration — run midas fit before going live"
+                )
+        if live_policy is not None:
+            live_strategies_path = strategies_file
+            live_cadence = live_policy.cadence_days
+            if refit_enabled and not dry_run:
+                import subprocess
+                import sys
+
+                refit_cmd = [
+                    sys.executable,
+                    "-m",
+                    "midas",
+                    "refit",
+                    "-p",
+                    portfolio,
+                    "-s",
+                    strategies,
+                    "--state",
+                    str(state_path),
+                ]
+
+                def _spawn_refit(cmd: list[str] = refit_cmd) -> None:
+                    # Detached: a crash in a 10-minute fit must never touch
+                    # the trading loop; results arrive via the sidecars.
+                    subprocess.Popen(cmd, start_new_session=True)
+
+                refit_spawner = _spawn_refit
+    if refit_enabled and refit_spawner is None:
+        raise click.UsageError("--refit requires a strategies file with a policy: block")
+
     allocator, order_sizer, exit_rules = _build_components(
         strat_configs,
         constraints,
@@ -421,6 +515,12 @@ def live(
         realert_hours=alerts_cfg.realert_hours,
         reporter=reporter,
         market_hours_only=not ignore_market_hours,
+        baselines=live_baselines,
+        monitor_input_hash=live_input_hash,
+        monitor_anchor=live_anchor,
+        strategies_path=live_strategies_path,
+        refit_spawner=refit_spawner,
+        cadence_days=live_cadence if refit_enabled else None,
     ) as engine:
         engine.run()
 
@@ -730,6 +830,13 @@ def _validate_optimize_options(
     help="Walk-forward: minimum trading days per test fold. Default 63 (~3 months).",
 )
 @click.option(
+    "--search-globals",
+    is_flag=True,
+    default=False,
+    help="Legacy full search space: exit-rule parameters and allocator globals become searchable. "
+    "Incompatible with a strategies file that pins exit rules.",
+)
+@click.option(
     "--seed",
     default=42,
     show_default=True,
@@ -745,7 +852,9 @@ def _validate_optimize_options(
     "sharpe (annualized Sharpe), gross (raw return), net (return after tax; needs a tax: block), "
     "ulcer (return over Ulcer Index), robust (lower-quartile block return).",
 )
+@click.pass_context
 def optimize(
+    ctx: click.Context,
     portfolio: str,
     strategies: str | None,
     start: date,
@@ -756,26 +865,56 @@ def optimize(
     walk_forward: bool,
     wf_min_train_pct: float | None,
     wf_min_test_days: int | None,
+    search_globals: bool,
     seed: int,
     objective: Objective,
 ) -> None:
-    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE)."""
+    """Find optimal strategy parameters via Bayesian optimisation (Optuna TPE).
+
+    By default only entry-signal parameters and weights are searched; exit
+    rules and allocator globals are policy-owned and pass through the search
+    untouched. Without -s, all entry signals are searched and no exit rules
+    run — pin exits in a strategies file for any run you intend to act on.
+    """
     from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
 
     _validate_optimize_options(walk_forward, train_pct, wf_min_train_pct, wf_min_test_days)
+
+    if strategies and ctx.get_parameter_source("objective") == click.core.ParameterSource.COMMANDLINE:
+        from midas.config import load_policy
+
+        if load_policy(Path(strategies)) is not None:
+            raise click.UsageError(
+                "the strategies file has a policy: block whose objective governs; "
+                "--objective would silently disagree with it — edit the policy instead"
+            )
 
     port = load_portfolio(Path(portfolio))
     tax_config = _tax_config_for_objective(port, Path(portfolio), objective)
 
     strategy_names: list[str] | None = None
-    min_cash_pct = AllocationConstraints().min_cash_pct
-    forecast_scaling = AllocationConstraints().forecast_scaling
+    strat_constraints = AllocationConstraints()
     risk_config: RiskConfig = RiskConfig()
+    exit_configs: list[StrategyConfig] = []
     if strategies:
         strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
-        strategy_names = [cfg.name for cfg in strat_configs]
-        min_cash_pct = strat_constraints.min_cash_pct
-        forecast_scaling = strat_constraints.forecast_scaling
+        entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+        exit_configs = [c for c in strat_configs if c not in entry_configs]
+        if search_globals:
+            if exit_configs:
+                raise click.UsageError(
+                    "--search-globals searches exit parameters; remove the pinned exit rules "
+                    f"({', '.join(c.name for c in exit_configs)}) from the strategies file"
+                )
+            strategy_names = [cfg.name for cfg in strat_configs]
+        else:
+            strategy_names = [cfg.name for cfg in entry_configs]
+    min_cash_pct = strat_constraints.min_cash_pct
+    forecast_scaling = strat_constraints.forecast_scaling
+    exit_params = None if search_globals else {c.name: dict(c.params) for c in exit_configs}
+    constraints = None if search_globals else strat_constraints
 
     start_d, end_d = _to_date(start), _to_date(end)
     warmup_bars = max_warmup_for_search(strategy_names, min_cash_pct, port.active_ticker_count())
@@ -795,6 +934,10 @@ def optimize(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
+            exit_configs=exit_configs,
             output=output,
             walk_forward=walk_forward,
             train_pct=train_pct,
@@ -821,6 +964,10 @@ def _run_optimizer_and_write(
     objective: Objective,
     tax_config: TaxConfig | None,
     seed: int,
+    search_globals: bool,
+    exit_params: dict[str, dict[str, float | int | str]] | None,
+    constraints: AllocationConstraints | None,
+    exit_configs: list[StrategyConfig],
     output: str,
     walk_forward: bool,
     train_pct: float,
@@ -855,6 +1002,9 @@ def _run_optimizer_and_write(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
         )
         write_strategies_yaml(
             wf_result.best_params,
@@ -863,6 +1013,8 @@ def _run_optimizer_and_write(
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
             objective=objective,
+            exit_configs=exit_configs,
+            constraints=constraints,
         )
         _print_walk_forward_report(wf_result, output)
     else:
@@ -881,6 +1033,9 @@ def _run_optimizer_and_write(
             objective=objective,
             tax_config=tax_config,
             seed=seed,
+            search_globals=search_globals,
+            exit_params=exit_params,
+            constraints=constraints,
         )
         write_strategies_yaml(
             result.best_params,
@@ -889,6 +1044,8 @@ def _run_optimizer_and_write(
             risk_config=risk_config,
             forecast_scaling=forecast_scaling,
             objective=objective,
+            exit_configs=exit_configs,
+            constraints=constraints,
         )
         _print_optimize_report(result, train_pct, output)
 
@@ -1058,6 +1215,523 @@ def _print_optimize_report(result: OptimizeResult, train_pct: float, output: str
         ]
     )
     print_params_table("Optimized Parameters", result.best_params, global_key=ALLOCATION_KEY)
+
+
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]), help="Earliest data to fit on.")
+@click.option(
+    "--as-of",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Fit on data strictly before this date (default: today).",
+)
+@click.option("--rollback", default=0, type=int, help="Restore the members deployed N fits ago instead of fitting.")
+def fit(portfolio: str, strategies: str, start: date, as_of: date | None, rollback: int) -> None:
+    """Fit deployable members per the strategies file's policy block.
+
+    Writes the machine-owned members sidecar and a fits/ history entry;
+    the strategies YAML itself is never modified. The current sidecar (if
+    any) warm-starts restart 0 of the new fit.
+    """
+    from midas.artifacts import list_fits, read_members, write_fit
+    from midas.artifacts import rollback as rollback_fit
+    from midas.config import load_policy
+    from midas.fitter import fit_as_of
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+
+    strategies_path = Path(strategies)
+    if rollback > 0:
+        try:
+            restored = rollback_fit(strategies_path, steps=rollback)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Rolled back {rollback} fit(s): deployed members from {restored.as_of.isoformat()}.")
+        return
+
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(
+            f"{strategies_path} has no policy: block — fit is policy-driven; add one (see docs/cli.md)."
+        )
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    start_d = _to_date(start)
+    as_of_d = _to_date(as_of) if as_of is not None else date.today()
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, as_of_d, warmup_bars=warmup_bars)
+
+    incumbent = read_members(strategies_path)
+    print_status(
+        f"Fitting as of {as_of_d} — objective {policy.objective}, {policy.restarts} restarts x "
+        f"{policy.budget} trials, deployment {policy.deployment}"
+        + (" (warm-starting from deployed members)" if incumbent else "")
+    )
+    result = fit_as_of(
+        port,
+        price_data,
+        as_of_d,
+        policy,
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+        incumbent=incumbent,
+        strategy_names=strategy_names,
+        log_fn=print_status,
+    )
+    entry = write_fit(strategies_path, result)
+    bests = ", ".join(f"{b:.4g}" for b in result.restart_bests)
+    click.echo(f"Fitted {len(result.members)} member(s) as of {result.as_of.isoformat()}.")
+    click.echo(f"  restart bests ({policy.objective}): {bests}")
+    click.echo(f"  members sidecar: {strategies_path.stem}.members.yaml")
+    click.echo(f"  history: {entry.name} ({len(list_fits(strategies_path))} fits recorded)")
+
+
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option(
+    "--min-train-pct", default=0.60, show_default=True, help="Initial training reserve before the first fold."
+)
+@click.option(
+    "--includes-holdout",
+    is_flag=True,
+    default=False,
+    help="Mark the artifact holdout-grade: the range includes the reserved holdout (one-shot, post-landing).",
+)
+def validate(
+    portfolio: str, strategies: str, start: date, end: date, min_train_pct: float, includes_holdout: bool
+) -> None:
+    """Run the policy over history exactly as live would, and write baselines.
+
+    Executes cadence-driven folds with fits, degradation-gated adoption,
+    and a carried portfolio; the resulting per-fold distribution is what
+    the live monitor compares against.
+    """
+    from midas.baselines import baselines_path, write_baselines
+    from midas.config import load_policy
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+    from midas.validator import validate_policy
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — validate is policy-driven.")
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    start_d, end_d = _to_date(start), _to_date(end)
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
+
+    try:
+        baselines = validate_policy(
+            port,
+            price_data,
+            start_d,
+            end_d,
+            policy,
+            constraints=strat_constraints,
+            exit_params=exit_params,
+            risk_config=risk_config,
+            min_cash_pct=strat_constraints.min_cash_pct,
+            forecast_scaling=strat_constraints.forecast_scaling,
+            tax_config=port.tax_config,
+            strategy_names=strategy_names,
+            min_train_pct=min_train_pct,
+            log_fn=print_status,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if includes_holdout:
+        import dataclasses
+
+        baselines = dataclasses.replace(baselines, includes_holdout=True)
+    write_baselines(strategies_path, baselines)
+    if baselines.folds:
+        first_test = baselines.folds[0].test_start
+        click.echo(
+            f"Initial train: {start_d} through the day before {first_test} "
+            f"({min_train_pct:.0%} of the range — fold count moves with --start/--end); "
+            f"{len(baselines.folds)} folds of cadence {baselines.cadence_days}."
+        )
+    for fold in baselines.folds:
+        marker = "adopted" if fold.adopted else "held"
+        click.echo(
+            f"  fold {fold.fold}: {fold.test_start} → {fold.test_end}  "
+            f"{fold.return_annualized:+.2%} ann.  dd {fold.drawdown:.2%}  [{marker}]"
+        )
+    click.echo(f"Aggregate OOS CAGR: {baselines.aggregate_oos_cagr:+.2%} over {len(baselines.folds)} folds.")
+    grade = "holdout-grade (one shot — do not iterate on this)" if includes_holdout else "pre-holdout"
+    click.echo(f"Baselines written: {baselines_path(strategies_path).name} [{grade}]")
+
+
+@cli.command()
+@click.option(
+    "--portfolio",
+    "-p",
+    "portfolios",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Portfolio YAML; repeatable — each is validated side by side.",
+)
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option("--start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--vary", default="objective", show_default=True, help="Policy field the variants differ along.")
+@click.option("--value", "values", multiple=True, help="One variant per value; omit to sweep seeds only.")
+@click.option("--seeds", default=3, show_default=True, help="Seed replications per cell (base_seed + i).")
+@click.option(
+    "--holdout-days", default=730, show_default=True, help="Calendar days withheld from the end of the range."
+)
+@click.option("--use-holdout", is_flag=True, default=False, help="One-shot holdout report; single variant only.")
+@click.option("--budget", default=None, type=int, help="Override the policy budget (requires --force).")
+@click.option("--force", is_flag=True, default=False, help="Allow a budget that differs from the policy's.")
+@click.option("--min-train-pct", default=0.60, show_default=True)
+def sweep(
+    portfolios: tuple[str, ...],
+    strategies: str,
+    start: date,
+    end: date,
+    vary: str,
+    values: tuple[str, ...],
+    seeds: int,
+    holdout_days: int,
+    use_holdout: bool,
+    budget: int | None,
+    force: bool,
+    min_train_pct: float,
+) -> None:
+    """Compare policy variants with seed replication and honest statistics.
+
+    Differences inside the seed noise floor print as not resolvable; a
+    single-portfolio verdict is qualified with "(on these windows)". The
+    final --holdout-days are withheld from every sweep so policy selection
+    cannot overfit the same folds it reports.
+    """
+    import dataclasses as _dc
+
+    from midas.config import load_policy
+    from midas.optimizer import max_warmup_for_search
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — sweep is policy-driven.")
+    if budget is not None and budget != policy.budget:
+        if not force:
+            raise click.UsageError(
+                "validating at a different budget than deployment breaks coherence; pass --force to accept"
+            )
+        policy = _dc.replace(policy, budget=budget)
+    if use_holdout and len(values) > 1:
+        raise click.UsageError("--use-holdout is a one-shot report: exactly one variant allowed")
+
+    start_d, end_d = _to_date(start), _to_date(end)
+    holdout_boundary: date | None = None
+    if use_holdout:
+        click.echo("HOLDOUT REPORT — one shot; do not iterate on this.")
+    else:
+        holdout_boundary = end_d - timedelta(days=holdout_days)
+        if holdout_boundary <= start_d:
+            raise click.UsageError("holdout leaves no sweep range; shrink --holdout-days")
+        click.echo(f"holdout: withholding {holdout_boundary} → {end_d} from the sweep")
+        end_d = holdout_boundary
+
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    ports: dict[str, PortfolioConfig] = {}
+    price_by_port: dict[str, dict[str, pd.DataFrame]] = {}
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, 1)
+    for path_str in portfolios:
+        path = Path(path_str)
+        port = load_portfolio(path)
+        ports[path.stem] = port
+        price_by_port[path.stem] = _fetch_prices(port, start_d, end_d, warmup_bars=warmup_bars)
+
+    n_variants = max(len(values), 1)
+    approx_days = max((end_d - start_d).days * 5 // 7, 1)
+    approx_folds = max(int(approx_days * (1 - min_train_pct)) // policy.cadence_days, 1)
+    total_trials = n_variants * len(ports) * seeds * approx_folds * policy.restarts * policy.budget
+    click.echo(
+        f"preflight: {n_variants} variant(s) x {len(ports)} portfolio(s) x {seeds} seed(s) x "
+        f"~{approx_folds} fold(s) x {policy.restarts} restart(s) x {policy.budget} trials "
+        f"≈ {total_trials:,} trials"
+    )
+
+    try:
+        import json
+
+        checkpoint_path = strategies_path.with_name(f"{strategies_path.stem}.sweep-cells.jsonl")
+        with checkpoint_path.open("a", encoding="utf-8") as fh:
+            # Runs append to one file — the header line keeps cells from
+            # different runs distinguishable.
+            fh.write(
+                json.dumps(
+                    {
+                        "run_header": True,
+                        "started_at": datetime.now(UTC).isoformat(),
+                        "vary": vary,
+                        "values": list(values),
+                        "seeds": seeds,
+                        "start": start_d.isoformat(),
+                        "end": end_d.isoformat(),
+                    }
+                )
+                + "\n"
+            )
+
+        def _checkpoint(cell: dict[str, object]) -> None:
+            with checkpoint_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(cell) + "\n")
+
+        report = run_sweep(
+            ports,
+            price_by_port,
+            start_d,
+            end_d,
+            policy,
+            vary,
+            list(values),
+            seeds,
+            constraints=strat_constraints,
+            exit_params=exit_params,
+            risk_config=risk_config,
+            min_cash_pct=strat_constraints.min_cash_pct,
+            forecast_scaling=strat_constraints.forecast_scaling,
+            strategy_names=strategy_names,
+            log_fn=print_status,
+            holdout_trimmed_to=holdout_boundary,
+            checkpoint_fn=_checkpoint,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for line in report.summary_lines() + report.decision_lines():
+        click.echo(line)
+    recommendation = report.recommendation()
+    if recommendation is not None:
+        # After the report: a failed write must never cost hours of printed results.
+        recommended_path = strategies_path.with_name(f"{strategies_path.stem}.recommended.yaml")
+        try:
+            source_text = strategies_path.read_text(encoding="utf-8")
+            rendered = render_recommended_yaml(
+                source_text,
+                vary=recommendation.vary,
+                winner=recommendation.winner_policy,
+                winner_name=recommendation.winner_name,
+                verdict=f"{recommendation.confidence}{recommendation.note}",
+            )
+            body = "".join(rendered.splitlines(keepends=True)[2:])
+            already_deployed = body == source_text
+            if already_deployed:
+                click.echo("")
+                click.echo(
+                    f"your strategies file already uses {recommendation.vary}: "
+                    f"{recommendation.winner_name} — nothing to change"
+                )
+            else:
+                recommended_path.write_text(rendered, encoding="utf-8")
+        except (ValueError, OSError) as exc:
+            click.echo(f"recommended file not written: {exc}")
+        else:
+            if already_deployed:
+                return
+            click.echo("")
+            click.echo(f"wrote {recommended_path.name} ({recommendation.vary} -> {recommendation.winner_name})")
+            click.echo(f"review it, then:  mv {recommended_path.name} {strategies_path.name}")
+            click.echo("                  midas fit ... && midas validate ...")
+
+
+@cli.command()
+@click.option("--portfolio", "-p", required=True, type=click.Path(exists=True), help="Path to portfolio YAML.")
+@click.option(
+    "--strategies", "-s", required=True, type=click.Path(exists=True), help="Strategies YAML with a policy: block."
+)
+@click.option(
+    "--start",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Earliest data to fit on (default: ten years before --as-of).",
+)
+@click.option(
+    "--as-of",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Fit on data strictly before this date (default: today).",
+)
+@click.option(
+    "--state",
+    "state_file",
+    default=None,
+    type=click.Path(),
+    help="Live state file (read-only) for degradation evidence.",
+)
+@click.option("--adopt", is_flag=True, default=False, help="Deploy the latest recorded fit instead of fitting.")
+def refit(
+    portfolio: str, strategies: str, start: date | None, as_of: date | None, state_file: str | None, adopt: bool
+) -> None:
+    """Cadence re-fit: always record, propose adoption only on degradation.
+
+    The fit lands in history unconditionally; the members sidecar changes
+    only through adoption — a Discord confirmation in live's confirm tier,
+    or an explicit --adopt here. Parameters never change silently.
+    """
+    from midas.artifacts import _deserialize as _read_fit
+    from midas.artifacts import (
+        clear_proposal,
+        deploy_fit,
+        list_fits,
+        read_fit_entry,
+        read_members,
+        read_proposal,
+        record_fit,
+        write_proposal,
+    )
+    from midas.baselines import read_baselines
+    from midas.config import load_policy
+    from midas.fitter import fit_as_of
+    from midas.live_state import load_state
+    from midas.monitor import monitor_lines
+    from midas.optimizer import max_warmup_for_search
+    from midas.policy import input_fingerprint
+    from midas.strategies import STRATEGY_REGISTRY
+    from midas.strategies.base import EntrySignal
+    from midas.validator import trigger_fired
+
+    strategies_path = Path(strategies)
+    policy = load_policy(strategies_path)
+    if policy is None:
+        raise click.ClickException(f"{strategies_path} has no policy: block — refit is policy-driven.")
+
+    port = load_portfolio(Path(portfolio))
+    strat_configs, strat_constraints, risk_config = load_strategies(strategies_path)
+    entry_configs = [c for c in strat_configs if issubclass(STRATEGY_REGISTRY[c.name], EntrySignal)]
+    exit_configs = [c for c in strat_configs if c not in entry_configs]
+    exit_params = {c.name: dict(c.params) for c in exit_configs}
+    strategy_names = [c.name for c in entry_configs]
+
+    current_hash = input_fingerprint(
+        policy=policy,
+        tickers=[h.ticker for h in port.holdings],
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+        cash_infusion=port.cash_infusion,
+        trading_restrictions=port.trading_restrictions,
+        strategy_names=strategy_names,
+    )
+    incumbent = read_members(strategies_path)
+    if incumbent is not None and incumbent.input_hash != current_hash:
+        raise click.ClickException(
+            "deployed members were fitted under a different configuration — no valid incumbent; "
+            "run midas fit for a fresh deployment"
+        )
+
+    if adopt:
+        # A standing proposal is what the operator was shown — adopt that
+        # fit, never whichever one happened to land last.
+        proposal = read_proposal(strategies_path)
+        if proposal is not None:
+            latest = read_fit_entry(strategies_path, proposal.fit_as_of, proposal.input_hash)
+            if latest is None:
+                raise click.ClickException(
+                    f"proposal references fit of {proposal.fit_as_of.isoformat()} which is not in history"
+                )
+        else:
+            entries = list_fits(strategies_path)
+            if not entries:
+                raise click.ClickException("no fit history to adopt from — run refit (or midas fit) first")
+            latest = _read_fit(entries[-1])
+        deploy_fit(strategies_path, latest)
+        clear_proposal(strategies_path)
+        click.echo(f"Adopted fit of {latest.as_of.isoformat()} ({len(latest.members)} member(s)).")
+        return
+
+    as_of_d = _to_date(as_of) if as_of is not None else date.today()
+    start_d = _to_date(start) if start is not None else as_of_d - timedelta(days=3653)
+    warmup_bars = max_warmup_for_search(strategy_names, strat_constraints.min_cash_pct, port.active_ticker_count())
+    price_data = _fetch_prices(port, start_d, as_of_d, warmup_bars=warmup_bars)
+
+    result = fit_as_of(
+        port,
+        price_data,
+        as_of_d,
+        policy,
+        constraints=strat_constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=strat_constraints.min_cash_pct,
+        forecast_scaling=strat_constraints.forecast_scaling,
+        tax_config=port.tax_config,
+        incumbent=incumbent,
+        strategy_names=strategy_names,
+        log_fn=print_status,
+    )
+    record_fit(strategies_path, result)
+    click.echo(f"Recorded fit of {result.as_of.isoformat()} ({len(result.members)} member(s)); not deployed.")
+
+    baselines = read_baselines(strategies_path)
+    state = load_state(Path(state_file)) if state_file and Path(state_file).exists() else None
+    if baselines is None or state is None or not state.monitor_returns:
+        click.echo("No degradation evidence available (missing baselines or monitor window) — no proposal.")
+        return
+    if baselines.input_hash != current_hash:
+        click.echo(
+            "Baselines were validated under a different configuration — no trigger evaluation; "
+            "run midas validate to refresh them."
+        )
+        return
+    if trigger_fired(baselines.folds, state.monitor_returns, policy.adopt_trigger):
+        evidence, _breached = monitor_lines(baselines, state.monitor_returns, current_input_hash=current_hash)
+        write_proposal(
+            strategies_path,
+            fit_as_of=result.as_of,
+            input_hash=result.input_hash,
+            evidence=evidence,
+            created_at=datetime.now(UTC),
+        )
+        click.echo("Degradation trigger FIRED — proposal written. Confirm in Discord or run: midas refit --adopt")
+    else:
+        click.echo("Trigger silent — incumbent stays deployed.")
 
 
 @cli.command(name="strategies")

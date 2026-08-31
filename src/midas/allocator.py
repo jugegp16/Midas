@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -137,8 +138,27 @@ class Allocator:
         constraints: AllocationConstraints,
         n_tickers: int,
         risk_config: RiskConfig | None = None,
+        members: Sequence[Sequence[tuple[EntrySignal, float]]] | None = None,
     ) -> None:
-        self._entries: list[_ScoredEntry] = [_ScoredEntry(strat, wt) for strat, wt in entries]
+        """Build an allocator from one entry set or K ensemble members.
+
+        ``members`` and ``entries`` are mutually exclusive: ``entries`` is the
+        single-member convenience path (today's behavior, bit for bit), and
+        ``members=[entries]`` is identical to it by construction.
+
+        Raises:
+            ValueError: If both ``entries`` and ``members`` are given.
+        """
+        if members is not None and entries:
+            msg = "pass entries or members, not both (entries is the single-member convenience path)"
+            raise ValueError(msg)
+        member_lists = [list(entries)] if members is None else [list(member) for member in members]
+        if not member_lists:
+            member_lists = [list(entries)]
+        self._members: list[list[_ScoredEntry]] = [
+            [_ScoredEntry(strat, wt) for strat, wt in member] for member in member_lists
+        ]
+        self._entries: list[_ScoredEntry] = self._members[0]
         self._constraints = constraints
         self._n_tickers = n_tickers
         self._risk_config = risk_config
@@ -169,8 +189,8 @@ class Allocator:
 
     @property
     def strategies(self) -> list[EntrySignal]:
-        """The configured entry signals, in blending order."""
-        return [entry.strategy for entry in self._entries]
+        """All configured entry signals across members, in blending order."""
+        return [entry.strategy for member in self._members for entry in member]
 
     @property
     def risk_config(self) -> RiskConfig | None:
@@ -180,7 +200,11 @@ class Allocator:
     def precompute_signals(self, price_data: dict[str, PriceHistory]) -> None:
         """Precompute entry-signal scores for all tickers over the full price arrays."""
         self._signal_cache = {}
-        for entry in self._entries:
+        for member in self._members:
+            self._precompute_member(member, price_data)
+
+    def _precompute_member(self, member: list[_ScoredEntry], price_data: dict[str, PriceHistory]) -> None:
+        for entry in member:
             cache: dict[str, np.ndarray] = {}
             for ticker, history in price_data.items():
                 result = entry.strategy.precompute(history)
@@ -290,6 +314,53 @@ class Allocator:
         price_data: dict[str, PriceHistory],
         ctx: dict[str, dict[str, Any]],
     ) -> tuple[dict[str, dict[str, float]], dict[str, float], list[str], list[str]]:
+        """Score per member, then blend across members (flat mean).
+
+        The single-member path returns its member's result untouched — the
+        ensemble-of-one identity is by construction, not by equivalence.
+        """
+        results = [self._score_member(member, tickers, price_data, ctx) for member in self._members]
+        if len(results) == 1:
+            return results[0]
+        return self._blend_members(tickers, results)
+
+    def _blend_members(
+        self,
+        tickers: list[str],
+        results: list[tuple[dict[str, dict[str, float]], dict[str, float], list[str], list[str]]],
+    ) -> tuple[dict[str, dict[str, float]], dict[str, float], list[str], list[str]]:
+        """Flat mean of member blends; abstention counts as zero once any member scores.
+
+        A ticker no member scores keeps the hold path. Contributions average
+        per strategy name across the members that produced one — display
+        attribution only; the blend itself uses member blended scores.
+        """
+        num_members = len(results)
+        contributions: dict[str, dict[str, float]] = {}
+        blended: dict[str, float] = {}
+        active: list[str] = []
+        held: list[str] = []
+        for ticker in tickers:
+            mean_score = sum(member[1].get(ticker, 0.0) for member in results) / num_members
+            per_name: dict[str, list[float]] = {}
+            for member in results:
+                for name, val in member[0].get(ticker, {}).items():
+                    per_name.setdefault(name, []).append(val)
+            contributions[ticker] = {name: sum(vals) / len(vals) for name, vals in per_name.items()}
+            blended[ticker] = mean_score
+            if mean_score > 0:
+                active.append(ticker)
+            else:
+                held.append(ticker)
+        return contributions, blended, active, held
+
+    def _score_member(
+        self,
+        member: list[_ScoredEntry],
+        tickers: list[str],
+        price_data: dict[str, PriceHistory],
+        ctx: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, float]], dict[str, float], list[str], list[str]]:
         """Phase 1: score entry signals and compute blended scores per ticker.
 
         Partitions tickers into `active` (at least one strategy scored > 0) and
@@ -309,7 +380,7 @@ class Allocator:
         # cross-section. Keyed by entry index, not strategy name — two
         # configs of the same strategy have different score distributions
         # and must be normalized independently.
-        per_entry_scores: list[dict[str, float]] = [{} for _ in self._entries]
+        per_entry_scores: list[dict[str, float]] = [{} for _ in member]
         scorable: list[str] = []
         for ticker in tickers:
             history = price_data.get(ticker)
@@ -320,7 +391,7 @@ class Allocator:
                 continue
             scorable.append(ticker)
             ticker_ctx = ctx.get(ticker, {})
-            for index, entry in enumerate(self._entries):
+            for index, entry in enumerate(member):
                 hit, score = self._lookup_score(entry.strategy, ticker, len(history))
                 if not hit:
                     score = entry.strategy.score(history, **ticker_ctx)
@@ -342,7 +413,7 @@ class Allocator:
             ticker_contributions: dict[str, float] = {}
             weighted_sum = 0.0
             weight_total = 0.0
-            for index, entry in enumerate(self._entries):
+            for index, entry in enumerate(member):
                 score = per_entry_scores[index].get(ticker)
                 if score is not None:
                     ticker_contributions[entry.strategy.name] = score

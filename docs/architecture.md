@@ -58,6 +58,40 @@ Tickers fall into two buckets:
 
 #### Phase 1.5: Score Normalization (optional)
 
+**Ensemble members** -- The allocator can hold K entry-parameter sets
+("members"). Each member's signals are scored and quantile-normalized
+independently; the ensemble's blended score is the flat mean across
+members (a member with no opinion contributes zero once any member
+scores a ticker). Softmax, position caps, the risk overlay, and exit
+rules then run exactly once on the blended scores — members differ only
+in forecasts, never in sizing or exits. An ensemble of one is
+byte-identical to the single-set path.
+
+**Policy validator** -- `validate_policy` executes a deployment policy
+exactly as live runs it: test folds of `policy.cadence_days`, one
+`fit_as_of` per fold (warm-started from the deployed members),
+degradation-gated adoption evaluated over the previous fold's full daily
+path, and a portfolio carried across fold boundaries — lots, bases,
+high-water marks, cash, and the infusion schedule survive, so parameter
+switches pay their real turnover and tax cost and no fold ramps in from
+cash. Output is the baselines artifact (per-day fold paths, provenance
+hashes) that the monitor and sweep consume.
+
+**Live monitor** -- The close-of-day report ranks the live trailing
+fold-window against the validation baselines: cumulative TWR ranked by
+fold midrank at the same day offset (the identical ranking the adoption
+trigger fires on, so the operator reads the governing number), window
+drawdown against the validated worst fold, deposits excluded from
+returns, warnings edge-triggered, and comparisons refused outright on an
+input-hash mismatch.
+
+**Scheduled re-fit** -- `midas refit` runs the policy's fit in its own
+process at cadence, records every fit to history, and proposes adoption
+only on degradation evidence from the live monitor window. Adoption —
+Discord ✅, an explicit `refit --adopt`, or an offline deploy — converges
+on the members sidecar, which live watches each tick and hot-reloads
+from; no tier ever changes parameters silently.
+
 With `forecast_scaling: quantile`, each entry-rule instance's positive scores are rank-transformed across the tickers it scored on that bar — its strongest pick becomes 1.0, its weakest positive `1/n` — before the weighted average in Phase 1 blends them. This gives every rule equal say regardless of its raw score distribution. Zeros and abstentions are untouched. The default `none` skips the transform entirely. See [Strategies](strategies.md#score-normalization-forecast_scaling) for details.
 
 #### Phase 2: Softmax Budget Allocation
@@ -153,7 +187,7 @@ The optimizer uses Bayesian optimization (Optuna's TPE sampler) to search jointl
 
 Default search ranges are defined in `PARAM_RANGES` in `optimizer.py`. Exit rules don't get a `weight` field — they fire on their own conditions, not as a contributor to a blended score.
 
-**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests a parameter combination and backtests it over the training window only (the first `train_pct` of trading days, no internal split), returning the chosen objective — Calmar by default; Sharpe, raw, or after-tax time-weighted return, Ulcer, and block-robustness are selectable — so the search never sees the test period. The best parameters are re-run over the full range with the split for the report. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
+**Standard Mode** -- Runs a configurable number of trials (default 200). Each trial suggests entry-signal parameters and weights (exit rules and allocator globals are policy-owned and fixed for every trial) and backtests them over the training window only (the first `train_pct` of trading days, no internal split), returning the chosen objective — Calmar by default; Sharpe, raw, or after-tax time-weighted return, Ulcer, and block-robustness are selectable — so the search never sees the test period. The best parameters are re-run over the full range with the split for the report. Trials are distributed across CPU cores via multiprocessing for parallel evaluation.
 
 #### Walk-Forward Optimization
 

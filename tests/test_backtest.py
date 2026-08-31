@@ -2162,3 +2162,204 @@ def test_vol_attribution_samples_bars_instead_of_every_bar(monkeypatch: pytest.M
     assert result.risk_metrics is not None and result.risk_metrics.per_ticker_vol_contribution
     n_bars = len(result.equity_curve)
     assert 0 < len(calls) <= n_bars // backtest_module.VOL_CONTRIB_SAMPLE_STRIDE + 1
+
+
+def test_ensemble_of_one_backtest_is_byte_identical() -> None:
+    """The identity property, end to end: same trades, same curve."""
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(3)
+    prices = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0, 0.015, 200)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=5_000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+
+    def run(allocator: Allocator) -> BacktestResult:
+        engine = BacktestEngine(
+            allocator=allocator,
+            order_sizer=OrderSizer(),
+            exit_rules=[StopLoss(loss_threshold=0.1)],
+            constraints=constraints,
+            enable_split=False,
+        )
+        return engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+
+    solo = run(Allocator([(MeanReversion(window=20, threshold=0.05), 1.0)], constraints, 1))
+    ens = run(Allocator([], constraints, 1, members=[[(MeanReversion(window=20, threshold=0.05), 1.0)]]))
+    assert solo.equity_curve == ens.equity_curve
+    assert [(t.date, t.ticker, t.shares, t.price) for t in solo.trades] == [
+        (t.date, t.ticker, t.shares, t.price) for t in ens.trades
+    ]
+
+
+def test_two_member_backtest_differs_from_either_member_alone() -> None:
+    """The blend is a real third thing, not a passthrough of one member."""
+    from midas.strategies.mean_reversion import MeanReversion
+    from midas.strategies.momentum import Momentum
+
+    rng = np.random.default_rng(9)
+    prices = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0.0005, 0.02, 200)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=5_000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+
+    def member_a() -> list:
+        return [(MeanReversion(window=15, threshold=0.03), 1.0)]
+
+    def member_b() -> list:
+        return [(Momentum(window=25, momentum_scale=0.05), 1.0)]
+
+    def run(allocator: Allocator) -> BacktestResult:
+        engine = BacktestEngine(
+            allocator=allocator,
+            order_sizer=OrderSizer(),
+            exit_rules=[],
+            constraints=constraints,
+            enable_split=False,
+        )
+        return engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+
+    blend = run(Allocator([], constraints, 1, members=[member_a(), member_b()]))
+    only_a = run(Allocator(member_a(), constraints, 1))
+    only_b = run(Allocator(member_b(), constraints, 1))
+    assert blend.equity_curve != only_a.equity_curve
+    assert blend.equity_curve != only_b.equity_curve
+
+
+def test_record_targets_captures_per_bar_allocations() -> None:
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(4)
+    prices = make_price_series(date(2024, 1, 2), 60, 100.0, list(rng.normal(0, 0.01, 60)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=2000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01)
+    engine = BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 1),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=constraints,
+        enable_split=False,
+        record_targets=True,
+    )
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert len(result.target_series) == len(result.equity_curve)
+    assert all(set(bar) <= {"TEST"} for bar in result.target_series)
+
+
+def test_record_targets_off_is_empty_and_free() -> None:
+    from midas.strategies.mean_reversion import MeanReversion
+
+    rng = np.random.default_rng(4)
+    prices = make_price_series(date(2024, 1, 2), 60, 100.0, list(rng.normal(0, 0.01, 60)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="TEST", shares=10, cost_basis=100.0)], available_cash=2000.0)
+    constraints = AllocationConstraints(min_buy_delta=0.01)
+    engine = BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 1),
+        order_sizer=OrderSizer(),
+        exit_rules=[],
+        constraints=constraints,
+        enable_split=False,
+    )
+    result = engine.run(portfolio, {"TEST": prices}, min(prices.index), max(prices.index))
+    assert result.target_series == []
+
+
+def _carry_fixture():
+    """Fixture exercising what must survive a resume boundary: open lots,
+    high-water marks, cash infusions, and a deferred late-start ticker."""
+    from midas.models import CashInfusion
+
+    rng = np.random.default_rng(11)
+    early = make_price_series(date(2024, 1, 2), 200, 100.0, list(rng.normal(0.0005, 0.015, 200)), name="AAA")
+    late_full = make_price_series(date(2024, 1, 2), 200, 50.0, list(rng.normal(0.0, 0.01, 200)), name="BBB")
+    late = late_full.iloc[120:]  # BBB's data starts after the boundary -> deferred across it
+    price_data = {"AAA": early, "BBB": late}
+    portfolio = PortfolioConfig(
+        holdings=[
+            Holding(ticker="AAA", shares=20, cost_basis=100.0),
+            Holding(ticker="BBB", shares=30, cost_basis=50.0),
+        ],
+        available_cash=5_000.0,
+        cash_infusion=CashInfusion(amount=500.0, next_date=date(2024, 1, 15), frequency="biweekly"),
+    )
+    return portfolio, price_data, sorted(early.index)
+
+
+def _carry_engine() -> BacktestEngine:
+    from midas.models import RiskConfig
+    from midas.strategies.mean_reversion import MeanReversion
+
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.6)
+    # The vol overlay is part of the resume contract: its lookback needs
+    # warmup history or a resumed window silently skips the overlay where
+    # the continuous run applies it.
+    risk = RiskConfig(weighting="inverse_vol", vol_lookback_days=60, vol_target=0.08)
+    return BacktestEngine(
+        allocator=Allocator([(MeanReversion(window=10, threshold=0.03), 1.0)], constraints, 2, risk_config=risk),
+        order_sizer=OrderSizer(),
+        exit_rules=[StopLoss(loss_threshold=0.12)],
+        constraints=constraints,
+        enable_split=False,
+    )
+
+
+def test_chained_run_equals_continuous_run() -> None:
+    """Resume fidelity: [start, mid] + carried [mid, end] == [start, end]."""
+    portfolio, price_data, days = _carry_fixture()
+    start, mid, end = days[0], days[100], days[-1]
+
+    continuous = _carry_engine().run(portfolio, price_data, start, end)
+    first = _carry_engine().run(portfolio, price_data, start, days[99])
+    assert first.end_state is not None
+    second = _carry_engine().run(portfolio, price_data, mid, end, carried=first.end_state)
+
+    chained = [v for _, v in first.equity_curve] + [v for _, v in second.equity_curve]
+    assert chained == pytest.approx([v for _, v in continuous.equity_curve])
+
+    def key(t):
+        return (t.date, t.ticker, t.direction, round(t.shares, 6), round(t.price, 6))
+
+    assert [key(t) for t in first.trades + second.trades] == [key(t) for t in continuous.trades]
+
+
+def test_end_state_reflects_final_book() -> None:
+    portfolio, price_data, days = _carry_fixture()
+    result = _carry_engine().run(portfolio, price_data, days[0], days[50])
+    state = result.end_state
+    assert state is not None
+    assert "BBB" in state.deferred  # not yet activated at day 50
+    assert state.cash >= 0
+    lot_shares = sum(lot.shares for lot in state.lots.get("AAA", []))
+    net_traded = sum(t.shares if t.direction.value == "BUY" else -t.shares for t in result.trades if t.ticker == "AAA")
+    assert lot_shares == pytest.approx(20 + net_traded)
+    assert state.infusion_next_date is not None and state.infusion_next_date > days[50]
+
+
+def test_chained_run_equals_continuous_across_many_boundaries() -> None:
+    """Adversarial resume fidelity: any boundary, not just a quiet one.
+
+    Under next_open a decision made on the boundary day fills the next
+    bar — the carried state must include that pending decision, and the
+    resumed window's first return must be measured from the prior close,
+    or trades drop and every fold path loses its first day.
+    """
+    portfolio, price_data, days = _carry_fixture()
+    start, end = days[0], days[-1]
+    continuous = _carry_engine().run(portfolio, price_data, start, end)
+
+    def key(t):
+        return (t.date, t.ticker, t.direction, round(t.shares, 6), round(t.price, 6))
+
+    for mid_idx in (60, 109, 123, 130, 186):
+        first = _carry_engine().run(portfolio, price_data, start, days[mid_idx - 1])
+        assert first.end_state is not None
+        second = _carry_engine().run(portfolio, price_data, days[mid_idx], end, carried=first.end_state)
+
+        chained_trades = [key(t) for t in first.trades + second.trades]
+        assert chained_trades == [key(t) for t in continuous.trades], f"trades diverge at boundary {mid_idx}"
+
+        chained_returns = first.daily_returns + second.daily_returns
+        assert len(chained_returns) == len(continuous.daily_returns), f"path length wrong at {mid_idx}"
+        assert chained_returns == pytest.approx(continuous.daily_returns, abs=1e-9), f"returns at {mid_idx}"
+
+        assert first.twr is not None and second.twr is not None and continuous.twr is not None
+        chained_twr = (1 + first.twr) * (1 + second.twr) - 1
+        assert chained_twr == pytest.approx(continuous.twr, abs=2e-4), f"TWR at boundary {mid_idx}"

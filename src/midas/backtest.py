@@ -40,7 +40,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.restrictions import RestrictionTracker
-from midas.results import BacktestResult
+from midas.results import BacktestResult, CarriedState
 from midas.risk import per_ticker_vol_contribution
 from midas.risk_metrics import RiskHistory, compute_risk_metrics
 from midas.strategies.base import ExitRule, max_warmup
@@ -160,6 +160,11 @@ class _SimState:
     vol_contrib_sums: dict[str, float] = field(default_factory=dict)
     vol_contrib_bars: int = 0
     vol_contrib_ticks: int = 0  # held bars seen; every Nth is sampled for attribution
+    target_series: list[dict[str, float]] = field(default_factory=list)  # per recorded bar, when enabled
+    last_targets: dict[str, float] = field(default_factory=dict)
+    deferred_pending: dict[str, float] = field(default_factory=dict)  # deferred input, for end-state accounting
+    deferred_activated: set[str] = field(default_factory=set)
+    prior_bar: tuple[date, float] | None = None  # last bar of the previous window, when resumed
     last_day: date | None = None
     split_value: float | None = None
     split_bh_value: float | None = None
@@ -307,6 +312,7 @@ class BacktestEngine:
         execution_mode: ExecutionMode = "next_open",
         tax_config: TaxConfig | None = None,
         track_vol_contribution: bool = True,
+        record_targets: bool = False,
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -320,6 +326,9 @@ class BacktestEngine:
         # Off in optimizer trials: attribution feeds only the report table,
         # and its per-bar covariance fit is ~30% of a trial's runtime.
         self._track_vol_contribution = track_vol_contribution
+        # Off by default: per-bar target capture exists for the fitter's
+        # behavioral member dedupe, not for reporting.
+        self._record_targets = record_targets
 
     def run(
         self,
@@ -327,6 +336,7 @@ class BacktestEngine:
         price_data: dict[str, pd.DataFrame],
         start: date,
         end: date,
+        carried: CarriedState | None = None,
     ) -> BacktestResult:
         """Execute a full backtest over the given date range.
 
@@ -348,16 +358,25 @@ class BacktestEngine:
         # later trial silently ran without them, so trials were scored on
         # different problems and the final refit didn't match the search.
         portfolio = copy.deepcopy(portfolio)
+        if carried is not None and portfolio.cash_infusion is not None and carried.infusion_next_date is not None:
+            portfolio.cash_infusion.next_date = carried.infusion_next_date
         trading_days = self._collect_trading_days(price_data, start, end)
         split_date = self._compute_split(trading_days)
         ticker_idx = self._build_ticker_index(price_data, start, end)
-        state = self._init_positions(portfolio, price_data, trading_days, start, end)
+        if carried is None:
+            state = self._init_positions(portfolio, price_data, trading_days, start, end)
+        else:
+            state = self._init_from_carried(portfolio, carried, price_data, start)
 
         # Precompute strategy signals over the full PriceHistory (one-time cost).
         full_history = {ticker: idx.history for ticker, idx in ticker_idx.items()}
         self._allocator.precompute_signals(full_history)
 
-        deferred = self._find_deferred(portfolio, price_data, trading_days, start)
+        if carried is not None:
+            deferred = dict(carried.deferred)
+        else:
+            deferred = self._find_deferred(portfolio, price_data, trading_days, start)
+        state.deferred_pending = dict(deferred)
 
         self._simulate(
             state,
@@ -448,8 +467,17 @@ class BacktestEngine:
         return index
 
     def _warmup_bars(self) -> int:
-        """Max warmup required across entry signals and exit rules."""
-        return max_warmup([*self._allocator.strategies, *self._exit_rules])
+        """Max warmup required across entry signals, exit rules, and risk overlays.
+
+        The vol overlay estimates from ``vol_lookback_days`` of history and
+        skips itself when history is short — omitting it here made a resumed
+        window run overlay-free where the continuous run applied it.
+        """
+        bars = max_warmup([*self._allocator.strategies, *self._exit_rules])
+        risk = self._allocator.risk_config
+        if risk is not None:
+            bars = max(bars, risk.vol_lookback_days)
+        return bars
 
     def _first_data_dates(
         self,
@@ -514,6 +542,51 @@ class BacktestEngine:
         state.peak_value = state.starting_value
         return state
 
+    def _init_from_carried(
+        self,
+        portfolio: PortfolioConfig,
+        carried: CarriedState,
+        price_data: dict[str, pd.DataFrame],
+        start: date,
+    ) -> _SimState:
+        """Resume simulation state from a previous run's final book.
+
+        Lots keep their real purchase dates and bases (a resumed fold must
+        fire exits on carried gains — the fresh-start seeding exists only
+        for standalone backtests). Restriction state is not carried.
+        """
+        state = _SimState(cash=carried.cash)
+        if portfolio.trading_restrictions:
+            state.restriction_tracker = RestrictionTracker(portfolio.trading_restrictions)
+        state.lots = {ticker: [copy.deepcopy(lot) for lot in lots] for ticker, lots in carried.lots.items()}
+        state.positions = {ticker: sum(lot.shares for lot in lots) for ticker, lots in state.lots.items()}
+        state.high_water_marks = dict(carried.high_water_marks)
+        state.bh_positions = dict(carried.bh_positions)
+        if isinstance(carried.pending, _Decision):
+            # The boundary day's decision fills on this window's first bar —
+            # dropping it would delete one trade per fold under lagged modes.
+            state.pending = carried.pending
+        if carried.last_bar is not None:
+            # The window's first return is measured from the prior close, so
+            # no fold loses its day-one return.
+            state.prior_bar = carried.last_bar
+            starting_value = carried.last_bar[1]
+        else:
+            first_dates = self._first_data_dates(price_data, start)
+            starting_value = state.cash
+            for ticker, shares in state.positions.items():
+                if shares <= 0:
+                    continue
+                if ticker in first_dates:
+                    entry_df = price_data[ticker][price_data[ticker].index >= start]
+                    starting_value += shares * float(entry_df["close"].iloc[0])
+                else:
+                    starting_value += sum(lot.shares * lot.cost_basis for lot in state.lots.get(ticker, []))
+        state.starting_value = starting_value
+        state.twr_base_value = starting_value
+        state.peak_value = max(carried.peak_value, starting_value)
+        return state
+
     def _find_deferred(
         self,
         portfolio: PortfolioConfig,
@@ -551,7 +624,7 @@ class BacktestEngine:
             state.bh_positions[ticker] = shares
             state.positions[ticker] = 0.0
 
-        deferred_activated: set[str] = set()
+        deferred_activated = state.deferred_activated
 
         for day in trading_days:
             state.last_day = day
@@ -567,6 +640,8 @@ class BacktestEngine:
                 self._capture_split_snapshot(state, portfolio, current_data)
             self._run_day(state, portfolio, current_data, day)
             self._record_bar(state, portfolio, current_data, day)
+            if self._record_targets:
+                state.target_series.append(dict(state.last_targets))
             self._accumulate_vol_contribution(state, current_data)
 
     @staticmethod
@@ -800,6 +875,8 @@ class BacktestEngine:
             current_weights=current_weights,
             current_drawdown=current_drawdown,
         )
+        if self._record_targets:
+            state.last_targets = dict(allocation.targets)
 
         # Phase 2: exit rules clamp targets downward (LEAN pattern). Each
         # rule can only reduce a target, never increase. First clamper
@@ -1125,7 +1202,8 @@ class BacktestEngine:
         cagr = compute_cagr(starting_val, final_value, total_days)
         # Every risk figure reads the inflow-adjusted series: a deposit is not
         # return, and measured on the raw curve it would also mask drawdown depth.
-        adjusted_returns = compute_inflow_adjusted_returns(equity_curve, state.inflows)
+        curve_for_returns = ([state.prior_bar] if state.prior_bar is not None else []) + equity_curve
+        adjusted_returns = compute_inflow_adjusted_returns(curve_for_returns, state.inflows)
         max_drawdown = compute_max_drawdown(adjusted_returns)
         sharpe = compute_sharpe(adjusted_returns)
         sortino = compute_sortino(adjusted_returns)
@@ -1164,6 +1242,25 @@ class BacktestEngine:
             split_date=split_date,
             twr=round(twr, 4),
             equity_curve=equity_curve,
+            target_series=state.target_series,
+            daily_returns=adjusted_returns,
+            end_state=CarriedState(
+                # Deep-copied so the result owns its state — resuming from it
+                # must never alias a live simulation's books.
+                lots=copy.deepcopy(state.lots),
+                cash=state.cash,
+                high_water_marks=dict(state.high_water_marks),
+                peak_value=state.peak_value,
+                deferred={
+                    ticker: shares
+                    for ticker, shares in state.deferred_pending.items()
+                    if ticker not in state.deferred_activated
+                },
+                bh_positions=state.bh_positions,
+                infusion_next_date=(portfolio.cash_infusion.next_date if portfolio.cash_infusion else None),
+                pending=state.pending,
+                last_bar=(equity_curve[-1] if equity_curve else state.prior_bar),
+            ),
             ulcer_index=round(ulcer, 6),
             block_returns=[round(block, 6) for block in block_returns],
             total_days=total_days,
