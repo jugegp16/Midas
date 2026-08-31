@@ -383,3 +383,74 @@ def test_no_paired_line_for_single_variant() -> None:
     ]
     text = "\n".join(SweepReport(cells=cells, holdout_trimmed_to=None).summary_lines())
     assert "paired" not in text
+
+
+def _decision_report(best_tax: list[float], other_tax: list[float], vary: str = "objective"):
+    from midas.policy import Policy
+    from midas.sweep import SweepCell, SweepReport
+
+    base = Policy(objective="sharpe", budget=1000, restarts=4)
+    variants = [("sharpe", base), ("net", Policy(objective="net", budget=1000, restarts=4))]
+    cells = []
+    for (name, _p), taxes in zip(variants, (best_tax, other_tax), strict=True):
+        for i, tax in enumerate(taxes):
+            cells.append(
+                SweepCell(
+                    variant=name,
+                    portfolio="etf",
+                    seed_base=42 + i,
+                    aggregate_oos_cagr=0.10 + tax,
+                    oos_sharpe=1.0,
+                    daily_returns=[0.001] * 50,
+                    n_folds=13,
+                    after_tax_mean=tax,
+                )
+            )
+    return SweepReport(cells=cells, holdout_trimmed_to=None, variants=variants, vary=vary)
+
+
+def test_decision_recommends_resolved_winner_with_paste_block() -> None:
+    # net beats sharpe by ~0.5pt with tiny per-seed scatter: resolved.
+    sharpe_tax = [0.020 + 0.001 * (i % 3) for i in range(8)]
+    net_tax = [t + 0.005 for t in sharpe_tax]
+    report = _decision_report(sharpe_tax, net_tax)
+    text = "\n".join(report.decision_lines())
+    assert "RESOLVED" in text
+    assert "objective: net" in text
+    assert "<- changed (was sharpe)" in text
+    assert "budget: 1000" in text  # full paste-able block, not just the knob
+
+
+def test_decision_refuses_to_crown_a_noise_winner() -> None:
+    # Differences well inside per-seed scatter: no fake winner.
+    a = [0.020, 0.030, 0.010, 0.025, 0.015, 0.028, 0.012, 0.022]
+    b = [0.021, 0.028, 0.012, 0.023, 0.017, 0.026, 0.014, 0.020]
+    report = _decision_report(a, b)
+    text = "\n".join(report.decision_lines())
+    assert "NOT RESOLVABLE" in text
+    assert "keep" in text.lower()
+    assert "<- changed" not in text  # no paste block pretending there is a winner
+
+
+def test_decision_absent_for_single_variant() -> None:
+    from midas.policy import Policy
+    from midas.sweep import SweepCell, SweepReport
+
+    base = Policy(objective="sharpe")
+    report = SweepReport(
+        cells=[
+            SweepCell(
+                variant="base",
+                portfolio="p",
+                seed_base=42,
+                aggregate_oos_cagr=0.1,
+                oos_sharpe=1.0,
+                daily_returns=[0.001] * 50,
+                n_folds=13,
+            )
+        ],
+        holdout_trimmed_to=None,
+        variants=[("base", base)],
+        vary="objective",
+    )
+    assert report.decision_lines() == []

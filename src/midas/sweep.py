@@ -112,12 +112,124 @@ class SweepCell:
     after_tax_mean: float | None = None
 
 
+def _policy_block_lines(policy: Policy, changed_field: str, old_value: str) -> list[str]:
+    """Render a paste-able ``policy:`` block, marking the changed knob."""
+    entries: list[tuple[str, str]] = [
+        ("objective", policy.objective),
+        ("budget", str(policy.budget)),
+        ("restarts", str(policy.restarts)),
+        ("base_seed", str(policy.base_seed)),
+        ("deployment", policy.deployment),
+    ]
+    if policy.deployment == "ensemble":
+        entries.append(("ensemble_size", str(policy.ensemble_size)))
+    entries.append(("cadence_days", str(policy.cadence_days)))
+    if policy.adopt_trigger.disabled:
+        entries.append(("adopt_trigger", "none"))
+    lines = ["  policy:"]
+    for key, value in entries:
+        mark = f"   # <- changed (was {old_value})" if key == changed_field else ""
+        lines.append(f"    {key}: {value}{mark}")
+    if not policy.adopt_trigger.disabled:
+        mark = f"   # <- changed (was {old_value})" if changed_field == "adopt_trigger" else ""
+        lines.append(f"    adopt_trigger:{mark}")
+        lines.append(f"      oos_percentile_below: {policy.adopt_trigger.oos_percentile_below:g}")
+        lines.append(f"      drawdown_breach: {str(policy.adopt_trigger.drawdown_breach).lower()}")
+    return lines
+
+
+def _paired_after_tax(
+    cells_a: Sequence[SweepCell], cells_b: Sequence[SweepCell]
+) -> tuple[float, float, int, int] | None:
+    """Paired (a - b) after-tax stats by seed: (mean, se, wins_for_a, n)."""
+    by_seed_a = {c.seed_base: c.after_tax_mean for c in cells_a if c.after_tax_mean is not None}
+    by_seed_b = {c.seed_base: c.after_tax_mean for c in cells_b if c.after_tax_mean is not None}
+    common = sorted(set(by_seed_a) & set(by_seed_b))
+    if len(common) < 2:
+        return None
+    diffs = [by_seed_a[seed] - by_seed_b[seed] for seed in common]
+    n = len(diffs)
+    mean = sum(diffs) / n
+    sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
+    se = sd / math.sqrt(n)
+    wins = sum(1 for d in diffs if d > 0)
+    return mean, se, wins, n
+
+
 @dataclass(frozen=True)
 class SweepReport:
     """All cells of a sweep plus what was withheld from it."""
 
     cells: list[SweepCell]
-    holdout_trimmed_to: date | None = None
+    holdout_trimmed_to: date | None
+    variants: list[tuple[str, Policy]] | None = None
+    vary: str | None = None
+
+    def decision_lines(self) -> list[str]:
+        """A ranked scoreboard, a recommendation, and a paste-able block.
+
+        Ranks by after-tax fold mean (falling back to pre-tax CAGR when no
+        tax accounting ran); crowns a winner only when the paired same-seed
+        test resolves it on every portfolio — otherwise it says so and
+        recommends keeping the current value.
+        """
+        if not self.variants or len(self.variants) < 2 or self.vary is None:
+            return []
+        stats: list[tuple[str, Policy, float | None, float, list[SweepCell]]] = []
+        for name, policy in self.variants:
+            cells = [c for c in self.cells if c.variant == name]
+            if not cells:
+                continue
+            taxes = [c.after_tax_mean for c in cells if c.after_tax_mean is not None]
+            after_tax = sum(taxes) / len(taxes) if taxes else None
+            cagr = sum(c.aggregate_oos_cagr for c in cells) / len(cells)
+            stats.append((name, policy, after_tax, cagr, cells))
+        if len(stats) < 2:
+            return []
+        use_after_tax = all(entry[2] is not None for entry in stats)
+        ranked = sorted(stats, key=lambda t: t[2] if use_after_tax else t[3], reverse=True)  # type: ignore[arg-type,return-value]
+
+        confidence = "NOT RESOLVABLE"
+        conf_note = ""
+        if len(ranked) == 2 and use_after_tax:
+            portfolios = sorted({c.portfolio for c in self.cells})
+            per_port = []
+            for portfolio in portfolios:
+                cells_a = [c for c in ranked[0][4] if c.portfolio == portfolio]
+                cells_b = [c for c in ranked[1][4] if c.portfolio == portfolio]
+                result = _paired_after_tax(cells_a, cells_b)
+                if result is not None:
+                    per_port.append(result)
+            if per_port and all(mean > 2 * se for mean, se, _w, _n in per_port):
+                confidence = "RESOLVED"
+            elif per_port and all(mean > 0 and wins >= 0.65 * n for mean, _se, wins, n in per_port):
+                # A positive mean alone can be a coin flip; LEAN needs most
+                # pairs pointing the same way.
+                confidence = "LEAN"
+            if confidence != "NOT RESOLVABLE":
+                mean0, se0, wins0, n0 = per_port[0]
+                scope = "" if len(per_port) == 1 else f" (consistent across {len(per_port)} portfolios)"
+                conf_note = f" — paired after-tax {mean0:+.2%} ± {se0:.2%} SE, {wins0}/{n0} pairs{scope}"
+
+        metric_label = "after-tax/fold" if use_after_tax else "OOS CAGR (pre-tax — no tax accounting)"
+        lines = ["", "-- decision " + "-" * 44]
+        lines.append(f"  rank  {self.vary:<14} {metric_label:<18} OOS CAGR")
+        for rank, (name, _policy, after_tax, cagr, _cells) in enumerate(ranked, start=1):
+            metric_text = f"{after_tax:+.2%}" if after_tax is not None else "n/a"
+            lines.append(f"  {rank:<5} {name:<14} {metric_text:<18} {cagr:+.2%}")
+        lines.append("")
+        if confidence == "NOT RESOLVABLE":
+            lines.append(f"  recommendation: keep your current {self.vary} — differences are within seed noise")
+            lines.append("  confidence: NOT RESOLVABLE (no variant separates from the paired noise floor)")
+            return lines
+        winner_name, winner_policy = ranked[0][0], ranked[0][1]
+        lines.append(f"  recommendation: {self.vary}: {winner_name}")
+        lines.append(f"  confidence: {confidence}{conf_note}")
+        lines.append("")
+        lines.append("  paste into your strategies yaml, then run midas fit + midas validate:")
+        lines.append("")
+        lines.extend(_policy_block_lines(winner_policy, self.vary, old_value=ranked[1][0]))
+        return lines
 
     def summary_lines(self) -> list[str]:
         """Per-(variant, portfolio) means with noise floors and a verdict."""
@@ -362,7 +474,7 @@ def run_sweep(
                             "fold_adopted": [f.adopted for f in baselines.folds],
                         }
                     )
-    return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to)
+    return SweepReport(cells=cells, holdout_trimmed_to=holdout_trimmed_to, variants=variants, vary=vary)
 
 
 def _sample_moments(values: Sequence[float]) -> tuple[float, float]:

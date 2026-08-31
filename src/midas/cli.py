@@ -1531,7 +1531,7 @@ def sweep(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    for line in report.summary_lines():
+    for line in report.summary_lines() + report.decision_lines():
         click.echo(line)
 
 

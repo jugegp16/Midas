@@ -58,7 +58,7 @@ def test_sweep_trims_holdout_and_preflights(tmp_path: Path, fake_prices: None, m
     def recorder(*args, **kwargs):
         seen["end"] = args[3]
         seen["holdout"] = kwargs.get("holdout_trimmed_to")
-        return SweepReport(cells=[])
+        return SweepReport(cells=[], holdout_trimmed_to=None)
 
     monkeypatch.setattr(midas.cli, "run_sweep", recorder)
     result = _invoke_sweep(tmp_path, "--holdout-days", "100", "--seeds", "1")
