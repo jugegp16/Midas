@@ -47,7 +47,7 @@ from midas.output import (
 from midas.results import write_backtest_results
 from midas.strategies import STRATEGY_REGISTRY, EntrySignal, ExitRule, Strategy
 from midas.strategies.base import max_warmup, warmup_bars_to_calendar_days
-from midas.sweep import run_sweep
+from midas.sweep import render_recommended_yaml, run_sweep
 from midas.tax import TAX_BRACKET_YEAR, AnnualTaxSummary, compute_tax_summary, derive_tax_rates
 from midas.trade_log import LoggedTrade, TradeLogError, read_trades
 
@@ -1531,6 +1531,31 @@ def sweep(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    recommendation = report.recommendation()
+    if recommendation is not None:
+        recommended_path = strategies_path.with_name(f"{strategies_path.stem}.recommended.yaml")
+        try:
+            recommended_path.write_text(
+                render_recommended_yaml(
+                    strategies_path.read_text(encoding="utf-8"),
+                    vary=recommendation.vary,
+                    winner=recommendation.winner_policy,
+                    winner_name=recommendation.winner_name,
+                    old_name=recommendation.old_name,
+                    verdict=f"{recommendation.confidence}{recommendation.note}",
+                ),
+                encoding="utf-8",
+            )
+        except ValueError as exc:
+            click.echo(f"recommended file not written: {exc}")
+        else:
+            click.echo("")
+            click.echo(
+                f"wrote {recommended_path.name} ({recommendation.vary}: "
+                f"{recommendation.old_name} -> {recommendation.winner_name})"
+            )
+            click.echo(f"review it, then:  mv {recommended_path.name} {strategies_path.name}")
+            click.echo("                  midas fit ... && midas validate ...")
     for line in report.summary_lines() + report.decision_lines():
         click.echo(line)
 

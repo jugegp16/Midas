@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import random
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -112,30 +113,68 @@ class SweepCell:
     after_tax_mean: float | None = None
 
 
-def _policy_block_lines(policy: Policy, changed_field: str, old_value: str) -> list[str]:
-    """Render a paste-able ``policy:`` block, marking the changed knob."""
-    entries: list[tuple[str, str]] = [
-        ("objective", policy.objective),
-        ("budget", str(policy.budget)),
-        ("restarts", str(policy.restarts)),
-        ("base_seed", str(policy.base_seed)),
-        ("deployment", policy.deployment),
-    ]
-    if policy.deployment == "ensemble":
-        entries.append(("ensemble_size", str(policy.ensemble_size)))
-    entries.append(("cadence_days", str(policy.cadence_days)))
-    if policy.adopt_trigger.disabled:
-        entries.append(("adopt_trigger", "none"))
-    lines = ["  policy:"]
-    for key, value in entries:
-        mark = f"   # <- changed (was {old_value})" if key == changed_field else ""
-        lines.append(f"    {key}: {value}{mark}")
-    if not policy.adopt_trigger.disabled:
-        mark = f"   # <- changed (was {old_value})" if changed_field == "adopt_trigger" else ""
-        lines.append(f"    adopt_trigger:{mark}")
-        lines.append(f"      oos_percentile_below: {policy.adopt_trigger.oos_percentile_below:g}")
-        lines.append(f"      drawdown_breach: {str(policy.adopt_trigger.drawdown_breach).lower()}")
-    return lines
+@dataclass(frozen=True)
+class Recommendation:
+    """A sweep's winner, ready to act on."""
+
+    vary: str
+    winner_name: str
+    old_name: str
+    winner_policy: Policy
+    confidence: str
+    note: str
+
+
+def render_recommended_yaml(
+    source_text: str, *, vary: str, winner: Policy, winner_name: str, old_name: str, verdict: str
+) -> str:
+    """The source strategies file with only the winning knob edited.
+
+    Surgical: every other byte (comments included) survives. The edit is
+    a provenance header plus one value swap inside the ``policy:`` block.
+
+    Raises:
+        ValueError: When the knob is not present in the policy block —
+            add it explicitly first (loud beats guessing indentation).
+    """
+    lines = source_text.splitlines(keepends=True)
+    in_policy = False
+    target = None
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\n")
+        if stripped.startswith("policy:"):
+            in_policy = True
+            continue
+        if in_policy and stripped and not stripped.startswith((" ", "\t")):
+            in_policy = False
+        if in_policy:
+            match = re.match(rf"^(\s+){re.escape(vary)}:", stripped)
+            if match:
+                target = (i, match.group(1))
+                break
+    if target is None:
+        msg = f"policy block has no explicit '{vary}:' line — add it before promoting a recommendation"
+        raise ValueError(msg)
+    index, indent = target
+    if vary == "adopt_trigger":
+        if winner.adopt_trigger.disabled:
+            replacement = [f"{indent}adopt_trigger: none\n"]
+        else:
+            replacement = [
+                f"{indent}adopt_trigger:\n",
+                f"{indent}  oos_percentile_below: {winner.adopt_trigger.oos_percentile_below:g}\n",
+                f"{indent}  drawdown_breach: {str(winner.adopt_trigger.drawdown_breach).lower()}\n",
+            ]
+        # Swallow any existing nested lines under adopt_trigger.
+        end = index + 1
+        while end < len(lines) and lines[end].startswith(indent + " "):
+            end += 1
+        lines[index:end] = replacement
+    else:
+        value = getattr(winner, vary)
+        lines[index] = f"{indent}{vary}: {value}\n"
+    header = f"# recommended by midas sweep — {vary}: {old_name} -> {winner_name}\n# verdict: {verdict}\n"
+    return header + "".join(lines)
 
 
 def _paired_after_tax(
@@ -165,16 +204,32 @@ class SweepReport:
     variants: list[tuple[str, Policy]] | None = None
     vary: str | None = None
 
-    def decision_lines(self) -> list[str]:
-        """A ranked scoreboard, a recommendation, and a paste-able block.
+    def recommendation(self) -> Recommendation | None:
+        """The winner to act on, or None when the sweep resolved nothing."""
+        decided = self._decide()
+        if decided is None:
+            return None
+        ranked, confidence, note, _use_after_tax = decided
+        if confidence == "NOT RESOLVABLE":
+            return None
+        return Recommendation(
+            vary=self.vary or "",
+            winner_name=ranked[0][0],
+            old_name=ranked[1][0],
+            winner_policy=ranked[0][1],
+            confidence=confidence,
+            note=note,
+        )
+
+    def _decide(self) -> tuple[list[tuple[str, Policy, float | None, float, list[SweepCell]]], str, str, bool] | None:
+        """Rank variants and grade the comparison.
 
         Ranks by after-tax fold mean (falling back to pre-tax CAGR when no
-        tax accounting ran); crowns a winner only when the paired same-seed
-        test resolves it on every portfolio — otherwise it says so and
-        recommends keeping the current value.
+        tax accounting ran); RESOLVED only when the paired same-seed test
+        clears 2x its SE on every portfolio.
         """
         if not self.variants or len(self.variants) < 2 or self.vary is None:
-            return []
+            return None
         stats: list[tuple[str, Policy, float | None, float, list[SweepCell]]] = []
         for name, policy in self.variants:
             cells = [c for c in self.cells if c.variant == name]
@@ -185,7 +240,7 @@ class SweepReport:
             cagr = sum(c.aggregate_oos_cagr for c in cells) / len(cells)
             stats.append((name, policy, after_tax, cagr, cells))
         if len(stats) < 2:
-            return []
+            return None
         use_after_tax = all(entry[2] is not None for entry in stats)
         ranked = sorted(stats, key=lambda t: t[2] if use_after_tax else t[3], reverse=True)  # type: ignore[arg-type,return-value]
 
@@ -211,6 +266,14 @@ class SweepReport:
                 scope = "" if len(per_port) == 1 else f" (consistent across {len(per_port)} portfolios)"
                 conf_note = f" — paired after-tax {mean0:+.2%} ± {se0:.2%} SE, {wins0}/{n0} pairs{scope}"
 
+        return ranked, confidence, conf_note, use_after_tax
+
+    def decision_lines(self) -> list[str]:
+        """A ranked scoreboard and a recommendation for the terminal."""
+        decided = self._decide()
+        if decided is None:
+            return []
+        ranked, confidence, conf_note, use_after_tax = decided
         metric_label = "after-tax/fold" if use_after_tax else "OOS CAGR (pre-tax — no tax accounting)"
         lines = ["", "-- decision " + "-" * 44]
         lines.append(f"  rank  {self.vary:<14} {metric_label:<18} OOS CAGR")
@@ -222,13 +285,10 @@ class SweepReport:
             lines.append(f"  recommendation: keep your current {self.vary} — differences are within seed noise")
             lines.append("  confidence: NOT RESOLVABLE (no variant separates from the paired noise floor)")
             return lines
-        winner_name, winner_policy = ranked[0][0], ranked[0][1]
+        winner_name = ranked[0][0]
         lines.append(f"  recommendation: {self.vary}: {winner_name}")
         lines.append(f"  confidence: {confidence}{conf_note}")
-        lines.append("")
-        lines.append("  paste into your strategies yaml, then run midas fit + midas validate:")
-        lines.append("")
-        lines.extend(_policy_block_lines(winner_policy, self.vary, old_value=ranked[1][0]))
+        lines.append(f"  changed: {self.vary}: {ranked[1][0]} -> {winner_name}")
         return lines
 
     def summary_lines(self) -> list[str]:

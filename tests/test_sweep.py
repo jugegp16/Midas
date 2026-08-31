@@ -417,8 +417,7 @@ def test_decision_recommends_resolved_winner_with_paste_block() -> None:
     text = "\n".join(report.decision_lines())
     assert "RESOLVED" in text
     assert "objective: net" in text
-    assert "<- changed (was sharpe)" in text
-    assert "budget: 1000" in text  # full paste-able block, not just the knob
+    assert "changed: objective: sharpe -> net" in text
 
 
 def test_decision_refuses_to_crown_a_noise_winner() -> None:
@@ -429,7 +428,7 @@ def test_decision_refuses_to_crown_a_noise_winner() -> None:
     text = "\n".join(report.decision_lines())
     assert "NOT RESOLVABLE" in text
     assert "keep" in text.lower()
-    assert "<- changed" not in text  # no paste block pretending there is a winner
+    assert "changed:" not in text  # nothing pretends there is a winner
 
 
 def test_decision_absent_for_single_variant() -> None:
@@ -454,3 +453,75 @@ def test_decision_absent_for_single_variant() -> None:
         vary="objective",
     )
     assert report.decision_lines() == []
+
+
+STRATEGIES_TEXT = """# my tuned strategies — do not touch
+softmax_temperature: 1.0
+min_cash_pct: 0.05
+strategies:
+- name: MeanReversion  # the workhorse
+  weight: 1.0
+  params:
+    window: 10
+policy:
+  objective: sharpe
+  budget: 1000
+  restarts: 4
+  base_seed: 42
+  deployment: ensemble
+  cadence_days: 63
+  adopt_trigger: none
+"""
+
+
+def test_render_recommended_yaml_is_surgical() -> None:
+    """Everything except the changed knob survives byte-for-byte."""
+    from midas.policy import Policy
+    from midas.sweep import render_recommended_yaml
+
+    winner = Policy(objective="sharpe", budget=1000, restarts=4, deployment="best")
+    out = render_recommended_yaml(
+        STRATEGIES_TEXT,
+        vary="deployment",
+        winner=winner,
+        winner_name="best",
+        old_name="ensemble",
+        verdict="RESOLVED (+0.22% ± 0.09%)",
+    )
+    assert out.startswith("# recommended by midas sweep")
+    assert "deployment: ensemble -> best" in out
+    assert "RESOLVED" in out
+    body = "\n".join(out.splitlines()[2:]) + "\n"  # strip the two provenance lines
+    assert body == STRATEGIES_TEXT.replace("  deployment: ensemble", "  deployment: best")
+    assert "# my tuned strategies — do not touch" in out
+    assert "# the workhorse" in out
+
+
+def test_render_recommended_yaml_refuses_missing_knob() -> None:
+    import pytest
+
+    from midas.policy import Policy
+    from midas.sweep import render_recommended_yaml
+
+    text = STRATEGIES_TEXT.replace("  deployment: ensemble\n", "")
+    with pytest.raises(ValueError, match="deployment"):
+        render_recommended_yaml(
+            text, vary="deployment", winner=Policy(), winner_name="best", old_name="ensemble", verdict="RESOLVED"
+        )
+
+
+def test_recommendation_object_none_on_noise() -> None:
+    a = [0.020, 0.030, 0.010, 0.025, 0.015, 0.028, 0.012, 0.022]
+    b = [0.021, 0.028, 0.012, 0.023, 0.017, 0.026, 0.014, 0.020]
+    assert _decision_report(a, b).recommendation() is None
+
+
+def test_recommendation_object_on_resolved() -> None:
+    sharpe_tax = [0.020 + 0.001 * (i % 3) for i in range(8)]
+    net_tax = [t + 0.005 for t in sharpe_tax]
+    rec = _decision_report(sharpe_tax, net_tax).recommendation()
+    assert rec is not None
+    assert rec.vary == "objective"
+    assert rec.winner_name == "net"
+    assert rec.old_name == "sharpe"
+    assert rec.confidence == "RESOLVED"
