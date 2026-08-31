@@ -12,7 +12,6 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal
 
 import yaml
 
@@ -125,7 +124,6 @@ class Proposal:
     input_hash: str
     evidence: list[str]
     created_at: datetime
-    status: Literal["pending"] = "pending"
 
 
 def proposal_path(strategies_path: Path) -> Path:
@@ -147,7 +145,6 @@ def write_proposal(
         "input_hash": input_hash,
         "evidence": list(evidence),
         "created_at": created_at.isoformat(),
-        "status": "pending",
     }
     _atomic_write(proposal_path(strategies_path), yaml.dump(payload, default_flow_style=False, sort_keys=False))
 

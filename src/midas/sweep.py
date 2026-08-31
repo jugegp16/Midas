@@ -160,7 +160,8 @@ class SweepReport:
                     sum(c.oos_sharpe for c in cells) / len(cells) / math.sqrt(TRADING_DAYS_PER_YEAR),
                     n_trials=n_trials,
                     sharpe_variance=max(sharpe_var, 0.01 / TRADING_DAYS_PER_YEAR),
-                    n_obs=max(len(path), 2),
+                    # Per-seed path length: pooling overlapping seed paths would inflate z by sqrt(seeds).
+                    n_obs=max(len(path) // len(cells), 2),
                     skew=skew,
                     kurtosis=kurtosis,
                 )

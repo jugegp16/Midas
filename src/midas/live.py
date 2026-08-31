@@ -483,6 +483,20 @@ class LiveEngine:
         from midas.optimizer import _instantiate_strategies
 
         members = read_members(self._strategies_path)
+        if (
+            members is not None
+            and self._monitor_input_hash is not None
+            and members.input_hash != self._monitor_input_hash
+        ):
+            # Members fitted under a different configuration must never be
+            # hot-loaded — refuse once per offending sidecar, loudly.
+            if self._loaded_fit_key != (members.as_of, members.input_hash):
+                print_status(
+                    f"Members sidecar (fit of {members.as_of.isoformat()}) was fitted under a different "
+                    "configuration — refusing to load; run midas fit for a fresh deployment."
+                )
+                self._loaded_fit_key = (members.as_of, members.input_hash)
+            members = None
         if members is not None and members.members and (members.as_of, members.input_hash) != self._loaded_fit_key:
             member_entries = [_instantiate_strategies(member)[0] for member in members.members]
             self._allocator = Allocator(

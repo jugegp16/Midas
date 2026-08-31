@@ -81,6 +81,13 @@ def test_budget_override_needs_force(tmp_path: Path, fake_prices: None) -> None:
 
 
 def test_sweep_runs_end_to_end_tiny(tmp_path: Path, fake_prices: None) -> None:
+    import json
+
     result = _invoke_sweep(tmp_path, "--seeds", "1", "--holdout-days", "30")
     assert result.exit_code == 0, result.output
     assert "mean OOS CAGR" in result.output
+    checkpoints = list(tmp_path.glob("*.sweep-cells.jsonl"))
+    assert checkpoints, "per-cell checkpoint file missing"
+    lines = [json.loads(x) for x in checkpoints[0].read_text().splitlines()]
+    assert lines[0].get("run_header") is True  # runs are delimited in the append-only file
+    assert any("aggregate_oos_cagr" in x for x in lines[1:])

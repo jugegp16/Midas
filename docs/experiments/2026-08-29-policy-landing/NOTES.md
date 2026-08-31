@@ -94,6 +94,11 @@ Observations recorded for future work (not acted on here):
   results above come from sequential re-runs with per-cell JSONL
   checkpointing added in response.
 
+**Metric note (applies to all experiments here):** the spec named
+turnover as a first-class landing metric; these tables record after-tax
+return instead, which prices turnover's cost rather than counting its
+volume. Raw turnover was not separately tabulated.
+
 ## Experiment 2 — best vs ensemble
 
 **Criterion (pre-registered):** ensemble becomes the default only if

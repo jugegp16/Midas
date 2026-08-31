@@ -77,6 +77,24 @@ def fit_as_of(
         raise ValueError(msg)
     price_data = searchable
     start = min(min(df.index) for df in price_data.values())
+    current_hash = input_fingerprint(
+        policy=policy,
+        tickers=[h.ticker for h in portfolio.holdings],
+        constraints=constraints,
+        exit_params=exit_params,
+        risk_config=risk_config,
+        min_cash_pct=min_cash_pct,
+        forecast_scaling=forecast_scaling,
+        tax_config=tax_config,
+        cash_infusion=portfolio.cash_infusion,
+        trading_restrictions=portfolio.trading_restrictions,
+    )
+    if incumbent is not None and incumbent.input_hash != current_hash:
+        # Warm-starting from members fitted under another configuration
+        # contradicts the fingerprint contract — search cold instead.
+        if log_fn is not None:
+            log_fn("incumbent was fitted under a different configuration — warm start skipped")
+        incumbent = None
     enqueue = [flatten_params(member) for member in incumbent.members] if incumbent is not None else None
     record_top = policy.ensemble_size if policy.deployment == "ensemble" else 0
 
@@ -139,18 +157,7 @@ def fit_as_of(
         restart_bests=restart_bests,
         as_of=as_of,
         policy_hash=policy_hash(policy),
-        input_hash=input_fingerprint(
-            policy=policy,
-            tickers=[h.ticker for h in portfolio.holdings],
-            constraints=constraints,
-            exit_params=exit_params,
-            risk_config=risk_config,
-            min_cash_pct=min_cash_pct,
-            forecast_scaling=forecast_scaling,
-            tax_config=tax_config,
-            cash_infusion=portfolio.cash_infusion,
-            trading_restrictions=portfolio.trading_restrictions,
-        ),
+        input_hash=current_hash,
     )
 
 

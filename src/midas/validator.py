@@ -27,6 +27,7 @@ from midas.models import (
     RiskConfig,
     TaxConfig,
 )
+from midas.monitor import offset_fold_rank
 from midas.optimizer import _instantiate_strategies
 from midas.order_sizer import OrderSizer
 from midas.policy import AdoptTrigger, Policy, input_fingerprint, policy_hash
@@ -67,8 +68,6 @@ def trigger_fired(
             return True
 
     if trigger.oos_percentile_below > 0 and len(prior_folds) >= PERCENTILE_ARM_MIN_FOLDS:
-        from midas.monitor import offset_fold_rank
-
         prior_cumulative = [_cumulative(fold.daily_returns) for fold in prior_folds]
         current_cumulative = _cumulative(current_daily_returns)
         for offset, value in enumerate(current_cumulative):

@@ -103,7 +103,6 @@ def test_proposal_roundtrip_and_clear(tmp_path: Path) -> None:
         input_hash="i" * 64,
         evidence=["drawdown breach"],
         created_at=created,
-        status="pending",
     )
     assert proposal_path(strategies).name == "strategies.proposal.yaml"
     clear_proposal(strategies)

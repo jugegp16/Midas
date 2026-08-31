@@ -421,6 +421,15 @@ the defaults; results are committed under
   sidecar changed"; live hot-reloads members (policy-owned knobs still
   require a restart). `record_fit`/`deploy_fit` split so re-fit records
   without deploying; `midas fit` composes both.
+- **The input fingerprint covers configuration, not provenance** — it
+  omits the validation date range and any price-cache identity the spec
+  sketched, so re-validating one configuration over a different range
+  replaces baselines under the same hash. The range is recorded inside
+  the artifact (`validation_start`/`validation_end`) rather than in the
+  hash; treat range changes like config changes operationally (re-run
+  `midas validate` deliberately). `FitResult` likewise carries `as_of`
+  but no engine-version field — single-user project, the running code
+  IS the version.
 - **The monitor and the trigger share one fold-midrank percentile** —
   the spec's offset-bootstrap display is replaced by the midrank of the
   live window's cumulative return among prior folds' values at the same

@@ -2108,3 +2108,36 @@ def test_member_reload_keys_on_input_hash_too(tmp_path: Path, make_provider: Pro
     engine._handle_policy_artifacts(now)
     assert engine._allocator is not before
     assert [s._window for s in engine._allocator.strategies] == [40]
+
+
+def test_reload_refuses_members_from_a_different_configuration(tmp_path: Path, make_provider: ProviderFactory) -> None:
+    """Members fitted under another portfolio must never be hot-loaded.
+
+    Edit the YAML, restart, and the sidecar still holds the old config's
+    fit — tick one must refuse loudly, not silently trade it.
+    """
+    import dataclasses
+
+    from midas.artifacts import deploy_fit, write_fit
+
+    strategies = tmp_path / "strats.yaml"
+    strategies.write_text("strategies: []\n")
+    write_fit(strategies, _phase7_fit(date(2026, 5, 1)))
+    portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)], available_cash=1000.0)
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)]),
+        state_path=tmp_path / "state.yaml",
+        strategies_path=strategies,
+        monitor_input_hash="c" * 64,  # the running configuration's fingerprint
+    )
+    now = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    before = engine._allocator
+    engine._handle_policy_artifacts(now)  # sidecar hash is "i"*64 — mismatch
+    assert engine._allocator is before  # refused
+    matching = dataclasses.replace(_phase7_fit(date(2026, 6, 1), window=40), input_hash="c" * 64)
+    deploy_fit(strategies, matching)
+    engine._handle_policy_artifacts(now)
+    assert engine._allocator is not before  # matching fingerprint loads

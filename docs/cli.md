@@ -194,7 +194,7 @@ gains monitor lines comparing the live trailing fold-window against the
 validation distribution:
 
 ```
-fold-window day 23/63: +2.8% TWR (pre-tax) — p41 of validation distribution
+fold-window day 23/63: +2.8% TWR (pre-tax) — p41 of validation folds at this offset (pre-holdout baselines)
 drawdown (window peak): 8.2% vs validated worst-fold 15.1% — normal
 ```
 

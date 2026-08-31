@@ -78,8 +78,9 @@ cash. Output is the baselines artifact (per-day fold paths, provenance
 hashes) that the monitor and sweep consume.
 
 **Live monitor** -- The close-of-day report ranks the live trailing
-fold-window against the validation baselines: cumulative TWR at the same
-day offset (bootstrap distribution, not fold-count percentiles), window
+fold-window against the validation baselines: cumulative TWR ranked by
+fold midrank at the same day offset (the identical ranking the adoption
+trigger fires on, so the operator reads the governing number), window
 drawdown against the validated worst fold, deposits excluded from
 returns, warnings edge-triggered, and comparisons refused outright on an
 input-hash mismatch.

@@ -213,3 +213,41 @@ def test_fit_logs_restart_headers() -> None:
     )
     text = "\n".join(logs)
     assert f"restart 1/{SMALL.restarts}" in text
+
+
+def test_incumbent_from_different_config_is_not_enqueued(monkeypatch) -> None:
+    """Warm-starting from members fitted under another configuration
+    contradicts the fingerprint contract — skip the enqueue and say so."""
+    import midas.fitter as fitter_module
+
+    captured: list[object] = []
+    real_optimize = fitter_module.optimize
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get("enqueue"))
+        return real_optimize(*args, **kwargs)
+
+    monkeypatch.setattr(fitter_module, "optimize", spy)
+    portfolio, price_data = _data()
+    stale = FitResult(
+        members=[{"MeanReversion": {"window": 12.0, "threshold": 0.05, "_weight": 1.0}}],
+        member_scores=[1.0],
+        restart_bests=[1.0],
+        as_of=date(2023, 9, 1),
+        policy_hash="p" * 64,
+        input_hash="e" * 64,  # some other configuration
+    )
+    logs: list[str] = []
+    fit_as_of(
+        portfolio,
+        price_data,
+        date(2023, 10, 2),
+        SMALL,
+        constraints=AllocationConstraints(),
+        exit_params={},
+        strategy_names=["MeanReversion"],
+        incumbent=stale,
+        log_fn=logs.append,
+    )
+    assert all(e is None for e in captured), "stale incumbent was enqueued"
+    assert any("different configuration" in line for line in logs)

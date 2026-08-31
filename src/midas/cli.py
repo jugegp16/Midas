@@ -1483,6 +1483,23 @@ def sweep(
         import json
 
         checkpoint_path = strategies_path.with_name(f"{strategies_path.stem}.sweep-cells.jsonl")
+        with checkpoint_path.open("a", encoding="utf-8") as fh:
+            # Runs append to one file — the header line keeps cells from
+            # different runs distinguishable.
+            fh.write(
+                json.dumps(
+                    {
+                        "run_header": True,
+                        "started_at": datetime.now(UTC).isoformat(),
+                        "vary": vary,
+                        "values": list(values),
+                        "seeds": seeds,
+                        "start": start_d.isoformat(),
+                        "end": end_d.isoformat(),
+                    }
+                )
+                + "\n"
+            )
 
         def _checkpoint(cell: dict[str, object]) -> None:
             with checkpoint_path.open("a", encoding="utf-8") as fh:
