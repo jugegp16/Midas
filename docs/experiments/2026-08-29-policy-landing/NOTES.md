@@ -205,4 +205,36 @@ midas sweep -p sample-portfolios/stonks.yaml -s exp3-stonks-strategies.yaml \
   --vary deployment --value best --value ensemble --seeds 16
 ```
 
-**Results** — pending.
+**Results** (2026-08-30; logs `exp3-etf.log`, `exp3-stonks.log`;
+16/16 paired seeds completed on both baskets)
+
+| basket | paired best-ensemble CAGR | paired after-tax | pairs favoring best |
+|---|---|---|---|
+| etf    | +1.11% ± 0.44% SE (+2.5σ) | +0.22% ± 0.09% SE (+2.5σ) | 11/16 |
+| stonks | +1.39% ± 2.51% SE (+0.6σ) | −0.05% ± 0.43% SE (−0.1σ) |  8/16 |
+
+Unpaired means for the record: etf best +9.77% vs ensemble +8.66%
+(spreads 3.85 / 2.83); stonks best +22.86% vs ensemble +21.47%
+(spreads 23.98 / 25.47).
+
+**Pre-registered judgment:** ensemble required a paired after-tax
+advantage on BOTH baskets at |mean| > 2×SE. It has an advantage on
+neither: on etf the sign runs the other way at 2.5σ (best is genuinely
+better, pre- and after-tax), and on stonks the two are statistically
+identical (−0.1σ). **Criterion decisively not met →
+`deployment: best` is confirmed as the default — this time with
+resolved evidence, not a noise verdict.**
+
+Findings beyond the criterion:
+
+- The K=20 forecast-averaging ensemble costs ~0.2 pt/fold after tax on
+  etf and buys nothing on stonks. Its one measurable virtue remains
+  slightly lower seed spread on etf (2.83 vs 3.85).
+- The dominant stonks fact is not the deployment choice: with 16 seeds
+  at the registered 1000×4, the seed spread is ~24-25 pts for BOTH
+  deployments — the stocks-basket search itself is close to a seed
+  lottery, dwarfing deployment (this experiment) and adoption cadence
+  (Experiment 1) alike. Experiment 1's tiny stonks spreads (2.4-3.3 at
+  2 seeds) were themselves a small-sample artifact. Search
+  stabilization on stonks (budget, restarts, or search-space work) is
+  the highest-value open lever this record surfaces.
